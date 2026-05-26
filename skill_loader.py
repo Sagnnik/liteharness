@@ -9,7 +9,7 @@ def load_skills():
     if not SKILLS_DIR.exists():
         return skills
     
-    for f in SKILLS_DIR.glob("*.yml"):
+    for f in list(SKILLS_DIR.glob("*.yml")) + list(SKILLS_DIR.glob("*.yaml")):
         try:
             raw = yaml.safe_load(f.read_text())
             if raw and "name" in raw:
@@ -21,10 +21,12 @@ def load_skills():
 def select_skills(user_input: str, skills: dict) -> list[dict]:
     """Simple keyword matching for now. Later include embedding or LLM"""
     matched = []
-    for name, skill in skills.items():
-        triggers = skill.get("triggers", [])
-        if any(t.lower() in user_input.lower() for t in triggers):
-            matched.append(skill)
+    t = user_input.lower()
+    for skill in skills.values():
+        for tr in skill.get("triggers", []):
+            if any(tr.lower() in t):
+                matched.append(skill)
+
     return matched
 
 def inject_skills(base_prompt: str, skills: list[dict]) -> str:
@@ -35,25 +37,13 @@ def inject_skills(base_prompt: str, skills: list[dict]) -> str:
     blocks = []
     for s in skills:
         constraints = "\n".join(f"- {c}" for c in s.get("constraints", []))
-        workflow = "\n".join(
-            f"{i+1}. {step}" for i, step in enumerate(s.get("workflow", []))
+        workflow = "\n".join(f"{i+1}. {step}" for i, step in enumerate(s.get("workflow", [])))
+        examples = "".join(
+            f"\n### {ex.get('name', 'Example')}\n{ex.get('code', '')}\n"
+            for ex in s.get("examples", [])
         )
-        examples = ""
-        for ex in s.get("examples", []):
-            examples += f"\n### {ex.get('name', 'Example')}\n{ex.get('code', '')}\n"
-
-        block = f"""
-=== SKILL: {s['name']} ===
-{s.get('description', '')}
-
-When to use: {', '.join(s.get('triggers', []))}
-
-Constraints:
-{constraints}
-
-Workflow:
-{workflow}
-{examples}
-"""
-        blocks.append(block)
+        blocks.append(
+            f"=== SKILL: {s['name']} ===\n{s.get('description', '')}\n\n"
+            f"Constraints:\n{constraints}\n\nWorkflow:\n{workflow}{examples}"
+        )
     return base_prompt + "\n\nACTIVE SKILLS:\n" + "\n".join(blocks)

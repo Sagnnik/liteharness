@@ -1,6 +1,7 @@
 import subprocess
 import os
 from pathlib import Path
+from langchain_core.messages import SystemMessage, ToolMessage
 
 def get_project_context(max_files: int = 60) -> str:
     try:
@@ -74,31 +75,48 @@ def get_project_context(max_files: int = 60) -> str:
 
     return f"Project structure (top {max_files} files):\n{tree_str}\n\n{''.join(summaries)}"
 
-# TODO: Need to check this! and figure out summarizing as well.
 
-def trim_messages(messages, max_chars: int = 120_000):
-    """Rough token trimming by character count"""
+
+async def trim_messages_smart(messages, max_chars: int, summarize_fn=None):
     total = sum(len(str(m.content)) for m in messages)
     if total <= max_chars:
         return messages
 
-    system = [m for m in messages if getattr(m, "type", None) == "system"]
-    rest = [m for m in messages if getattr(m, "type", None) != "system"]
+    system = [m for m in messages if m.type == "system"]
+    rest = [m for m in messages if m.type != "system"]
 
-    while rest and sum(len(str(m.content)) for m in system + rest) > max_chars:
-        if len(rest) > 4:
-            rest.pop(0)
-        else:
-            break
+    # Keep last 8 + tool msgs from last 4 assistant turns
+    keep_tail = rest[-8:]
+    tool_recent = [m for m in rest if isinstance(m, ToolMessage)][-16:]
+    kept_ids = {id(m) for m in keep_tail + tool_recent}
+    dropped = [m for m in rest if id(m) not in kept_ids]
 
-    return system + rest
+    if dropped and summarize_fn:
+        summary = await summarize_fn(dropped)
+        system = system + [SystemMessage(content=f"Summary of earlier work:\n{summary}")]
 
-def is_complex_request(text: str) -> bool:
-    """Heuristic: does this request likely need multi-file planning?"""
-    triggers = [
-        "app", "project", "application", "website", "full",
-        "setup", "scaffold", "create a", "build a", "implement",
-        "multiple", "several files", "add feature", "refactor",
-    ]
-    t = text.lower()
-    return any(tr in t for tr in triggers)
+    result = system + [m for m in rest if id(m) in kept_ids or m in keep_tail]
+    # dedupe preserve order
+    seen, out = set(), []
+    for m in result:
+        if id(m) not in seen:
+            seen.add(id(m))
+            out.append(m)
+    return out
+
+
+async def needs_plan(user_input:str, model) -> list[str] | None:
+    from langchain_core.messages import HumanMessage
+    from prompt import PLAN_PROMPT
+
+    resp = await model.ainvoke([HumanMessage(content=PLAN_PROMPT.format(user_input=user_input))])
+    text = (resp.content or "").strip()
+    if text.upper().startswith("NO_PLAN_NEEDED"):
+        return None
+
+    steps = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and line[0].isdigit():
+            steps.append(line.split(".", 1)[-1].strip())
+    return steps or None

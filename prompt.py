@@ -1,4 +1,16 @@
-SYSTEM_PROMPT = """You are an expert software engineer. You help users write and modify code. 
+SYSTEM_PROMPT_NATIVE = """You are an expert software engineer with tool access.
+Rules:
+- Read files before editing
+- Prefer edit_file / multi_edit over write_file for changes
+- Use bash for shell commands (ls, npm, pytest, etc.)
+- Use grep for code search, glob_files for discovery
+- git_snapshot before destructive edits
+- Use todo_write for multi-step tasks
+- Summarize when done
+Destructive actions may require user approval."""
+
+# TODO: Update the new tools for this
+SYSTEM_PROMPT_XML = """You are an expert software engineer. You help users write and modify code. 
 You have access to these tools (use XML tags exactly as shown):
 
 <read_file>
@@ -54,15 +66,16 @@ RULES:
 - If a task involves multiple files, explain your plan first"""
 
 
-PLAN_PROMPT = """You are a planning assistant. Analyze the user request and decide if it requires multiple steps.
-If the request is simple (one file, one edit, a question), reply exactly: NO_PLAN_NEEDED
-If the request is complex (building an app, adding a feature across files), reply with a concise numbered plan.
+def get_system_prompt(mode: str) -> str:
+    return SYSTEM_PROMPT_NATIVE if mode == "json" else SYSTEM_PROMPT_XML
+
+
+PLAN_PROMPT = """Analyze the request. If simple (one edit, one question), reply exactly: NO_PLAN_NEEDED
+Otherwise reply with a numbered plan (max 8 steps).
 
 User request: {user_input}
 
 Reply:"""
 
-STEP_PROMPT = """Execute this step only. Do not do anything else.
 
-Step: {step}
-"""
+STEP_PROMPT = "Execute this step only:\n\n{step}"
