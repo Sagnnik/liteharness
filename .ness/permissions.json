@@ -1,0 +1,11 @@
+{
+    "allow": [
+      "bash:ls*", "bash:pwd", "bash:cat *", "bash:git status*",
+      "bash:git diff*", "bash:git log*", "grep:*", "glob_files:*",
+      "read_file:*", "git_status", "git_diff:*", "git_log:*"
+    ],
+    "deny": [
+      "bash:rm -rf*", "bash:sudo*", "bash:curl http*"
+    ],
+    "ask": ["*"]
+  }
