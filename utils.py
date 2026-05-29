@@ -2,6 +2,10 @@ import subprocess
 import os
 from pathlib import Path
 from langchain_core.messages import SystemMessage, ToolMessage
+import difflib
+from config import settings
+from permissions import check
+from tools import DESTRUCTIVE_TOOLS
 
 def get_project_context(max_files: int = 60) -> str:
     try:
@@ -120,3 +124,29 @@ async def needs_plan(user_input:str, model) -> list[str] | None:
         if line and line[0].isdigit():
             steps.append(line.split(".", 1)[-1].strip())
     return steps or None
+
+def _needs_approval(tool: str, args: dict) -> bool:
+    if not settings.enable_approval:
+        return False
+    perm = check(tool, args)
+    if perm == "allow":
+        return False
+    if perm == "deny":
+        return True  # handled as auto-deny in tools_node
+    return tool in DESTRUCTIVE_TOOLS
+
+
+def _preview_diff(tool: str, args: dict) -> str:
+    path = args.get("path", "")
+    if tool == "write_file":
+        old = Path(path).read_text(encoding="utf-8") if os.path.exists(path) else ""
+        new = args.get("content", "")
+    elif tool in ("edit_file", "multi_edit", "apply_diff"):
+        old = Path(path).read_text(encoding="utf-8") if os.path.exists(path) else ""
+        new = old.replace(args.get("old_string", ""), args.get("new_string", ""), 1)
+    else:
+        return f"{tool}({args})"
+    return "\n".join(difflib.unified_diff(
+        old.splitlines(keepends=True), new.splitlines(keepends=True),
+        fromfile=f"a/{path}", tofile=f"b/{path}",
+    ))
