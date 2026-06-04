@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from langchain_core.messages import BaseMessage
+
 
 def build_system_prompt(
     mode: str,
@@ -249,6 +251,25 @@ def build_subagent_prompt(agent_name: str, agent_body: str, parent_context: str 
     )
 
 
+def build_reflection_prompt(thread_id: str, messages: Iterable[BaseMessage], user_message_count: int) -> str:
+    return REFLECTION_PROMPT.format(
+        thread_id=thread_id,
+        user_message_count=user_message_count,
+        messages=_messages_to_text(messages),
+    )
+
+
+def _messages_to_text(messages: Iterable[BaseMessage], limit: int = 16) -> str:
+    recent = list(messages)[-limit:]
+    return "\n\n".join(f"{msg.type}: {_content_text(msg.content)[:1200]}" for msg in recent)
+
+
+def _content_text(content) -> str:
+    if isinstance(content, list):
+        return " ".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
+    return str(content)
+
+
 def _native_tool_calling() -> str:
     return "Tool calling: use native tool calls. The native schemas are authoritative."
 
@@ -260,7 +281,7 @@ def _xml_tool_calling(tools: Iterable[Any]) -> str:
 
 
 
-# TODO: Need to be made more thorough and detailed
+# TODO: Need the instructions to be made more thorough and detailed in a new file/folder probably
 # ---- Instructions ----
 PLAN_PROMPT = """Analyze the user request. If it is simple, reply exactly:
 NO_PLAN_NEEDED
@@ -293,6 +314,21 @@ Events:
 {events}
 """
 
+REFLECTION_PROMPT = """You are the NESS reflection gate for thread {thread_id}.
+
+Classify only information that is useful after this turn.
+
+- durable_learnings: conventions, architecture decisions, user preferences → saved to .ness/NESS.md
+- volatile_task_state: current task progress, next steps, blockers → saved to .ness/STATE.md
+
+Use empty lists when there is nothing worth saving.
+
+User message count: {user_message_count}
+
+Recent messages:
+{messages}
+"""
+
 SUBAGENT_PROMPT = """You are the {agent_name} LiteHarness subagent.
 
 Parent context:
@@ -302,8 +338,3 @@ Subagent instructions:
 {agent_body}
 
 Return a concise result with files inspected or changed, verification, and blockers."""
-
-
-def get_system_prompt(mode: str) -> str:
-    """Compatibility helper for older callers."""
-    return build_system_prompt(mode, [], [], "")
