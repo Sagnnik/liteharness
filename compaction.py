@@ -12,6 +12,8 @@ from tools.common import SOURCE_FILE_EXTENSIONS
 _SMALL_CHARS = 900
 _SMALL_LINES = 20
 _MAX_BODY_CHARS = 2400
+COMPACTION_SAFETY_MARGIN = 0.80
+COMPACTION_TIERS = (8_000, 16_000, 32_000, 64_000)
 
 _ERROR_RE = re.compile(
     r"(error|failed|exception|traceback|denied|fatal|panic|cannot|"
@@ -51,10 +53,10 @@ async def compact_messages_progressively(
     4: >64k (Full summary)
     """
     # Step 1: Count the tokens and decide the tier
-    budget = max_tokens or settings.compaction_token_budget or settings.max_tokens
+    budget = max_tokens or settings.compaction_token_budget
     token_count = count_message_tokens(messages, model=model)
     # auto trigger = budget * safety margin
-    trigger = int(budget * settings.compaction_safety_margin)
+    trigger = int(budget * COMPACTION_SAFETY_MARGIN)
     tier = compaction_tier(token_count)
     if not force and token_count <= trigger:
         return CompactionResult(messages=messages, compacted=False, tier=tier, token_count=token_count)
@@ -114,20 +116,10 @@ def count_message_tokens(messages: list[BaseMessage], model=None) -> int:
 
 
 def compaction_tier(token_count: int) -> int:
-    # tier 1 : <8k
-    if token_count <= settings.compaction_tier_1:
-        return 0
-    # tier 2 : <16k
-    if token_count <= settings.compaction_tier_2:
-        return 1
-    # tier 3 : <32k
-    if token_count <= settings.compaction_tier_3:
-        return 2
-    # tier 4 : <64k
-    if token_count <= settings.compaction_tier_4:
-        return 3
-    # tier 5 : >64k
-    return 4
+    for index, boundary in enumerate(COMPACTION_TIERS):
+        if token_count <= boundary:
+            return index
+    return len(COMPACTION_TIERS)
 
 
 def build_structured_history_summary(messages: Iterable[BaseMessage]) -> str:

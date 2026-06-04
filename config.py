@@ -1,80 +1,209 @@
-from pydantic_settings import BaseSettings
+from __future__ import annotations
+
+from typing import Any, Literal
+
 from dotenv import load_dotenv
-from typing import Literal
 from pydantic import Field
+from pydantic_settings import BaseSettings
+
 load_dotenv()
 
-# USD per 1M tokens (input, output)
-MODEL_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "claude-3.5-sonnet": (3.00, 15.00),
-    "claude-3-haiku": (0.25, 1.25),
-    "deepseek-chat": (0.14, 0.28),
+
+# USD per 1M tokens: (input, output, cache_read_ratio, cache_write_ratio)
+# Fallback when the provider does not return cost in response metadata.
+MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
+    "gpt-4o-mini": (0.15, 0.60, 0.50, 1.0),
+    "gpt-4o": (2.50, 10.00, 0.50, 1.0),
+    "claude-3.5-sonnet": (3.00, 15.00, 0.10, 1.25),
+    "claude-3-haiku": (0.25, 1.25, 0.10, 1.25),
+    "deepseek-chat": (0.14, 0.28, 0.10, 1.0),
 }
+
 VISION_MODELS = {
-    "gpt-4o", "gpt-4o-mini", "gpt-4-vision-preview",
-    "claude-3.5-sonnet", "claude-3-opus", "claude-3-haiku",
-    "gemini-pro-vision", "gemini-2.0-flash",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-vision",
+    "claude-3.5-sonnet",
+    "claude-3-opus",
+    "claude-3-haiku",
+    "gemini-pro-vision",
+    "gemini-2.0-flash",
 }
+
 
 class Settings(BaseSettings):
     model_name: str = Field(default="gpt-4o-mini", alias="MODEL_NAME")
     mode: Literal["json", "xml"] = Field(default="json", alias="MODE")
-    max_tokens: int = Field(default=120_000, alias="MAX_TOKENS")
+    default_mode: Literal["normal", "plan"] = Field(default="normal", alias="DEFAULT_MODE")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")
-    enable_planning: bool = Field(default=True, alias="ENABLE_PLANNING")
     auto_save_threads: bool = Field(default=True, alias="AUTO_SAVE_THREADS")
+    reflection_interval: int = Field(default=5, alias="REFLECTION_INTERVAL")
+    compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
+    openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
     ness_dir: str = Field(default=".ness", alias="NESS_DIR")
-    
+    format_on_write: bool = Field(default=True, alias="FORMAT_ON_WRITE")
+
     class Config:
         env_prefix = ""
-    
+
     @property
     def supports_vision(self) -> bool:
-        return any(v in self.model_name.lower() for v in VISION_MODELS)
+        model = self.model_name.lower()
+        return any(marker in model for marker in VISION_MODELS)
 
 
 settings = Settings()
 
+
 class CostTracker:
-    """Tracks token usage and estimated cost."""
-    def __init__(self):
-        self.prompt_tokens = 0
-        self.completion_tokens = 0
+    """Tracks token usage and cache-aware cost for the active process."""
+
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.uncached_input_tokens = 0
+        self.cached_input_tokens = 0
+        self.cache_write_tokens = 0
+        self.output_tokens = 0
         self.calls = 0
+        self.cost_usd = 0.0
+        self.model_name: str | None = None
 
-    def add(self, usage):
+    def add(
+        self,
+        usage: Any,
+        model_name: str | None = None,
+        response_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if not usage:
-            return
+            return None
 
-        inp = getattr(usage, "input_tokens", None) or usage.get("input_tokens", 0)
-        out = getattr(usage, "output_tokens", None) or usage.get("output_tokens", 0)
-        self.prompt_tokens += inp
-        self.completion_tokens += out
+        model = model_name or self.model_name or settings.model_name
+        self.model_name = model
+
+        input_tokens = _usage_value(usage, "input_tokens", "prompt_tokens")
+        output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
+        total_tokens = _usage_value(usage, "total_tokens") or input_tokens + output_tokens
+        cache_read = _detail_value(usage, "input_token_details", "cache_read", "cached_tokens")
+        cache_write = _detail_value(usage, "input_token_details", "cache_creation", "cache_write_tokens")
+        uncached_input = max(input_tokens - cache_read - cache_write, 0)
+        provider_cost = _provider_cost(response_metadata or {})
+        estimated_cost = _estimate_cost(model, uncached_input, cache_read, cache_write, output_tokens)
+        cost_usd = provider_cost if provider_cost is not None else estimated_cost
+        cost_source = "provider" if provider_cost is not None else "estimated"
+
+        self.input_tokens += input_tokens
+        self.uncached_input_tokens += uncached_input
+        self.cached_input_tokens += cache_read
+        self.cache_write_tokens += cache_write
+        self.output_tokens += output_tokens
         self.calls += 1
+        if cost_usd is not None:
+            self.cost_usd += cost_usd
+
+        return {
+            "model": model,
+            "input_tokens": input_tokens,
+            "uncached_input_tokens": uncached_input,
+            "cached_input_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cost_usd": cost_usd,
+            "cost_source": cost_source,
+            "cache_hit_rate": cache_read / input_tokens if input_tokens else 0.0,
+        }
 
     @property
-    def total_cost(self)-> float:
-        key = next((k for k in MODEL_PRICING if k in settings.model_name.lower()), None)
-        if not key:
-            return 0.0
-        inp_price, out_price = MODEL_PRICING[key]
-        return (self.prompt_tokens * inp_price + self.completion_tokens * out_price) / 1_000_000
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
 
-    def report(self) -> str:
-        total = self.prompt_tokens + self.completion_tokens
-        cost = self.total_cost
-        cost_str = f"${cost:.2f}" if cost > 0 else "N/A"
-        return (
-            f"Calls: {self.calls}\n"
-            f"Input Tokens: {self.prompt_tokens:,}\n"
-            f"Output Tokens: {self.completion_tokens:,}\n"
-            f"Total Tokens: {total:,}\n"
-            f"Est. Cost: {cost_str}"
+    @property
+    def cache_hit_rate(self) -> float:
+        if self.input_tokens <= 0:
+            return 0.0
+        return self.cached_input_tokens / self.input_tokens
+
+    @property
+    def total_cost_usd(self) -> float | None:
+        return self.cost_usd if self.cost_usd > 0 else None
+
+    def report(self, session_id: str | None = None) -> str:
+        cost_str = f"${self.cost_usd:.4f}" if self.cost_usd > 0 else "unknown"
+        lines: list[str] = []
+        if session_id is not None:
+            lines.append(f"OpenRouter session: {session_id or 'not set'}")
+        lines.extend(
+            [
+                f"Calls: {self.calls}",
+                f"Input tokens: {self.input_tokens:,}",
+                f"Uncached input: {self.uncached_input_tokens:,}",
+                f"Cached read: {self.cached_input_tokens:,}",
+                f"Cache write: {self.cache_write_tokens:,}",
+                f"Output tokens: {self.output_tokens:,}",
+                f"Total tokens: {self.total_tokens:,}",
+                f"Cache hit rate: {self.cache_hit_rate:.1%}",
+                f"Cost: {cost_str}",
+            ]
         )
+        return "\n".join(lines)
+
+
+def _estimate_cost(
+    model_name: str,
+    uncached_input_tokens: int,
+    cached_input_tokens: int,
+    cache_write_tokens: int,
+    output_tokens: int,
+) -> float | None:
+    model = model_name.lower()
+    key = next((candidate for candidate in MODEL_PRICING if candidate in model), None)
+    if key is None:
+        return None
+    input_per_m, output_per_m, read_ratio, write_ratio = MODEL_PRICING[key]
+    return (
+        uncached_input_tokens * input_per_m
+        + cached_input_tokens * input_per_m * read_ratio
+        + cache_write_tokens * input_per_m * write_ratio
+        + output_tokens * output_per_m
+    ) / 1_000_000
+
+
+def _usage_value(usage: Any, *names: str) -> int:
+    for name in names:
+        value = _value(usage, name)
+        if value is not None:
+            return int(value or 0)
+    return 0
+
+
+def _detail_value(usage: Any, details_key: str, *names: str) -> int:
+    details = _value(usage, details_key) or {}
+    for name in names:
+        value = _value(details, name)
+        if value is not None:
+            return int(value or 0)
+    return 0
+
+
+def _value(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _provider_cost(metadata: dict[str, Any]) -> float | None:
+    for key in ("cost", "total_cost", "cache_discount"):
+        value = metadata.get(key)
+        if value is not None and key != "cache_discount":
+            return float(value)
+    cost_details = metadata.get("cost_details") or {}
+    for key in ("total", "total_cost", "cost"):
+        value = cost_details.get(key)
+        if value is not None:
+            return float(value)
+    return None
 
 
 cost_tracker = CostTracker()
