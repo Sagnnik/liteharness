@@ -110,7 +110,7 @@ def build_working_state_overlay(
 
     # plan mode instructions else normal mode instructions
     if mode == "plan":
-        mode_block = "MODE: PLAN\n- Use read-only inspection tools only.\n- Produce or refine a plan; do not modify files."
+        mode_block = PLAN_MODE_INSTRUCTIONS
     else:
         mode_block = "MODE: NORMAL\n- Execute the requested work with the active tool set.\n- Keep durable decisions in NESS.md and volatile task state in STATE.md when appropriate."
     parts = [mode_block]
@@ -227,10 +227,6 @@ def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:
     return "ACTIVE SKILLS\n" + "\n\n".join(blocks) if blocks else ""
 
 
-def build_plan_prompt(user_input: str) -> str:
-    return PLAN_PROMPT.format(user_input=user_input)
-
-
 def build_compaction_prompt(messages: str) -> str:
     return COMPACTION_PROMPT.format(messages=messages)
 
@@ -283,16 +279,14 @@ def _xml_tool_calling(tools: Iterable[Any]) -> str:
 
 # TODO: Need the instructions to be made more thorough and detailed in a new file/folder probably
 # ---- Instructions ----
-PLAN_PROMPT = """Analyze the user request. If it is simple, reply exactly:
-NO_PLAN_NEEDED
-
-If it needs multiple steps, reply with a numbered implementation plan of at most 8 steps.
-
-User request:
-{user_input}
-"""
-
-STEP_PROMPT = "Execute this step only:\n\n{step}"
+PLAN_MODE_INSTRUCTIONS = """MODE: PLAN
+- Use read-only inspection tools only. Do not modify files.
+- Read and search the codebase before proposing changes.
+- Produce or refine an actionable implementation plan for the user's request.
+- Format the plan as numbered steps.
+- For each step, state what to do, which files are involved, and how to verify it.
+- Note risks, dependencies, and open questions that need user input.
+- When the plan is ready, summarize it clearly so the user can run /act to execute."""
 
 COMPACTION_PROMPT = """Summarize the earlier conversation for continued coding work.
 Preserve decisions, files touched, tool results, unresolved errors, and next steps.
