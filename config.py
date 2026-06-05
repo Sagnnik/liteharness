@@ -34,7 +34,6 @@ VISION_MODELS = {
 class Settings(BaseSettings):
     model_name: str = Field(default="gpt-4o-mini", alias="MODEL_NAME")
     mode: Literal["json", "xml"] = Field(default="json", alias="MODE")
-    default_mode: Literal["normal", "plan"] = Field(default="normal", alias="DEFAULT_MODE")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")
     auto_save_threads: bool = Field(default=True, alias="AUTO_SAVE_THREADS")
     reflection_interval: int = Field(default=5, alias="REFLECTION_INTERVAL")
