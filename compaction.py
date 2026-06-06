@@ -4,27 +4,25 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from config import settings
-from tools.common import SOURCE_FILE_EXTENSIONS
+from config import cost_tracker, settings
+from prompt import build_compaction_prompt
 
 _SMALL_CHARS = 900
 _SMALL_LINES = 20
 _MAX_BODY_CHARS = 2400
+_HEAD_LINES = 8
+_TAIL_LINES = 4
+_MAX_ERROR_LINES = 12
+_SUMMARY_MESSAGE_LIMIT = 40
+_SUMMARY_MESSAGE_CHARS = 1200
 COMPACTION_SAFETY_MARGIN = 0.80
 COMPACTION_TIERS = (8_000, 16_000, 32_000, 64_000)
 
 _ERROR_RE = re.compile(
     r"(error|failed|exception|traceback|denied|fatal|panic|cannot|"
     r"command not found|no such file|permission denied|exit code|exit status)",
-    re.IGNORECASE,
-)
-_GREP_MATCH_RE = re.compile(r":\d+:|^Binary file|error", re.IGNORECASE)
-_GIT_DIFF_RE = re.compile(r"^(diff |index |--- |\+\+\+ |@@ |[+-](?!\+{2}))|error", re.IGNORECASE)
-
-_FILE_PATH_RE = re.compile(
-    rf"(?:(?:\.?/)?[\w.-]+/)+[\w.-]+|[\w.-]+\.(?:{'|'.join(SOURCE_FILE_EXTENSIONS)})",
     re.IGNORECASE,
 )
 
@@ -41,7 +39,9 @@ class CompactionResult:
 async def compact_messages_progressively(
     messages: list[BaseMessage],
     max_tokens: int | None = None,
-    model=None,
+    *,
+    known_input_tokens: int | None = None,
+    summary_model=None,
     force: bool = False,
 ) -> CompactionResult:
     """Compact by token tier.
@@ -52,16 +52,13 @@ async def compact_messages_progressively(
     3: <64k (Compact tool outputs and recent decisions and blockers)
     4: >64k (Full summary)
     """
-    # Step 1: Count the tokens and decide the tier
     budget = max_tokens or settings.compaction_token_budget
-    token_count = count_message_tokens(messages, model=model)
-    # auto trigger = budget * safety margin
+    token_count = resolve_token_count(messages, known_input_tokens=known_input_tokens)
     trigger = int(budget * COMPACTION_SAFETY_MARGIN)
     tier = compaction_tier(token_count)
     if not force and token_count <= trigger:
         return CompactionResult(messages=messages, compacted=False, tier=tier, token_count=token_count)
 
-    # Step 2: Compact the messages
     system = [m for m in messages if m.type == "system"]
     rest = [m for m in messages if m.type != "system"]
     if tier <= 1:
@@ -81,7 +78,7 @@ async def compact_messages_progressively(
     else:
         keep = rest[-4:]
     older = rest[: max(0, len(rest) - len(keep))]
-    summary = build_structured_history_summary(older)
+    summary = await summarize_history(older, summary_model)
     compacted = system
     if summary:
         compacted.append(SystemMessage(content="COMPACTED HISTORY\n" + summary))
@@ -95,24 +92,16 @@ async def compact_messages_progressively(
     )
 
 
-def count_message_tokens(messages: list[BaseMessage], model=None) -> int:
-    # use the model.get_num_tokens_from_messages() if available
-    if model is not None and hasattr(model, "get_num_tokens_from_messages"):
-        try:
-            return int(model.get_num_tokens_from_messages(messages))
-        except Exception:
-            pass
-    # else build a text and use tiktoken for rough estimate
-    text = "\n\n".join(f"{m.type}: {_content_text(m.content)}" for m in messages)
-    try:
-        import tiktoken
+def resolve_token_count(messages: list[BaseMessage], *, known_input_tokens: int | None) -> int:
+    if known_input_tokens and known_input_tokens > 0:
+        return known_input_tokens
+    return _estimate_tokens_symbol(messages)
 
-        encoding = tiktoken.get_encoding("cl100k_base")
-        return len(encoding.encode(text)) + 4 * len(messages)
-    except Exception:
-        # fallback to a rough estimate= sum of all chars // 3 and symbols // 2 and 6 * message count
-        symbol_count = sum(1 for char in text if not char.isalnum() and not char.isspace())
-        return max(1, len(text) // 3 + symbol_count // 2 + 6 * len(messages))
+
+def _estimate_tokens_symbol(messages: list[BaseMessage]) -> int:
+    text = "\n\n".join(f"{m.type}: {_content_text(m.content)}" for m in messages)
+    symbol_count = sum(1 for char in text if not char.isalnum() and not char.isspace())
+    return max(1, len(text) // 3 + symbol_count // 2 + 6 * len(messages))
 
 
 def compaction_tier(token_count: int) -> int:
@@ -122,44 +111,43 @@ def compaction_tier(token_count: int) -> int:
     return len(COMPACTION_TIERS)
 
 
-def build_structured_history_summary(messages: Iterable[BaseMessage]) -> str:
-    decisions: list[str] = []
-    blockers: list[str] = []
-    files: set[str] = set()
-    preferences: list[str] = []
-    recent_requests: list[str] = []
-    tool_notes: list[str] = []
-    for msg in messages:
-        text = _content_text(msg.content)
-        lower = text.lower()
-        if msg.type == "human":
-            recent_requests.append(_shorten(text, 260))
-            if any(word in lower for word in ("prefer", "please", "don't", "do not", "always", "never")):
-                preferences.append(_shorten(text, 220))
-        if msg.type in {"ai", "assistant"} and any(
-            word in lower for word in ("decided", "decision", "implemented", "changed", "use ")
-        ):
-            decisions.append(_shorten(text, 260))
-        if any(word in lower for word in ("blocker", "blocked", "failed", "error", "cannot", "denied")):
-            blockers.append(_shorten(text, 240))
-        if msg.type == "tool":
-            tool_notes.append(_shorten(text, 220))
-        files.update(_extract_file_paths(text))
+async def summarize_history(messages: Iterable[BaseMessage], model) -> str:
+    if model is None:
+        return ""
+    serialized = _messages_to_text(messages)
+    if not serialized.strip():
+        return ""
+    prompt = build_compaction_prompt(serialized)
+    try:
+        response = await model.ainvoke([HumanMessage(content=prompt)])
+    except Exception:
+        return ""
+    content = response.content
+    if not isinstance(content, str):
+        content = str(content)
+    summary = content.strip()
+    if response.usage_metadata:
+        cost_tracker.add(
+            response.usage_metadata,
+            _model_name(model),
+            response.response_metadata or {},
+        )
+    return summary
 
-    sections = []
-    if decisions:
-        sections.append("Decisions and changes:\n" + "\n".join(f"- {item}" for item in _unique(decisions, 8)))
-    if blockers:
-        sections.append("Blockers and unresolved issues:\n" + "\n".join(f"- {item}" for item in _unique(blockers, 8)))
-    if files:
-        sections.append("Files mentioned or modified:\n" + "\n".join(f"- {item}" for item in sorted(files)[:30]))
-    if preferences:
-        sections.append("User preferences:\n" + "\n".join(f"- {item}" for item in _unique(preferences, 6)))
-    if recent_requests:
-        sections.append("Earlier user requests:\n" + "\n".join(f"- {item}" for item in _unique(recent_requests, 8)))
-    if tool_notes:
-        sections.append("Tool results summarized:\n" + "\n".join(f"- {item}" for item in _unique(tool_notes, 8)))
-    return "\n\n".join(sections)
+
+def _model_name(model) -> str:
+    for attr in ("model_name", "model"):
+        value = getattr(model, attr, None)
+        if value:
+            return str(value)
+    return settings.model_name
+
+
+def _messages_to_text(messages: Iterable[BaseMessage]) -> str:
+    items = list(messages)[-_SUMMARY_MESSAGE_LIMIT:]
+    return "\n\n".join(
+        f"{msg.type}: {_content_text(msg.content)[:_SUMMARY_MESSAGE_CHARS]}" for msg in items
+    )
 
 
 def _compact_tool_message(message: BaseMessage) -> BaseMessage:
@@ -172,18 +160,18 @@ def _compact_tool_message(message: BaseMessage) -> BaseMessage:
 
 
 def _summarize_tool_output(content: str, tool_name: str = "") -> str:
-    # if the content is small, return the content as is
     lines = content.splitlines()
     nonempty = [ln for ln in lines if ln.strip()]
     if len(content) <= _SMALL_CHARS and len(nonempty) <= _SMALL_LINES:
         return content
 
-    # keep the lines that are important
-    kept = _lines_to_keep(nonempty, tool_name)
+    head = nonempty[:_HEAD_LINES]
+    tail = nonempty[-_TAIL_LINES:] if len(nonempty) > _TAIL_LINES else []
+    errors = [ln for ln in nonempty if _ERROR_RE.search(ln)][:_MAX_ERROR_LINES]
+    kept = _ordered_dedupe(head, errors, tail)
     if len(kept) >= len(nonempty):
         return content
 
-    # truncate the body if it's too long
     body = "\n".join(kept)
     if len(body) > _MAX_BODY_CHARS:
         body = body[:_MAX_BODY_CHARS] + "\n...[truncated]"
@@ -194,79 +182,16 @@ def _summarize_tool_output(content: str, tool_name: str = "") -> str:
     )
 
 
-def _lines_to_keep(lines: list[str], tool_name: str) -> list[str]:
-    name = tool_name.lower()
-
-    if name in {"bash", "spawn_subagent"}:
-        return _merge_slices(
-            lines,
-            _matching(lines, _ERROR_RE, limit=12),
-            lines[:6],
-            lines[-4:],
-            max_total=28,
-        )
-
-    if name == "grep":
-        return _merge_slices(
-            lines,
-            _matching(lines, _GREP_MATCH_RE, limit=40),
-            _matching(lines, _ERROR_RE, limit=8),
-            lines[:3],
-            max_total=45,
-        )
-
-    if name in {"read_file", "glob_files", "list_files", "git_diff", "git_show", "git_blame", "git_log"}:
-        important = lines
-        if name.startswith("git_") or name == "git_diff":
-            important = _matching(lines, _GIT_DIFF_RE, limit=30)
-        return _merge_slices(
-            lines,
-            important,
-            lines[:12],
-            lines[-4:],
-            max_total=32,
-        )
-
-    if name.startswith("git_") or name.startswith("mcp__"):
-        return _merge_slices(
-            lines,
-            _matching(lines, _ERROR_RE, limit=10),
-            lines[:8],
-            lines[-4:],
-            max_total=28,
-        )
-
-    return _merge_slices(
-        lines,
-        _matching(lines, _ERROR_RE, limit=12),
-        lines[:8],
-        lines[-4:],
-        max_total=28,
-    )
-
-
-def _matching(lines: list[str], pattern: re.Pattern, *, limit: int) -> list[str]:
-    out: list[str] = []
-    for line in lines:
-        if pattern.search(line):
-            out.append(line)
-            if len(out) >= limit:
-                break
-    return out
-
-
-def _merge_slices(lines: list[str], *slices: list[str], max_total: int) -> list[str]:
+def _ordered_dedupe(*blocks: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for block in slices:
+    for block in blocks:
         for line in block:
             if line in seen:
                 continue
             seen.add(line)
             out.append(line)
-            if len(out) >= max_total:
-                return out
-    return out if out else lines[:max_total]
+    return out
 
 
 def _content_text(content) -> str:
@@ -290,32 +215,3 @@ def _dedupe_messages(messages: Iterable[BaseMessage]) -> list[BaseMessage]:
         seen.add(id(msg))
         out.append(msg)
     return out
-
-
-def _shorten(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
-
-
-def _unique(items: Iterable[str], limit: int) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def _extract_file_paths(text: str) -> set[str]:
-    paths = set()
-    for match in _FILE_PATH_RE.findall(text):
-        normalized = match.strip("`'\"()[]{}:,")
-        if normalized and not normalized.startswith(("http://", "https://")):
-            paths.add(normalized)
-    return paths
