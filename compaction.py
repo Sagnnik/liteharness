@@ -7,7 +7,7 @@ from typing import Iterable
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from config import cost_tracker, settings
-from prompt import build_compaction_prompt
+from prompt import _content_text, _messages_to_text as format_messages, build_compaction_prompt
 
 _SMALL_CHARS = 900
 _SMALL_LINES = 20
@@ -16,7 +16,7 @@ _HEAD_LINES = 8
 _TAIL_LINES = 4
 _MAX_ERROR_LINES = 12
 _SUMMARY_MESSAGE_LIMIT = 40
-_SUMMARY_MESSAGE_CHARS = 1200
+_FALLBACK_SUMMARY_CHARS = 8000
 COMPACTION_SAFETY_MARGIN = 0.80
 COMPACTION_TIERS = (8_000, 16_000, 32_000, 64_000)
 
@@ -46,11 +46,11 @@ async def compact_messages_progressively(
 ) -> CompactionResult:
     """Compact by token tier.
     Tiers:
-    0: <8k (No compaction)
-    1: <16k (Compact tool outputs)
-    2: <32k (Compact tool outputs and recent decisions)
-    3: <64k (Compact tool outputs and recent decisions and blockers)
-    4: >64k (Full summary)
+    0: <8k (no compaction)
+    1: <16k (compact tool outputs)
+    2: <32k (compact tool outputs + summarize older history, keep last 10)
+    3: <64k (same, keep last 6)
+    4: >64k (same, keep last 4)
     """
     budget = max_tokens or settings.compaction_token_budget
     token_count = resolve_token_count(messages, known_input_tokens=known_input_tokens)
@@ -64,7 +64,7 @@ async def compact_messages_progressively(
     if tier <= 1:
         compacted = system + [_compact_tool_message(msg) for msg in rest]
         return CompactionResult(
-            messages=_dedupe_messages(compacted),
+            messages=compacted,
             compacted=True,
             tier=1,
             token_count=token_count,
@@ -77,14 +77,14 @@ async def compact_messages_progressively(
         keep = rest[-6:]
     else:
         keep = rest[-4:]
-    older = rest[: max(0, len(rest) - len(keep))]
+    older = rest[: len(rest) - len(keep)]
     summary = await summarize_history(older, summary_model)
     compacted = system
     if summary:
         compacted.append(SystemMessage(content="COMPACTED HISTORY\n" + summary))
     compacted.extend(_compact_tool_message(msg) for msg in keep)
     return CompactionResult(
-        messages=_dedupe_messages(compacted),
+        messages=compacted,
         compacted=True,
         tier=tier,
         token_count=token_count,
@@ -112,16 +112,16 @@ def compaction_tier(token_count: int) -> int:
 
 
 async def summarize_history(messages: Iterable[BaseMessage], model) -> str:
-    if model is None:
-        return ""
-    serialized = _messages_to_text(messages)
+    serialized = _serialize_messages(messages)
     if not serialized.strip():
         return ""
+    if model is None:
+        return _fallback_summary(serialized)
     prompt = build_compaction_prompt(serialized)
     try:
         response = await model.ainvoke([HumanMessage(content=prompt)])
     except Exception:
-        return ""
+        return _fallback_summary(serialized)
     content = response.content
     if not isinstance(content, str):
         content = str(content)
@@ -132,7 +132,20 @@ async def summarize_history(messages: Iterable[BaseMessage], model) -> str:
             _model_name(model),
             response.response_metadata or {},
         )
-    return summary
+    if summary:
+        return summary
+    return _fallback_summary(serialized)
+
+
+def _serialize_messages(messages: Iterable[BaseMessage]) -> str:
+    return format_messages(messages, limit=_SUMMARY_MESSAGE_LIMIT)
+
+
+def _fallback_summary(serialized: str) -> str:
+    excerpt = serialized[:_FALLBACK_SUMMARY_CHARS]
+    if len(serialized) > _FALLBACK_SUMMARY_CHARS:
+        excerpt += "\n...[truncated]"
+    return "[Compaction summary unavailable]\n" + excerpt
 
 
 def _model_name(model) -> str:
@@ -140,22 +153,14 @@ def _model_name(model) -> str:
         value = getattr(model, attr, None)
         if value:
             return str(value)
-    return settings.model_name
-
-
-def _messages_to_text(messages: Iterable[BaseMessage]) -> str:
-    items = list(messages)[-_SUMMARY_MESSAGE_LIMIT:]
-    return "\n\n".join(
-        f"{msg.type}: {_content_text(msg.content)[:_SUMMARY_MESSAGE_CHARS]}" for msg in items
-    )
+    return "unknown"
 
 
 def _compact_tool_message(message: BaseMessage) -> BaseMessage:
     if not isinstance(message, ToolMessage):
         return message
 
-    name = getattr(message, "name", None) or ""
-    content = _summarize_tool_output(str(message.content), name)
+    content = _summarize_tool_output(str(message.content), message.name or "")
     return message.model_copy(update={"content": content})
 
 
@@ -191,27 +196,4 @@ def _ordered_dedupe(*blocks: list[str]) -> list[str]:
                 continue
             seen.add(line)
             out.append(line)
-    return out
-
-
-def _content_text(content) -> str:
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                parts.append(str(item.get("text") or item.get("type") or item))
-            else:
-                parts.append(str(item))
-        return " ".join(parts)
-    return str(content)
-
-
-def _dedupe_messages(messages: Iterable[BaseMessage]) -> list[BaseMessage]:
-    seen: set[int] = set()
-    out = []
-    for msg in messages:
-        if id(msg) in seen:
-            continue
-        seen.add(id(msg))
-        out.append(msg)
     return out
