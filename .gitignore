@@ -9,3 +9,8 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# LiteHarness runtime data
+.ness/threads/
+.ness/shells/
+.ness/worktrees/
