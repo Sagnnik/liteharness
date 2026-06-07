@@ -7,7 +7,7 @@ from typing import Iterable
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from config import cost_tracker, settings
-from prompt import _content_text, _messages_to_text as format_messages, build_compaction_prompt
+from context import _content_text, _messages_to_text as format_messages, build_compaction_prompt
 
 _SMALL_CHARS = 900
 _SMALL_LINES = 20
