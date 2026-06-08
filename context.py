@@ -79,7 +79,7 @@ def _render_tool_catalog(tools: Iterable[Any]) -> str:
     names = {getattr(tool, "name", "") for tool in tools}
 
     # create the tool groups: (group name, tools in the group)
-    groups = [("Small always-on", names & {"todo_read", "todo_write", "add_to_memory"}),
+    groups = [("Small always-on", names & {"todo_read", "todo_write"}),
         ("L1 core", names & {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "grep", "glob_files", "list_files", "bash", "get_project_context"}),
         ("L2 git read", names & {"git_status", "git_diff", "git_log", "git_show", "git_blame"}),
         ("L3 advanced", names & {"git_snapshot", "git_commit", "git_checkout", "git_branch", "git_stash", "git_worktree_add", "git_worktree_list", "git_worktree_remove", "spawn_subagent"}),

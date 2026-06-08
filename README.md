@@ -58,7 +58,7 @@ Skills activate by trigger match and stay sticky for the session once loaded.
 
 Tool tiers in normal mode:
 
-- Small always-on: `todo_read`, `todo_write`, `add_to_memory`
+- Small always-on: `todo_read`, `todo_write`
 - L1 core: file, search, shell, and project-context tools
 - L2 git read: `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
 - L3 advanced: git write/worktree tools and `spawn_subagent`
@@ -70,7 +70,7 @@ Three memory files live under `.ness/`:
 
 | File | Purpose |
 |------|---------|
-| `NESS.md` | Durable project facts: conventions, architecture, commands, gotchas. Loaded into L2 prompts and maintained by the reflection gate. |
+| `NESS.md` | Durable project facts: conventions, architecture, commands, gotchas. Loaded into L2 prompts, maintained by the reflection gate, with human overrides via `/memory add`. |
 | `USER.md` | Cross-repo user preferences. Human-authored via `/user`; loaded into L1 foundation. |
 | `LOG.md` | Episodic per-session notes (helpers present; not yet loaded into prompts). |
 
