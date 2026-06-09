@@ -22,7 +22,7 @@ class MCPManager:
     """Manage stdio MCP servers and expose their tools as LangChain tools.
     Step 1: main entry point is start() -> start the mcp servers and register the tools
     Step 2: spawn MCP server(s) via stdio -> start_server(name, spec)
-    Step 3: initialize + list tools -> _connect_stdio(name, spec, stack, ClientSession, StdioServerParameters, stdio_client)
+    Step 3: initialize + list tools -> _connect_stdio(name, spec, stack)
     Step 4: return StructuredTool wraps over mcp functions (convert to langchain tool) -> _wrap_tool(server_name, mcp_tool)
     Step 5: register_dynamic_tools(..) -> create langchain tools from mcp tools -> register_dynamic_tools()
     Step 6: mcp returns structured content -> convert to string and return -> _serialize_mcp_result(result)
@@ -53,7 +53,11 @@ class MCPManager:
         if not MCP_FILE.exists():
             return
 
-        config = json.loads(MCP_FILE.read_text(encoding="utf-8"))
+        try:
+            config = json.loads(MCP_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+
         servers = config.get("mcpServers", config.get("servers", {}))
         
         # start the mcp servers in parallel. return exceptions without crashing everything.
@@ -146,14 +150,11 @@ class MCPManager:
         except Exception as exc:
             return f"Error: MCP call failed: {exc}"
 
-        if getattr(result, "isError", False):
+        if result.isError:
             return "Error: " + _serialize_mcp_result(result)
         return _serialize_mcp_result(result)
 
     async def start_server(self, name: str, spec: dict[str, Any]) -> None:
-        from mcp.client.session import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-
         # get the timeout 
         startup_timeout = int(spec.get("startup_timeout", DEFAULT_STARTUP_TIMEOUT))
         
@@ -164,7 +165,7 @@ class MCPManager:
         # connect to the stdio server.
         try:
             await asyncio.wait_for(
-                self._connect_stdio(name, spec, stack, ClientSession, StdioServerParameters, stdio_client),
+                self._connect_stdio(name, spec, stack),
                 timeout=startup_timeout,
             )
         except Exception:
@@ -178,10 +179,10 @@ class MCPManager:
         name: str,
         spec: dict[str, Any],
         stack: AsyncExitStack,
-        ClientSession: Any,
-        StdioServerParameters: Any,
-        stdio_client: Any,
     ) -> None:
+        from mcp.client.session import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
         #parse the command and args from the spec.
         command, args = _command_and_args(spec)
 
@@ -218,10 +219,10 @@ class MCPManager:
         """Translate MCP tool to LangChain tool (StructuredTool)"""
         
         full_name = f"mcp__{server_name}__{mcp_tool.name}"
-        args_schema = _args_schema(full_name, getattr(mcp_tool, "inputSchema", None))
-        description = getattr(mcp_tool, "description", "") or f"MCP tool {mcp_tool.name} from {server_name}"
         raw_schema = getattr(mcp_tool, "inputSchema", None)
-        if raw_schema and isinstance(raw_schema, dict):
+        args_schema = _args_schema(full_name, raw_schema)
+        description = getattr(mcp_tool, "description", "") or f"MCP tool {mcp_tool.name} from {server_name}"
+        if isinstance(raw_schema, dict):
             description += f"\n\nInput schema: {json.dumps(raw_schema)}"
 
         # define the _call function that will be executed when the tool is invoked (await tool.ainvoke()).
@@ -258,11 +259,11 @@ def _command_and_args(spec: dict[str, Any]) -> tuple[str, list[str]]:
 
 
 def _args_schema(name: str, schema: dict[str, Any] | None) -> type:
-    if not schema:
+    if not isinstance(schema, dict):
         return create_model(f"{name}_Args")
 
-    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-    required = set(schema.get("required", [])) if isinstance(schema, dict) else set()
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
     fields: dict[str, Any] = {}
     for prop, info in properties.items():
         if not isinstance(info, dict):
@@ -284,7 +285,7 @@ def _resolve_type(info: dict[str, Any]) -> type:
             from typing import Literal
 
             return Literal[tuple(info["enum"])]
-        except Exception:
+        except (TypeError, ValueError):
             return str
     json_type = info.get("type")
     if json_type == "object":
