@@ -491,10 +491,18 @@ def render_header() -> None:
     console.print(Panel(table, border_style="bright_blue", title="Agent"))
 
 
+def render_mcp_startup() -> None:
+    message, level = mcp_manager.startup_summary()
+    styles = {"ok": "green", "warn": "yellow", "none": "dim"}
+    hint = "" if level == "ok" else " (run /mcp for details)"
+    console.print(Text(message + hint, style=styles.get(level, "dim")))
+
+
 async def main() -> None:
     render_header()
     await mcp_manager.start()
     register_dynamic_tools(mcp_manager.tools.values())
+    render_mcp_startup()
 
     git_available = is_git_repo()
     checkpointer = MemorySaver()

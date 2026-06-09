@@ -1,3 +1,9 @@
 {
-  "servers": {}
+  "servers": {
+    "echo": {
+      "command": "uv",
+      "args": ["run", "python", "tests/mcp_echo_server.py"],
+      "startup_timeout": 30
+    }
+  }
 }

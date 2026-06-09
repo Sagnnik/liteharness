@@ -54,7 +54,7 @@ Skills activate by trigger match and stay sticky for the session once loaded.
 ## Agent Modes
 
 - **Normal** (`/act`): full tool set. Git read tools appear only inside a git repo.
-- **Plan** (`/plan`): read-only tools. Assistant output is saved under `.ness/plans/`. Use `/act` to switch back and execute.
+- **Plan** (`/plan`): read-only tools. Assistant output is saved under `.ness/plans/`. Use `/act` to switch back and execute. MCP tools (`mcp__*`) are available only in normal mode.
 
 Tool tiers in normal mode:
 
@@ -150,7 +150,11 @@ Deny rules win over allow rules. Approval choices are `y`, `n`, `a` always, `N` 
 
 ## MCP
 
-Configure stdio MCP servers in `.ness/mcp.json`:
+LiteHarness connects to local **stdio** MCP servers at CLI startup. Each server is a child process; LiteHarness discovers its tools and exposes them to the agent.
+
+**Security:** MCP servers run arbitrary commands with your user permissions. Only add servers you trust, same as running `npx @some/mcp-server` directly.
+
+Configure servers in `.ness/mcp.json`. Either `servers` or `mcpServers` works (the latter matches Cursor's config shape):
 
 ```json
 {
@@ -158,13 +162,42 @@ Configure stdio MCP servers in `.ness/mcp.json`:
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-      "env": {}
+      "env": {},
+      "cwd": ".",
+      "startup_timeout": 20
     }
   }
 }
 ```
 
-Tools are exposed as `mcp__<server>__<tool>`. Server startup failures are shown by `/mcp` and do not stop the CLI.
+Per-server fields:
+
+- `command` / `args`: process to spawn. `command` may also be a one-element array like `["npx", "-y", "..."]`.
+- `env`: optional environment overrides.
+- `cwd`: working directory for the server process (defaults to the project root).
+- `startup_timeout`: seconds to wait for connect + tool discovery (default `20`).
+
+Tools are exposed as `mcp__<server>__<tool>`. On boot the CLI prints a one-line MCP summary; use `/mcp` for the full server and tool list. Startup failures do not stop the CLI.
+
+**Approval and permissions:** all `mcp__*` tools require approval when `ENABLE_APPROVAL=true`. You can add explicit rules in `.ness/permissions.json`:
+
+```json
+{
+  "allow": ["mcp__filesystem__read_file", "mcp__filesystem__list_directory"],
+  "deny": ["mcp__filesystem__write_file"],
+  "ask": ["*"]
+}
+```
+
+**Subagents:** MCP tools are not auto-included. List them explicitly in a subagent's frontmatter if needed:
+
+```markdown
+---
+tools: [read_file, grep, mcp__filesystem__read_file]
+---
+```
+
+**Prompt size:** tool descriptions include the full MCP input schema so the model can handle complex arguments. Servers with many tools may increase token usage.
 
 ## Subagents
 
@@ -178,7 +211,7 @@ worktree: false
 You are a read-only explorer. Return concise findings with file references.
 ```
 
-The `spawn_subagent` tool runs a filtered, isolated graph (max depth 2) and returns a summary to the parent agent.
+The `spawn_subagent` tool runs a filtered, isolated graph (max depth 2) and returns a summary to the parent agent. Subagents only receive the tools listed in their frontmatter; MCP tools must be named explicitly (see MCP section).
 
 ## Slash Commands
 
