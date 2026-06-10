@@ -6,7 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from tools.common import MANIFEST_FILES, PROJECT_ROOT, discover_manifest_files, is_ignored_dir
+from permissions import PROJECT_ROOT
+from tools.common import MANIFEST_FILES, discover_manifest_files, is_ignored_dir
 
 _READ_ERRORS = (OSError, UnicodeDecodeError)
 _SNIPPET_LIMIT = 1200

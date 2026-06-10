@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from config import settings
-from tools.common import PROJECT_ROOT
+from permissions import PROJECT_ROOT
 
 """
 Info about Hooks: 

@@ -10,7 +10,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import Field, create_model
 
 from config import settings
-from tools.common import PROJECT_ROOT
+from permissions import PROJECT_ROOT
 
 MCP_FILE = Path(settings.ness_dir) / "mcp.json"
 

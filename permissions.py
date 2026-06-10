@@ -2,12 +2,34 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 from pathlib import Path
 from typing import Literal
 
 from config import settings
 
 Decision = Literal["allow", "deny", "ask"]
+
+PROJECT_ROOT = Path(os.getcwd()).resolve()
+
+
+def validate_path(path: str) -> str:
+    """Return an absolute path if it is inside the project root."""
+    try:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = PROJECT_ROOT / candidate
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(PROJECT_ROOT):
+            raise PermissionError(f"{path} is outside {PROJECT_ROOT}")
+        return str(resolved)
+    except Exception as exc:
+        raise ValueError(f"Invalid path: {path} ({exc})") from exc
+
+
+def relative_to_root(path: str) -> str:
+    """Validate a path and return it relative to the project root."""
+    return str(Path(validate_path(path)).relative_to(PROJECT_ROOT))
 
 NESS = Path(settings.ness_dir)
 PERMS_FILE = NESS / "permissions.json"
