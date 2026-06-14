@@ -1,11 +1,32 @@
 {
-    "allow": [
-      "bash:ls*", "bash:pwd", "bash:cat *", "bash:git status*",
-      "bash:git diff*", "bash:git log*", "grep:*", "glob_files:*",
-      "read_file:*", "git_status", "git_diff:*", "git_log:*"
-    ],
-    "deny": [
-      "bash:rm -rf*", "bash:sudo*", "bash:curl http*"
-    ],
-    "ask": ["*"]
-  }
+  "allow": [
+    "read_file:*",
+    "list_files:*",
+    "grep:*",
+    "glob_files:*",
+    "git_status",
+    "git_diff:*",
+    "git_log:*",
+    "git_show:*",
+    "git_blame:*",
+    "git_worktree_list",
+    "todo_read",
+    "get_project_context",
+    "web_search:*",
+    "bash:pwd",
+    "bash:ls*",
+    "bash:git status*",
+    "bash:git diff*",
+    "bash:git log*",
+    "bash:git show*"
+  ],
+  "deny": [
+    "bash:rm*",
+    "bash:sudo*",
+    "bash:curl http*",
+    "bash:wget *"
+  ],
+  "ask": [
+    "*"
+  ]
+}

@@ -1,40 +1,85 @@
-import subprocess
-import re
+from __future__ import annotations
+
+import fnmatch
 import os
-from langchain_core.tools import tool
-from pathlib import Path
-from tools.common import validate_path
+import re
 import shutil
+import subprocess
+from pathlib import Path
+
+from langchain_core.tools import tool
+
+import permissions
+from permissions import validate_path
+from utils import is_ignored_dir
+
+GREP_MAX_MATCHES = 200
+GREP_MAX_OUTPUT_CHARS = 12000
 
 
 @tool
-def grep(pattern: str, path:str = ".", glob: str | None = None) -> str:
-    """Search files with ripgrep (fallback: Python regrex walk)"""
-    path = validate_path(path)
-    if shutil.which("rg"):
-        cmd = ["rg", "-n", "--no-heading", pattern, path]
-        if glob:
-            cmd.extend(["-g", glob])
+def grep(pattern: str, path: str = ".", glob: str | None = None) -> str:
+    """Search project files with ripgrep, falling back to a Python regex walk."""
+    try:
+        abs_path = validate_path(path)
+        if shutil.which("rg"):
+            cmd = ["rg", "-n", "--no-heading"]
+            if glob:
+                cmd.extend(["-g", glob])
+            cmd.extend(["--", pattern, abs_path])
+            result = subprocess.run(
+                cmd,
+                cwd=permissions.PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode not in (0, 1):
+                return f"Error: {result.stderr or result.stdout}"
+            return _cap_output(result.stdout.strip() or "No matches found")
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        out = r.stdout.strip()
-        return out[:8000] if out else "No matches found"
+        return _python_grep(pattern, abs_path, glob)
+    except Exception as exc:
+        return f"Error: {exc}"
 
-    # fallback
-    matches = []
+
+def _python_grep(pattern: str, path: str, glob: str | None) -> str:
     rx = re.compile(pattern)
+    matches = []
     for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if d not in (".git", ".venv", ".pytest_cache", "__pycache__")]
-        for fname in files:
-            fp = os.path.join(root, fname)
+        dirs[:] = [d for d in dirs if not is_ignored_dir(d)]
+        for filename in files:
+            fp = os.path.join(root, filename)
+            rel = os.path.relpath(fp, permissions.PROJECT_ROOT)
+            if glob and not _matches_glob(rel, glob):
+                continue
             try:
-                for i, line in enumerate(open(fp, "r", encoding="utf-8"), 1):
-                    if rx.search(line):
-                        matches.append(f"{fp}:{i}: {line.rstrip()}")
-
+                with open(fp, "r", encoding="utf-8") as handle:
+                    for line_no, line in enumerate(handle, 1):
+                        if rx.search(line):
+                            matches.append(f"{rel}:{line_no}: {line.rstrip()}")
+                            if len(matches) >= GREP_MAX_MATCHES:
+                                return _format_matches(matches, truncated=True)
             except Exception:
-                pass
-            if len(matches) >= 50:
-                break
+                continue
+    return _format_matches(matches, truncated=False)
 
-    return "\n".join(matches[:50]) if matches else "No matches found"
+
+def _matches_glob(rel_path: str, glob: str) -> bool:
+    posix_path = rel_path.replace(os.sep, "/")
+    return fnmatch.fnmatch(posix_path, glob) or Path(posix_path).match(glob)
+
+
+def _format_matches(matches: list[str], truncated: bool) -> str:
+    if not matches:
+        return "No matches found"
+    output = "\n".join(matches)
+    if truncated:
+        output += f"\n... (truncated after {GREP_MAX_MATCHES} matches)"
+    return _cap_output(output)
+
+
+def _cap_output(output: str) -> str:
+    if len(output) <= GREP_MAX_OUTPUT_CHARS:
+        return output
+    return output[:GREP_MAX_OUTPUT_CHARS] + "\n... (truncated)"

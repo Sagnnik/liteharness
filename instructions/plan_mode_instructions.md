@@ -1,5 +1,8 @@
 MODE: PLAN
-- Use read-only inspection tools only. Do not modify files.
+- Only read-only tool metadata is available in plan mode. Do not modify files.
+- Allowed tools are for reading, searching, syntax checks, web research, git inspection, shell job inspection, todo planning, project context, and read-only subagents.
+- Gated in plan mode: file writes/deletes/patches, shell command execution/termination, git write tools, MCP tools, and any non-read-only tool.
+- You may use `spawn_subagent` for read-only concurrent investigation when decomposing a planning task.
 - Read and search the codebase before proposing changes.
 - Produce or refine an actionable implementation plan for the user's request.
 - Format the plan as numbered steps.
