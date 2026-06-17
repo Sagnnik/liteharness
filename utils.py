@@ -7,10 +7,64 @@ from pathlib import Path
 from typing import Iterable
 
 from permissions import PROJECT_ROOT
-from tools.common import MANIFEST_FILES, discover_manifest_files, is_ignored_dir
 
 _READ_ERRORS = (OSError, UnicodeDecodeError)
 _SNIPPET_LIMIT = 1200
+
+IGNORED_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        "vendor",
+        ".gradle",
+        "bin",
+        "obj",
+        ".cargo",
+    }
+)
+
+MANIFEST_FILES: tuple[str, ...] = (
+    "pyproject.toml",
+    "package.json",
+    "requirements.txt",
+    "Cargo.toml",
+    "go.mod",
+    "CMakeLists.txt",
+    "Makefile",
+    "meson.build",
+    "build.zig",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "pubspec.yaml",
+    "mix.exs",
+    "flake.nix",
+    "MODULE.bazel",
+    "WORKSPACE",
+    "Package.swift",
+    "tsconfig.json",
+)
+
+
+def is_ignored_dir(name: str) -> bool:
+    if name in IGNORED_DIR_NAMES:
+        return True
+    return name.startswith("cmake-build")
+
+
+def discover_manifest_files() -> list[Path]:
+    """Return a few repo-root .NET manifests without scanning the whole tree."""
+    found: list[Path] = []
+    for pattern in ("*.csproj", "*.sln"):
+        found.extend(sorted(PROJECT_ROOT.glob(pattern))[:2])
+    return found
 
 
 def get_project_context(max_files: int = 80) -> str:
@@ -50,7 +104,11 @@ def preview_diff(tool: str, args: dict) -> str:
     if tool == "write_file":
         new = str(args.get("content", ""))
     elif tool == "edit_file":
-        new = old.replace(str(args.get("old_string", "")), str(args.get("new_string", "")), 1)
+        edit = args.get("edit") or {}
+        old_s = str(edit.get("old_string", ""))
+        new_s = str(edit.get("new_string", ""))
+        count = -1 if edit.get("replace_all") else 1
+        new = old.replace(old_s, new_s, count)
     elif tool == "multi_edit":
         new = old
         for edit in args.get("edits", []):
@@ -128,4 +186,4 @@ def _render_tree(files: Iterable[str]) -> str:
 
 def _is_runtime_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
-    return normalized.startswith((".ness/threads/", ".ness/shells/", ".ness/worktrees/"))
+    return normalized.startswith((".ness/threads/", ".ness/shells/"))
