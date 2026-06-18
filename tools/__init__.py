@@ -34,14 +34,14 @@ from tools.todo import todo_read, todo_write
 from tools.web import fetch_url, web_search
 
 def _load_project_context() -> str:
-    from memory import load_project_context
+    from memory import load_repo_context
 
-    return load_project_context()
+    return load_repo_context()
 
 
 get_project_context = StructuredTool.from_function(
     name="get_project_context",
-    description="Return compact project structure, key manifest snippets, and .ness/NESS.md memory.",
+    description="Return compact project structure and key manifest snippets.",
     func=_load_project_context,
 )
 
