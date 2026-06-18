@@ -19,6 +19,21 @@ MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
     "deepseek-chat": (0.14, 0.28, 0.10, 1.0),
 }
 
+MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-4o-mini": 128_000,
+    "gpt-4o": 128_000,
+    "gpt-4.1": 1_000_000,
+    "o3": 200_000,
+    "o4-mini": 200_000,
+    "claude-3.5-sonnet": 200_000,
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-opus": 200_000,
+    "claude-3-sonnet": 200_000,
+    "claude-3-haiku": 200_000,
+    "deepseek-chat": 128_000,
+    "gemini-2.0-flash": 1_000_000,
+}
+
 VISION_MODELS = {
     "gpt-4o",
     "gpt-4o-mini",
@@ -38,14 +53,21 @@ class Settings(BaseSettings):
     auto_save_threads: bool = Field(default=True, alias="AUTO_SAVE_THREADS")
     reflection_interval: int = Field(default=5, alias="REFLECTION_INTERVAL")
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
+    compaction_output_reserve_tokens: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE_TOKENS")
+    compaction_input_reserve_tokens: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE_TOKENS")
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
     ness_dir: str = Field(default=".ness", alias="NESS_DIR")
     format_on_write: bool = Field(default=True, alias="FORMAT_ON_WRITE")
+    exa_api_key: str | None = Field(default=None, alias="EXA_API_KEY")
 
     class Config:
         env_prefix = ""
+
+    @property
+    def has_exa(self) -> bool:
+        return bool(self.exa_api_key)
 
     @property
     def supports_vision(self) -> bool:

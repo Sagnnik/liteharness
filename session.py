@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import settings
-from memory import NESS
+from memory import NESS_DIR
 
-THREADS_DIR = NESS / "threads"
+THREADS_DIR = NESS_DIR / "threads"
 INDEX_FILE = THREADS_DIR / "index.json"
 
 
