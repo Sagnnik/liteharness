@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from dotenv import load_dotenv
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
@@ -47,6 +47,8 @@ VISION_MODELS = {
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="")
+
     model_name: str = Field(default="gpt-4o-mini", alias="MODEL_NAME")
     mode: Literal["json", "xml"] = Field(default="json", alias="MODE")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")
@@ -61,9 +63,6 @@ class Settings(BaseSettings):
     ness_dir: str = Field(default=".ness", alias="NESS_DIR")
     format_on_write: bool = Field(default=True, alias="FORMAT_ON_WRITE")
     exa_api_key: str | None = Field(default=None, alias="EXA_API_KEY")
-
-    class Config:
-        env_prefix = ""
 
     @property
     def has_exa(self) -> bool:

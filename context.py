@@ -8,6 +8,8 @@ from typing import Any
 from langchain_core.messages import BaseMessage
 
 INSTRUCTIONS_DIR = Path(__file__).resolve().parent / "instructions"
+DEFAULT_PERSONA_ID = "default"
+DEFAULT_PERSONA = "You are an expert software engineer working inside the user's repository."
 
 
 @lru_cache(maxsize=None)
@@ -21,43 +23,71 @@ def build_system_prompt(
     tools: Iterable[Any],
     active_skills: Iterable[Mapping[str, Any]] | None = None,
     project_context: str = "",
+    git_available: bool | None = None,
 ) -> str:
     """Compatibility wrapper for callers that still expect one prompt string."""
     sections = [
         build_foundation(mode, tools),
-        build_project_context_block(project_context, active_skills or [], git_available=None),
+        build_project_context_block(project_context, active_skills or [], git_available=git_available),
     ]
     return "\n\n".join(sections).strip()
 
 
-def build_foundation(mode: str, tools: Iterable[Any], user_memory: str = "") -> str:
-    """Build L1: stable NESS identity, universal rules, output format, and tool catalog.
+def build_l0(mode: str = "json", tools: Iterable[Any] | None = None) -> str:
+    """Build L0: stable harness identity, universal rules, and tool protocol."""
+    tool_calling = _xml_tool_calling(tools or []) if mode == "xml" else _native_tool_calling()
+    return load_instruction("l0_harness").format(tool_calling=tool_calling)
+
+
+def build_l1(
+    persona: str | Mapping[str, Any] | None,
+    tools: Iterable[Any],
+    user_memory: str = "",
+    ness_memory: str = "",
+) -> str:
+    """Build L1: profile/persona details, stable tool catalog, USER.md, and NESS.md."""
+    catalog = _render_tool_catalog(tools)
+    persona_text = _persona_text(persona)
+    user_section = _user_memory_section(user_memory)
+    ness_section = _ness_memory_section(ness_memory)
+    return load_instruction("l1_profile").format(
+        persona=persona_text,
+        catalog=catalog,
+        user_section=user_section,
+        ness_section=ness_section,
+    )
+
+
+def build_foundation(
+    mode: str,
+    tools: Iterable[Any],
+    user_memory: str = "",
+    ness_memory: str = "",
+) -> str:
+    """Compatibility wrapper for callers that still expect combined L0 + L1.
 
     user_memory holds cross-repo user preferences (USER.md). It is authored by
     the user, so it lives in the most-cached layer and is honored unless it
     conflicts with an explicit request in the current turn.
+
+    ness_memory holds project conventions (NESS.md). It is human-authored and
+    injected into L1 so it stays stable across turns.
     """
-    catalog = _render_tool_catalog(tools)
-    tool_calling = _xml_tool_calling(tools) if mode == "xml" else _native_tool_calling()
-    user_section = ""
-    if user_memory.strip():
-        user_section = (
-            "\n\nUser preferences (cross-repo, authored by the user; honor unless they "
-            f"conflict with an explicit request in the current turn):\n{user_memory.strip()}"
-        )
-    return load_instruction("foundation").format(
-        user_section=user_section,
-        catalog=catalog,
-        tool_calling=tool_calling,
-    )
+    return "\n\n".join(
+        [
+            build_l0(mode, tools),
+            build_l1(DEFAULT_PERSONA, tools, user_memory, ness_memory),
+        ]
+    ).strip()
 
 
 def build_project_context_block(
     project_context: str = "",
     active_skills: Iterable[Mapping[str, Any]] | None = None,
     git_available: bool | None = None,
+    episodic_memory: str = "",
 ) -> str:
-    """Build L2: stable per-thread project context and sticky skill cores."""
+    """Build L2: stable per-thread project context, sticky skill cores, and episodic memory tail."""
     sections = ["PROJECT CONTEXT PREFIX"]
 
     # check if git is available
@@ -72,56 +102,73 @@ def build_project_context_block(
     skills = render_active_skills(active_skills or [])
     if skills:
         sections.append(skills)
+
+    if episodic_memory.strip():
+        sections.append("--- Session Memory ---\n" + episodic_memory.strip())
+
     return "\n\n".join(section for section in sections if section).strip()
 
 
 def _render_tool_catalog(tools: Iterable[Any]) -> str:
-    names = {getattr(tool, "name", "") for tool in tools}
+    from tools import catalog_groups_for_render
 
-    # create the tool groups: (group name, tools in the group)
-    groups = [("Small always-on", names & {"todo_read", "todo_write"}),
-        ("L1 core", names & {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "grep", "glob_files", "list_files", "bash", "get_project_context"}),
-        ("L2 git read", names & {"git_status", "git_diff", "git_log", "git_show", "git_blame"}),
-        ("L3 advanced", names & {"git_snapshot", "git_commit", "git_checkout", "git_branch", "git_stash", "git_worktree_add", "git_worktree_list", "git_worktree_remove", "spawn_subagent"}),
-        ("Dynamic MCP", {name for name in names if name.startswith("mcp__")}),
-    ]
+    names = {getattr(tool, "name", "") for tool in tools if getattr(tool, "name", "")}
+    groups = [(label, names & tier_names) for label, tier_names in catalog_groups_for_render()]
 
-    # proper rendering: - group name: tool1, tool2, tool3
     lines = []
     for label, group in groups:
         if group:
             lines.append(f"- {label}: {', '.join(sorted(group))}")
-    
-    # add the ungrouped tools 
-    ungrouped = sorted(name for name in names if name and not any(name in group for _, group in groups))
+
+    ungrouped = sorted(name for name in names if not any(name in group for _, group in groups))
     if ungrouped:
         lines.append(f"- Other active tools: {', '.join(ungrouped)}")
     return "\n".join(lines) if lines else "- No tools registered"
 
 
+def render_todos(todos: list[dict] | None) -> str:
+    # used by the agent: - [status] <id>: <content>
+    if not todos:
+        return "No todos"
+    return "\n".join(
+        f"- [{todo.get('status', 'pending')}] {todo.get('id', '')}: {todo.get('content', '')}"
+        for todo in todos
+    )
+
+
 def build_working_state_overlay(
     agent_mode: str,
     todos: str = "",
-    reflection_nudge: str = "",
+    reflection_alert: str = "",
+    git_snapshot: str = "",
+    compaction_note: str = "",
 ) -> str:
-    """Build L3 working state appended to the current user message.
-    Includes the mode, todos, and reflection nudge.
+    """
+    Build L3 working state appended to the current user message.
+    Currently it has:
+    - GIT
+    - COMPACTION
+    - TODOS
+    - SYSTEM WARNING
     """
     mode = (agent_mode or "normal").lower()
 
-    # plan mode instructions else normal mode instructions
     if mode == "plan":
         mode_block = load_instruction("plan_mode")
     else:
         mode_block = load_instruction("normal_mode")
     parts = [mode_block]
 
-    # add the todos
+    if git_snapshot.strip():
+        parts.append("GIT\n" + git_snapshot.strip())
+
+    if compaction_note.strip():
+        parts.append("COMPACTION\n" + compaction_note.strip())
+
     parts.append("TODOS\n" + (todos.strip() or "No todos"))
 
-    # add the reflection nudge
-    if reflection_nudge:
-        parts.append("REFLECTION\n" + reflection_nudge.strip())
+    if reflection_alert.strip():
+        parts.append("SYSTEM WARNING\n" + reflection_alert.strip())
     return "\n\n".join(parts)
 
 
@@ -225,6 +272,32 @@ def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:
     return "ACTIVE SKILLS\n" + "\n\n".join(blocks) if blocks else ""
 
 
+def _persona_text(persona: str | Mapping[str, Any] | None) -> str:
+    if persona is None:
+        return DEFAULT_PERSONA
+    if isinstance(persona, Mapping):
+        return str(persona.get("text") or persona.get("persona") or DEFAULT_PERSONA).strip()
+    return str(persona).strip() or DEFAULT_PERSONA
+
+
+def _user_memory_section(user_memory: str) -> str:
+    if not user_memory.strip():
+        return ""
+    return (
+        "User preferences (cross-repo, authored by the user; honor unless they "
+        f"conflict with an explicit request in the current turn):\n{user_memory.strip()}"
+    )
+
+
+def _ness_memory_section(ness_memory: str) -> str:
+    if not ness_memory.strip():
+        return ""
+    return (
+        "Project conventions (.ness/NESS.md; human-authored, stable; honor unless the "
+        f"current turn explicitly overrides):\n{ness_memory.strip()}"
+    )
+
+
 def build_compaction_prompt(messages: str) -> str:
     return load_instruction("compaction").format(messages=messages)
 
@@ -246,15 +319,19 @@ def build_reflection_prompt(
     messages: Iterable[BaseMessage],
     user_message_count: int,
     *,
-    max_tool_calls: int = 3,
-    max_ness_chars: int = 12_000,
+    current_session_bullets: str = "",
+    todos: str = "",
+    tool_digest: str = "",
+    loop_hints: str = "",
 ) -> str:
     return load_instruction("reflection").format(
         thread_id=thread_id,
         user_message_count=user_message_count,
         messages=_messages_to_text(messages),
-        max_tool_calls=max_tool_calls,
-        max_ness_chars=max_ness_chars,
+        current_session_bullets=current_session_bullets.strip() or "(none yet)",
+        todos=todos.strip() or "No todos",
+        tool_digest=tool_digest.strip() or "(no recent tool activity)",
+        loop_hints=loop_hints.strip() or "(none detected)",
     )
 
 
