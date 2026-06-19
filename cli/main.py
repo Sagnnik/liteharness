@@ -22,20 +22,28 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from agent import build_graph
+from agent import _effective_conversation, build_graph, create_reflection_model
+from compaction import (
+    PLAN_COMPACTION_CHECKPOINT_RATIO,
+    apply_force_floor,
+    calculate_context_pressure,
+    compaction_label,
+)
 from config import cost_tracker, settings
 from hooks import describe_hooks
 from mcp_client import mcp_manager
 from memory import (
-    MEMORY_FILE,
+    NESS_FILE,
     USER_FILE,
-    append_memory,
+    append_ness_memory,
     append_user_memory,
-    load_memory,
+    check_ness_health,
+    load_ness_memory,
     load_user_memory,
-    write_memory,
+    write_ness_memory,
 )
-from permissions import list_rules, persist_rule, remove_rule
+from reflection import finalize_session_reflection
+from permissions import clear_session_rules, list_rules, persist_rule, remove_rule
 from context import build_init_memory_prompt
 from session import (
     append_event,
@@ -149,7 +157,16 @@ def render_todos(thread_id: str) -> None:
     console.print(Panel(table, title="Todos", border_style="blue"))
 
 
-async def handle_command(command_line: str, model: ChatOpenRouter, app_state: dict) -> bool:
+async def maybe_finalize_reflection(app, thread_id: str) -> None:
+    if app is None:
+        return
+    try:
+        await finalize_session_reflection(app, thread_id, create_reflection_model(thread_id))
+    except Exception as exc:
+        console.print(f"[yellow]Reflection finalize skipped:[/yellow] {exc}")
+
+
+async def handle_command(command_line: str, model: ChatOpenRouter, app_state: dict, app=None) -> bool:
     """Handle slash commands. Return True when the command consumed the input."""
     raw = command_line[1:].strip()
     if not raw:
@@ -161,6 +178,7 @@ async def handle_command(command_line: str, model: ChatOpenRouter, app_state: di
         app_state["exit"] = True
         return True
     if name == "reset":
+        await maybe_finalize_reflection(app, app_state["thread_id"])
         archive_thread(app_state["thread_id"])
         app_state["thread_id"] = new_thread_id()
         seen_counts.pop(app_state["thread_id"], None)
@@ -168,14 +186,13 @@ async def handle_command(command_line: str, model: ChatOpenRouter, app_state: di
         return True
     if name == "plan":
         app_state["agent_mode"] = "plan"
-        app_state["rebuild_graph"] = True
         if args.strip():
             app_state["queued_prompt"] = args.strip()
         console.print("[cyan]Plan mode enabled. Tool set is read-only.[/cyan]")
         return True
     if name == "act":
+        await maybe_checkpoint_before_act(app, app_state["thread_id"], app_state)
         app_state["agent_mode"] = "normal"
-        app_state["rebuild_graph"] = True
         if args.strip():
             app_state["queued_prompt"] = args.strip()
         console.print("[cyan]Normal mode enabled. Full tool set restored.[/cyan]")
@@ -216,6 +233,7 @@ async def handle_command(command_line: str, model: ChatOpenRouter, app_state: di
     if name == "resume":
         target = args.strip()
         if target and target != app_state["thread_id"]:
+            await maybe_finalize_reflection(app, app_state["thread_id"])
             archive_thread(app_state["thread_id"])
         command_resume(target, app_state)
         return True
@@ -254,17 +272,17 @@ async def handle_command(command_line: str, model: ChatOpenRouter, app_state: di
 async def command_init(model: ChatOpenRouter, overwrite: bool = False) -> None:
     context = get_project_context()
     response = await model.ainvoke([HumanMessage(content=build_init_memory_prompt(context))])
-    result = write_memory(str(response.content), overwrite=overwrite)
+    result = write_ness_memory(str(response.content), overwrite=overwrite)
     console.print(Panel(result, title="Init", border_style="green" if not result.startswith("Error:") else "red"))
 
 
 def command_memory(args: str) -> None:
     args = args.strip()
     if not args:
-        console.print(Panel(load_memory() or "(empty)", title=str(MEMORY_FILE), border_style="green"))
+        console.print(Panel(load_ness_memory() or "(empty)", title=str(NESS_FILE), border_style="green"))
         return
     if args.startswith("add "):
-        console.print(append_memory(args[4:]))
+        console.print(append_ness_memory(args[4:]))
         return
     console.print("[red]Usage:[/red] /memory or /memory add <note>")
 
@@ -339,6 +357,75 @@ def command_save_threads(args: str) -> None:
     elif value == "off":
         settings.auto_save_threads = False
     console.print(f"Thread autosave: {'on' if settings.auto_save_threads else 'off'}")
+
+
+async def maybe_checkpoint_before_act(app, thread_id: str, app_state: dict) -> None:
+    if app is None or app_state.get("agent_mode", "normal") != "plan":
+        return
+
+    context = await current_context_pressure(app, thread_id)
+    if context is None:
+        return
+    pressure, conversation = context
+    if pressure.ratio < PLAN_COMPACTION_CHECKPOINT_RATIO:
+        return
+
+    if pressure.hard_threshold_reached:
+        app_state["force_compact"] = True
+        append_event(thread_id, {"kind": "compact", "content": "pre-execution hard-threshold compaction requested"})
+        console.print(
+            Panel(
+                _render_compaction_checkpoint(pressure, conversation, forced=True),
+                title="Compaction",
+                border_style="yellow",
+            )
+        )
+        return
+
+    console.print(
+        Panel(
+            _render_compaction_checkpoint(pressure, conversation, forced=False),
+            title="Pre-execution context checkpoint",
+            border_style="yellow",
+        )
+    )
+    choice = Prompt.ask("Compact before execution?", choices=["c", "n"], default="c")
+    if choice == "c":
+        app_state["force_compact"] = True
+        append_event(thread_id, {"kind": "compact", "content": "pre-execution compaction requested"})
+
+
+async def current_context_pressure(app, thread_id: str):
+    try:
+        snapshot = await app.aget_state({"configurable": {"thread_id": thread_id}})
+    except Exception:
+        return None
+
+    state = dict(snapshot.values or {})
+    messages = list(state.get("messages", []))
+    conversation = _effective_conversation(messages, state)
+    pressure = calculate_context_pressure(
+        conversation,
+        known_input_tokens=state.get("last_input_tokens") or None,
+        model_name=settings.model_name,
+    )
+    return pressure, conversation
+
+
+def _render_compaction_checkpoint(pressure, conversation: list, *, forced: bool) -> str:
+    rest_count = sum(1 for message in conversation if message.type != "system")
+    action, keep_recent = apply_force_floor(pressure.action, pressure.keep_recent, rest_count)
+    lines = [
+        f"Context: ~{pressure.token_count:,} tokens",
+        f"Usable budget: {pressure.usable_budget:,} tokens",
+        f"Pressure: {pressure.ratio:.1%}",
+        f"Compaction if run: {compaction_label(action, keep_recent)}",
+    ]
+    if forced:
+        lines.append("Hard threshold reached; compaction will run before execution.")
+    else:
+        lines.append("Choose c to compact before execution, or n to continue without compacting.")
+    return "\n".join(lines)
 
 
 def save_plan_text(thread_id: str, text: str) -> Path:
@@ -498,8 +585,19 @@ def render_mcp_startup() -> None:
     console.print(Text(message + hint, style=styles.get(level, "dim")))
 
 
+def _graph_rebuild_needed(app_state: dict, app_thread_id: str, app_agent_mode: str) -> bool:
+    return (
+        app_state["thread_id"] != app_thread_id
+        or app_state.get("agent_mode", "normal") != app_agent_mode
+    )
+
+
 async def main() -> None:
     render_header()
+    ness_warning = check_ness_health()
+    if ness_warning:
+        console.print(Panel(ness_warning, title="NESS.md", border_style="yellow"))
+    clear_session_rules()
     await mcp_manager.start()
     register_dynamic_tools(mcp_manager.tools.values())
     render_mcp_startup()
@@ -522,6 +620,7 @@ async def main() -> None:
         git_available=git_available,
         checkpointer=checkpointer,
     )
+    app_agent_mode = app_state["agent_mode"]
 
     try:
         while not app_state["exit"]:
@@ -537,23 +636,29 @@ async def main() -> None:
             if not user_input:
                 continue
             if user_input.startswith("/"):
-                await handle_command(user_input, model, app_state)
-                if app_state["thread_id"] != app_thread_id or app_state.pop("rebuild_graph", False):
+                await handle_command(user_input, model, app_state, app=app)
+                current_mode = app_state.get("agent_mode", "normal")
+                needs_rebuild = _graph_rebuild_needed(app_state, app_thread_id, app_agent_mode)
+                thread_changed = app_state["thread_id"] != app_thread_id
+                if thread_changed:
                     app_thread_id = app_state["thread_id"]
                     model = create_model(app_thread_id)
+                if needs_rebuild:
                     app = build_graph(
                         model,
                         thread_id=app_thread_id,
-                        agent_mode=app_state.get("agent_mode", "normal"),
+                        agent_mode=current_mode,
                         git_available=git_available,
                         checkpointer=checkpointer,
                     )
+                    app_agent_mode = current_mode
                 continue
 
             pending_image = app_state.pop("pending_image", "")
             await run_turn(app, build_user_message(user_input, pending_image), app_state["thread_id"], app_state)
     finally:
         try:
+            await maybe_finalize_reflection(app, app_state["thread_id"])
             archive_thread(app_state["thread_id"])
         except Exception as exc:
             console.print(f"[yellow]Archive skipped:[/yellow] {exc}")
