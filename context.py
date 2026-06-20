@@ -26,8 +26,11 @@ def build_system_prompt(
     git_available: bool | None = None,
 ) -> str:
     """Compatibility wrapper for callers that still expect one prompt string."""
+    foundation = "\n\n".join(
+        [build_l0(mode, tools), build_l1(DEFAULT_PERSONA, tools)]
+    ).strip()
     sections = [
-        build_foundation(mode, tools),
+        foundation,
         build_project_context_block(project_context, active_skills or [], git_available=git_available),
     ]
     return "\n\n".join(sections).strip()
@@ -56,29 +59,6 @@ def build_l1(
         user_section=user_section,
         ness_section=ness_section,
     )
-
-
-def build_foundation(
-    mode: str,
-    tools: Iterable[Any],
-    user_memory: str = "",
-    ness_memory: str = "",
-) -> str:
-    """Compatibility wrapper for callers that still expect combined L0 + L1.
-
-    user_memory holds cross-repo user preferences (USER.md). It is authored by
-    the user, so it lives in the most-cached layer and is honored unless it
-    conflicts with an explicit request in the current turn.
-
-    ness_memory holds project conventions (NESS.md). It is human-authored and
-    injected into L1 so it stays stable across turns.
-    """
-    return "\n\n".join(
-        [
-            build_l0(mode, tools),
-            build_l1(DEFAULT_PERSONA, tools, user_memory, ness_memory),
-        ]
-    ).strip()
 
 
 def build_project_context_block(
@@ -146,7 +126,7 @@ def build_working_state_overlay(
     """
     Build L3 working state appended to the current user message.
     Currently it has:
-    - GIT
+    - GIT SNAPSHOT (git branch + git status --porcelain)
     - COMPACTION
     - TODOS
     - SYSTEM WARNING

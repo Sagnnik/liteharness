@@ -28,9 +28,9 @@ def configure_model(overrides: ModelOverrides | None = None) -> None:
     _overrides = overrides
 
 
-def _resolved(field: str) -> str | None:
+def _resolved(field: str) -> str | int | None:
     if _overrides is not None:
-        value = getattr(_overrides, field)
+        value = getattr(_overrides, field, None)
         if value is not None:
             return value
     return getattr(settings, field)
@@ -63,7 +63,7 @@ def build_chat_model(
     if base_url:
         model_kwargs["base_url"] = base_url
 
-    model_kwargs["api_max_retries"] = _resolved("api_max_retries")
+    model_kwargs["max_retries"] = _resolved("api_max_retries")
     return ChatOpenRouter(**model_kwargs)
 
 
