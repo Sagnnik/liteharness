@@ -62,6 +62,8 @@ def build_chat_model(
     base_url = _resolved("openai_base_url")
     if base_url:
         model_kwargs["base_url"] = base_url
+
+    model_kwargs["api_max_retries"] = _resolved("api_max_retries")
     return ChatOpenRouter(**model_kwargs)
 
 
