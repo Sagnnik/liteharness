@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import json
@@ -22,7 +23,16 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from agent import _effective_conversation, build_graph, create_reflection_model
+from agent import _effective_conversation, build_graph
+from model import (
+    active_model_name,
+    configure_model,
+    create_model,
+    create_reflection_model,
+    effective_openrouter_session_id,
+    model_overrides_from_args,
+    add_model_cli_args,
+)
 from compaction import (
     PLAN_COMPACTION_CHECKPOINT_RATIO,
     apply_force_floor,
@@ -554,26 +564,11 @@ def new_thread_id() -> str:
     return f"session-{uuid.uuid4().hex[:8]}"
 
 
-def effective_openrouter_session_id(thread_id: str) -> str:
-    return settings.openrouter_session_id or thread_id
-
-
-def create_model(thread_id: str) -> ChatOpenRouter:
-    model_kwargs = {
-        "model": settings.model_name,
-        "api_key": settings.openai_api_key,
-        "session_id": effective_openrouter_session_id(thread_id),
-    }
-    if settings.openai_base_url:
-        model_kwargs["base_url"] = settings.openai_base_url
-    return ChatOpenRouter(**model_kwargs)
-
-
 def render_header() -> None:
     table = Table(box=box.ROUNDED, show_header=False, padding=(0, 2))
     table.add_column(style="bold cyan", justify="center")
     table.add_row("LiteHarness")
-    table.add_row(f"Mode: {settings.mode} | Model: {settings.model_name}")
+    table.add_row(f"Mode: {settings.mode} | Model: {active_model_name()}")
     table.add_row(f"Approval: {'on' if settings.enable_approval else 'off'} | Autosave: {'on' if settings.auto_save_threads else 'off'}")
     console.print(Panel(table, border_style="bright_blue", title="Agent"))
 
@@ -592,7 +587,15 @@ def _graph_rebuild_needed(app_state: dict, app_thread_id: str, app_agent_mode: s
     )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="LiteHarness agent CLI")
+    add_model_cli_args(parser)
+    return parser.parse_args()
+
+
 async def main() -> None:
+    args = parse_args()
+    configure_model(model_overrides_from_args(args))
     render_header()
     ness_warning = check_ness_health()
     if ness_warning:
