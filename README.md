@@ -51,7 +51,7 @@ LiteHarness splits context into three layers to keep prompt caching stable:
 1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
 3. **L2 project context** (`build_project_context_block`): repo structure, git availability, sticky skill cores, and current-thread session memory from `.ness/sessions/mem_<thread_id>.md`.
-4. **L3 working state** (`build_working_state_overlay`): appended to the latest user message each turn. Includes agent mode, environment date/time/cwd/OS, git branch/dirty snapshot (when in a repo), compaction status, todos, and loop-intervention warnings.
+4. **L3 working state** (`build_working_state_overlay`): wrapped in `<working-state>` tags and sent as a dedicated ephemeral `HumanMessage` at the tail of the message list each turn (never persisted to state, never mutating earlier messages, so the cached prefix stays stable through a tool loop). Includes agent mode, environment date/time/cwd/OS, git branch/dirty snapshot (when in a repo), compaction status, todos, and loop-intervention warnings.
 
 Skills activate by trigger match and stay sticky for the session once loaded.
 
