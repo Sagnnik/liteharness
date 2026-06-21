@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     mode: Literal["json", "xml"] = Field(default="json", alias="MODE")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")
     auto_save_threads: bool = Field(default=True, alias="AUTO_SAVE_THREADS")
-    reflection_interval: int = Field(default=5, alias="REFLECTION_INTERVAL")
+    reflection_token_ratio: float = Field(default=0.4, alias="REFLECTION_TOKEN_RATIO")
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
     compaction_output_reserve_tokens: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE_TOKENS")
     compaction_input_reserve_tokens: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE_TOKENS")

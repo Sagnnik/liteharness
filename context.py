@@ -65,9 +65,8 @@ def build_project_context_block(
     project_context: str = "",
     active_skills: Iterable[Mapping[str, Any]] | None = None,
     git_available: bool | None = None,
-    episodic_memory: str = "",
 ) -> str:
-    """Build L2: stable per-thread project context, sticky skill cores, and episodic memory tail."""
+    """Build L2: stable per-thread project context and sticky skill cores."""
     sections = ["PROJECT CONTEXT PREFIX"]
 
     # check if git is available
@@ -82,9 +81,6 @@ def build_project_context_block(
     skills = render_active_skills(active_skills or [])
     if skills:
         sections.append(skills)
-
-    if episodic_memory.strip():
-        sections.append("--- Session Memory ---\n" + episodic_memory.strip())
 
     return "\n\n".join(section for section in sections if section).strip()
 
@@ -119,17 +115,18 @@ def render_todos(todos: list[dict] | None) -> str:
 def build_working_state_overlay(
     agent_mode: str,
     todos: str = "",
-    reflection_alert: str = "",
+    session_memory: str = "",
     git_snapshot: str = "",
     compaction_note: str = "",
 ) -> str:
     """
-    Build L3 working state appended to the current user message.
+    Build L3 working state. The agent wraps this in <working-state> tags and sends it as a
+    dedicated ephemeral HumanMessage at the tail of the message list (never persisted to state).
     Currently it has:
     - GIT SNAPSHOT (git branch + git status --porcelain)
     - COMPACTION
     - TODOS
-    - SYSTEM WARNING
+    - SESSION MEMORY (distilled episodic bullets for this thread)
     """
     mode = (agent_mode or "normal").lower()
 
@@ -147,8 +144,8 @@ def build_working_state_overlay(
 
     parts.append("TODOS\n" + (todos.strip() or "No todos"))
 
-    if reflection_alert.strip():
-        parts.append("SYSTEM WARNING\n" + reflection_alert.strip())
+    if session_memory.strip():
+        parts.append("SESSION MEMORY\n" + session_memory.strip())
     return "\n\n".join(parts)
 
 
@@ -301,8 +298,6 @@ def build_reflection_prompt(
     *,
     current_session_bullets: str = "",
     todos: str = "",
-    tool_digest: str = "",
-    loop_hints: str = "",
 ) -> str:
     return load_instruction("reflection").format(
         thread_id=thread_id,
@@ -310,8 +305,6 @@ def build_reflection_prompt(
         messages=_messages_to_text(messages),
         current_session_bullets=current_session_bullets.strip() or "(none yet)",
         todos=todos.strip() or "No todos",
-        tool_digest=tool_digest.strip() or "(no recent tool activity)",
-        loop_hints=loop_hints.strip() or "(none detected)",
     )
 
 
