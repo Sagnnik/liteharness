@@ -17,6 +17,7 @@ MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-3.5-sonnet": (3.00, 15.00, 0.10, 1.25),
     "claude-3-haiku": (0.25, 1.25, 0.10, 1.25),
     "deepseek-chat": (0.14, 0.28, 0.10, 1.0),
+    "deepseek-v4-flash": (0.09, 0.18, 0.22, 1.0),
 }
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -31,6 +32,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-3-sonnet": 200_000,
     "claude-3-haiku": 200_000,
     "deepseek-chat": 128_000,
+    "deepseek-v4-flash": 1_000_000,
     "gemini-2.0-flash": 1_000_000,
 }
 
@@ -44,6 +46,21 @@ VISION_MODELS = {
     "gemini-pro-vision",
     "gemini-2.0-flash",
 }
+
+# Curated OpenRouter slugs offered by the /config model switcher. Edit freely.
+# Substring matching against MODEL_PRICING / MODEL_CONTEXT_WINDOWS keeps cost and
+# context-window resolution working for the provider-prefixed slugs below.
+AVAILABLE_MODELS: tuple[str, ...] = (
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "openai/gpt-4.1",
+    "openai/o4-mini",
+    "anthropic/claude-3.5-sonnet",
+    "anthropic/claude-3-haiku",
+    "google/gemini-2.0-flash",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-v4-flash",
+)
 
 
 class Settings(BaseSettings):
@@ -77,6 +94,18 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def reload_settings() -> None:
+    """Re-read environment (including a refreshed .env) into the shared settings.
+
+    Mutates the existing ``settings`` singleton in place so every module that did
+    ``from config import settings`` observes the new values.
+    """
+    load_dotenv(override=True)
+    fresh = Settings()
+    for field in type(fresh).model_fields:
+        setattr(settings, field, getattr(fresh, field))
 
 
 class CostTracker:

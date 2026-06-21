@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from langchain_openrouter import ChatOpenRouter
 
@@ -26,6 +26,19 @@ def configure_model(overrides: ModelOverrides | None = None) -> None:
     """Apply runtime overrides that take precedence over settings."""
     global _overrides
     _overrides = overrides
+
+
+def set_active_model(model_name: str) -> None:
+    """Switch the active chat model at runtime.
+
+    Updates both the override (used when constructing the chat model) and
+    ``settings.model_name`` so cost and context-window lookups follow the switch.
+    Callers must rebuild the graph afterwards to bind the new model.
+    """
+    global _overrides
+    base = _overrides or ModelOverrides()
+    _overrides = replace(base, model_name=model_name)
+    settings.model_name = model_name
 
 
 def _resolved(field: str) -> str | int | None:

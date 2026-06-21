@@ -5,6 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
+.ruff_cache/
+.pytest_cache/
+
 
 # Virtual environments
 .venv
@@ -12,5 +15,5 @@ wheels/
 
 # LiteHarness runtime data
 .ness/threads/
-.ness/shells/
-.ness/worktrees/
+# .ness/shells/
+cli/spinner.py
