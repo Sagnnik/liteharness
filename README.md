@@ -13,7 +13,6 @@ uv run python cli/main.py
 Useful environment variables:
 
 - `MODEL_NAME`: model passed to `ChatOpenRouter` (`gpt-4o-mini` by default).
-- `MODE`: `json` for native tool-calling or `xml` for fallback XML tool calls.
 - `ENABLE_APPROVAL`: require approval for destructive tools.
 - `AUTO_SAVE_THREADS`: write thread events to `.ness/threads/`.
 - `REFLECTION_INTERVAL`: user turns between background session-memory reflection runs (default `5`; set `0` to disable).
@@ -31,7 +30,7 @@ Useful environment variables:
 - `cli/main.py`: Rich CLI, slash commands, streaming, image/clipboard handling.
 - `agent.py`: LangGraph loop: agent, approval gate, tool executor.
 - `context.py`: layered prompt assembly from `instructions/` templates.
-- `instructions/`: markdown templates for L0/L1 prompt layers, modes, compaction, reflection, subagents, and XML fallback.
+- `instructions/`: markdown templates for L0/L1 prompt layers, modes, compaction, reflection, and subagents.
 - `compaction.py`: progressive context compaction by context pressure.
 - `reflection.py`: background session-memory reflection with structured output (distillation + loop detection).
 - `memory.py`: NESS.md, USER.md, and per-thread session memory helpers.
@@ -42,7 +41,7 @@ Useful environment variables:
 - `session.py`: JSONL thread events and `index.json` session metadata.
 - `skill_loader.py`: `SKILL.md` skill discovery under `.ness/skills/`.
 - `config.py`: settings, model pricing, and cost/cache tracking.
-- `parsers.py`: native and XML tool-call extraction.
+- `parsers.py`: native tool-call extraction.
 
 ## Prompt Layers
 

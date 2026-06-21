@@ -19,7 +19,6 @@ def load_instruction(stem: str) -> str:
 
 
 def build_system_prompt(
-    mode: str,
     tools: Iterable[Any],
     active_skills: Iterable[Mapping[str, Any]] | None = None,
     project_context: str = "",
@@ -27,7 +26,7 @@ def build_system_prompt(
 ) -> str:
     """Compatibility wrapper for callers that still expect one prompt string."""
     foundation = "\n\n".join(
-        [build_l0(mode, tools), build_l1(DEFAULT_PERSONA, tools)]
+        [build_l0(tools), build_l1(DEFAULT_PERSONA, tools)]
     ).strip()
     sections = [
         foundation,
@@ -36,10 +35,9 @@ def build_system_prompt(
     return "\n\n".join(sections).strip()
 
 
-def build_l0(mode: str = "json", tools: Iterable[Any] | None = None) -> str:
+def build_l0(tools: Iterable[Any] | None = None) -> str:
     """Build L0: stable harness identity, universal rules, and tool protocol."""
-    tool_calling = _xml_tool_calling(tools or []) if mode == "xml" else _native_tool_calling()
-    return load_instruction("l0_harness").format(tool_calling=tool_calling)
+    return load_instruction("l0_harness").format(tool_calling=_native_tool_calling())
 
 
 def build_l1(
@@ -147,24 +145,6 @@ def build_working_state_overlay(
     if session_memory.strip():
         parts.append("SESSION MEMORY\n" + session_memory.strip())
     return "\n\n".join(parts)
-
-
-def build_xml_tool_prompt(tools: Iterable[Any]) -> str:
-    """Render XML fallback examples from the current tool registry."""
-    blocks = []
-    for tool in sorted(tools, key=lambda item: getattr(item, "name", "")):
-        name = getattr(tool, "name", "")
-        if not name:
-            continue
-        schema = getattr(tool, "args_schema", None)
-        fields = getattr(schema, "model_fields", None)
-        fields = list(fields.keys()) if isinstance(fields, dict) else []
-        if fields:
-            body = "\n".join(f"  <{field}>{field.upper()}</{field}>" for field in fields)
-            blocks.append(f"<{name}>\n{body}\n</{name}>")
-        else:
-            blocks.append(f"<{name}></{name}>")
-    return "\n\n".join(blocks)
 
 
 def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:
@@ -325,7 +305,3 @@ def _content_text(content) -> str:
 
 def _native_tool_calling() -> str:
     return load_instruction("native_tool_calling")
-
-
-def _xml_tool_calling(tools: Iterable[Any]) -> str:
-    return load_instruction("xml_tool_calling").format(tool_examples=build_xml_tool_prompt(tools))
