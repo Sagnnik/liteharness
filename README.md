@@ -38,7 +38,7 @@ Useful environment variables:
 - `permissions.py`: `.ness/permissions.json` allow/deny/ask matching.
 - `hooks.py`: `.ness/hooks.json` pre/post/user/session command hooks.
 - `mcp_client.py`: stdio MCP startup and namespaced MCP tool wrappers.
-- `session.py`: JSONL thread events and `index.json` session metadata.
+- `session.py`: SQLite thread storage (`threads.db`) for events, metadata, and subagent links.
 - `skill_loader.py`: `SKILL.md` skill discovery under `.ness/skills/`.
 - `config.py`: settings, model pricing, and cost/cache tracking.
 - `parsers.py`: native tool-call extraction.
@@ -107,8 +107,8 @@ Use `/compact` to force compaction on the next model turn. Manual compaction run
 ├── commands/            User slash commands
 ├── skills/              Project-local SKILL.md skills
 ├── plans/               Saved plan-mode assistant output
-├── threads/             Saved JSONL trajectories
-│   └── index.json       Thread metadata (cost, turns, summaries)
+├── threads/             Saved session trajectories (SQLite)
+│   └── threads.db       Thread metadata, events, and subagent links
 └── shells/              Background shell job metadata and logs
 ```
 
@@ -216,7 +216,7 @@ tools: [read_file, grep, glob_files, list_files]
 You are a read-only explorer. Return concise findings with file references.
 ```
 
-The `spawn_subagent` tool runs one or more filtered, isolated read-only graphs (max depth 2). For one task, pass `name` and `prompt`. For parallel exploration, pass `tasks`, plus optional `num_subagents`, `max_concurrency`, and `timeout`; the parent agent waits until every subagent completes, fails, or times out.
+The `spawn_subagent` tool runs one or more filtered, isolated read-only graphs. Only the parent agent can spawn subagents; nested spawning is blocked by the read-only tool filter. For one task, pass `name` and `prompt`. For parallel exploration, pass `tasks`, plus optional `max_concurrency` and `timeout`; the parent agent waits until every subagent completes, fails, or times out.
 
 Batch mode validates every task before starting any of them and returns one structured result with each task's status, duration, thread id, label, and output.
 
@@ -249,17 +249,28 @@ Markdown files under `.ness/commands/*.md` become project-local slash commands. 
 
 ## Thread Events
 
-When autosave is on, LiteHarness appends JSONL events to `.ness/threads/<thread_id>.jsonl` and maintains `.ness/threads/index.json`:
+When autosave is on, LiteHarness stores events in `.ness/threads/threads.db`:
+
+- **`threads`**: user `session-*` metadata (cost, turns, summaries, archive state)
+- **`events`**: append-only JSON payloads for user sessions only
+- **`subagents`**: subagent run metadata (status, output, duration) linked to a parent `session-*` thread
+
+Event kinds stored in `events.payload` (session threads only):
 
 ```json
-{"kind": "user", "content": "..."}
-{"kind": "assistant", "content": "...", "tool_calls": []}
-{"kind": "tool", "tool": "read_file", "args": {}, "result": "...", "duration_ms": 10, "exit": "ok"}
-{"kind": "approval", "tool": "edit_file", "decision": "yes"}
-{"kind": "usage", "model": "gpt-4o-mini", "input_tokens": 100, "cached_input_tokens": 40, "cache_write_tokens": 10, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider"}
-{"kind": "reflection", "error": "", "memory_updated": true, "stuck_detected": false}
-{"kind": "compact", "content": "manual compaction requested"}
+{"kind": "user", "content": "...", "t": "..."}
+{"kind": "assistant", "content": "...", "tool_calls": [], "t": "..."}
+{"kind": "tool", "tool": "read_file", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
+{"kind": "approval", "tool": "edit_file", "decision": "yes", "t": "..."}
+{"kind": "usage", "model": "gpt-4o-mini", "input_tokens": 100, "cached_input_tokens": 40, "cache_write_tokens": 10, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
+{"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
+{"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}
+{"kind": "compact", "content": "manual compaction requested", "t": "..."}
 ```
+
+`/threads` lists user `session-*` threads only. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
+
+`/resume` rebuilds user messages, assistant tool-call turns, and tool results from saved events. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
 
 Threads are archived on `/save`, `/reset`, `/resume`, and session exit. Archived threads get a headline summary from the first user message.
 

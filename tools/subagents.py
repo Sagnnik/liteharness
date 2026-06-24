@@ -15,21 +15,24 @@ from langchain_core.tools import tool
 
 from config import settings
 from context import build_subagent_prompt
+from session import complete_subagent, register_subagent
 
+# gets the subagent instructions
 AGENTS_DIR = Path(settings.ness_dir) / "agents"
 
 DEFAULT_AGENT_TOOLS = ("read_file", "grep", "glob_files", "list_files")
-MAX_DEPTH = 2
 MAX_BATCH_TASKS = 8
-DEFAULT_MAX_CONCURRENCY = 3
+DEFAULT_MAX_CONCURRENCY = 3 # max concurrent subagents to run
 MAX_CONCURRENCY = 8
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 300 # timeout for a single subagent
 MAX_TIMEOUT_SECONDS = 1_800
 
+# Syntactic guard before names are used in filesystem paths (blocks traversal chars).
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
+# ContextVars for subagent specific memory pockets to avoid collisions
 _subagent_model: ContextVar[Any | None] = ContextVar("subagent_model", default=None)
-_subagent_depth: ContextVar[int] = ContextVar("subagent_depth", default=0)
+_parent_thread_id: ContextVar[str | None] = ContextVar("parent_thread_id", default=None)
 
 
 @dataclass(frozen=True)
@@ -56,109 +59,176 @@ class SubagentRunResult:
     thread_id: str
     output: str
 
-
-def set_subagent_runtime(model: Any | None, depth: int) -> None:
+# sets the subagent runtime context before main agent call; setter doesn't need to be async
+def set_subagent_runtime(model: Any | None, parent_thread_id: str | None = None) -> None:
     _subagent_model.set(model)
-    _subagent_depth.set(depth)
+    if parent_thread_id is not None:
+        _parent_thread_id.set(parent_thread_id)
+
+def _available_agent_names() -> frozenset[str]:
+    if not AGENTS_DIR.is_dir():
+        return frozenset()
+    return frozenset(
+        path.stem for path in AGENTS_DIR.glob("*.md") if path.is_file() and path.stem
+    )
 
 
-@tool
+def _spawn_subagent_description() -> str:
+    agents = ", ".join(sorted(_available_agent_names())) or "none"
+    return f"""Run one or more read-only LiteHarness subagents and wait for all results.
+
+Use exactly one invocation pattern:
+1. Single task: pass name and prompt.
+   Example: spawn_subagent(name="explore", prompt="Find route handlers")
+2. Batch: pass tasks only (do not also pass name or prompt).
+   Example: spawn_subagent(tasks=[
+     {{"name": "explore", "prompt": "Find routes", "label": "routes"}},
+     {{"name": "explore", "prompt": "Find tests", "label": "tests"}},
+   ])
+
+Each task object requires name and prompt; label is optional.
+max_concurrency defaults to {DEFAULT_MAX_CONCURRENCY}; timeout defaults to {DEFAULT_TIMEOUT_SECONDS}s.
+
+Agent names must match a file in .ness/agents/<name>.md.
+Available agents: {agents}."""
+
+
+@tool(description=_spawn_subagent_description())
 async def spawn_subagent(
     name: str = "",
     prompt: str = "",
     tasks: list[dict[str, str]] | None = None,
-    num_subagents: int | None = None,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
     """Run one or more read-only LiteHarness subagents and wait for all results."""
     started = time.time()
-    task_count = 0
     batch_invocation = tasks is not None
-    try:
-        depth, model = _runtime()
-        normalized = _normalize_spawn_request(name, prompt, tasks, num_subagents)
-        task_count = len(normalized)
-        concurrency = _bounded_int(max_concurrency, "max_concurrency", 1, MAX_CONCURRENCY)
-        timeout_seconds = _bounded_int(timeout, "timeout", 1, MAX_TIMEOUT_SECONDS)
+    # check the runtime context
+    runtime = _check_runtime()
+    if isinstance(runtime, str):
+        return _call_error(runtime, batch_invocation, started, 0)
 
-        prepared = [_prepare_task(task) for task in normalized]
-        semaphore = asyncio.Semaphore(min(concurrency, len(prepared)))
+    model = runtime
 
-        async def run_one(index: int, item: PreparedTask) -> SubagentRunResult:
-            async with semaphore:
-                return await _run_prepared_with_timeout(
+    # validate the spawn request
+    validated = _validate_spawn_request(name, prompt, tasks)
+    if isinstance(validated, str):
+        return _call_error(validated, batch_invocation, started, 0)
+
+    # validate the max concurrency
+    concurrency = _bounded_int(max_concurrency, "max_concurrency", 1, MAX_CONCURRENCY)
+    if isinstance(concurrency, str):
+        return _call_error(concurrency, batch_invocation, started, len(validated))
+
+    # validate the timeout
+    timeout_seconds = _bounded_int(timeout, "timeout", 1, MAX_TIMEOUT_SECONDS)
+    if isinstance(timeout_seconds, str):
+        return _call_error(timeout_seconds, batch_invocation, started, len(validated))
+
+    # semaphore to limit the number of concurrent subagents
+    semaphore = asyncio.Semaphore(min(concurrency, len(validated)))
+
+    # run one subagent
+    async def run_one(index: int, task: SubagentTask) -> SubagentRunResult:
+        # wait for the semaphore to be available
+        async with semaphore:
+            prepared = _prepare_task(task)
+            if isinstance(prepared, str):
+                return SubagentRunResult(
                     index=index,
-                    prepared=item,
-                    model=model,
-                    depth=depth,
-                    timeout_seconds=timeout_seconds,
+                    name=task.name,
+                    label=task.label,
+                    status="failed",
+                    duration_ms=0,
+                    thread_id=f"subagent-{task.name}-prep-failed",
+                    output=prepared,
                 )
+            # run the subagent with a timeout
+            return await _run_prepared_with_timeout(
+                index=index,
+                prepared=prepared,
+                model=model,
+                timeout_seconds=timeout_seconds,
+            )
 
-        results = await asyncio.gather(
-            *(run_one(index, item) for index, item in enumerate(prepared, start=1))
-        )
-        if not batch_invocation:
-            return _format_single_result(results[0])
-        return _format_batch_result(results, int((time.time() - started) * 1000))
-    except Exception as exc:
-        if not batch_invocation:
-            duration_ms = int((time.time() - started) * 1000)
-            return f"Error: {exc} (duration_ms={duration_ms})"
-        return _format_batch_error(str(exc), int((time.time() - started) * 1000), task_count)
+    # run all the subagents
+    # we can await all the subagents at once here; subagents should block main agent run
+    results = await asyncio.gather(
+        *(run_one(index, task) for index, task in enumerate(validated, start=1))
+    )
+    # format the result
+    if not batch_invocation:
+        return _format_single_result(results[0])
+    return _format_batch_result(results, int((time.time() - started) * 1000))
 
 
-def _runtime() -> tuple[int, Any]:
-    depth = _subagent_depth.get()
-    if depth >= MAX_DEPTH:
-        raise RuntimeError("subagent depth limit reached")
+def _tool_error(message: str) -> str:
+    return f"Error: {message}"
+
+
+def _call_error(message: str, batch: bool, started: float, task_count: int) -> str:
+    duration_ms = int((time.time() - started) * 1000)
+    if not batch:
+        return f"{_tool_error(message)} (duration_ms={duration_ms})"
+    return _format_batch_error(message, duration_ms, task_count)
+
+
+def _check_runtime() -> Any | str:
     model = _subagent_model.get()
     if model is None:
-        raise RuntimeError("no model available for subagent")
-    return depth, model
+        return "no model available for subagent"
+    return model
 
 
-def _normalize_spawn_request(
+def _validate_spawn_request(
     name: str,
     prompt: str,
     tasks: list[dict[str, str]] | None,
-    num_subagents: int | None,
-) -> list[SubagentTask]:
+) -> list[SubagentTask] | str:
     if tasks is None:
-        normalized = [_normalize_task({"name": name, "prompt": prompt}, 1)]
-    else:
-        if str(name or "").strip() or str(prompt or "").strip():
-            raise ValueError("provide either tasks or name/prompt, not both")
-        normalized = _normalize_tasks(tasks)
+        normalized = _normalize_task({"name": name, "prompt": prompt}, 1)
+        if isinstance(normalized, str):
+            return normalized
+        return [normalized]
 
-    if num_subagents is not None:
-        expected = _bounded_int(num_subagents, "num_subagents", 1, MAX_BATCH_TASKS)
-        if expected != len(normalized):
-            raise ValueError(
-                f"num_subagents must equal task count ({len(normalized)}), got {expected}"
-            )
+    if str(name or "").strip() or str(prompt or "").strip():
+        return "provide either tasks or name/prompt, not both"
+
+    normalized = _normalize_tasks(tasks)
+    if isinstance(normalized, str):
+        return normalized
+
     return normalized
 
 
-def _normalize_tasks(raw_tasks: list[dict[str, str]]) -> list[SubagentTask]:
+def _normalize_tasks(raw_tasks: list[dict[str, str]]) -> list[SubagentTask] | str:
     if not isinstance(raw_tasks, list):
-        raise ValueError("tasks must be a list of task objects")
+        return "tasks must be a list of task objects"
     if not raw_tasks:
-        raise ValueError("spawn_subagent requires at least one task")
+        return "spawn_subagent requires at least one task"
     if len(raw_tasks) > MAX_BATCH_TASKS:
-        raise ValueError(f"spawn_subagent supports at most {MAX_BATCH_TASKS} tasks")
-    return [_normalize_task(task, index) for index, task in enumerate(raw_tasks, start=1)]
+        return f"spawn_subagent supports at most {MAX_BATCH_TASKS} tasks"
+
+    normalized: list[SubagentTask] = []
+    for index, task in enumerate(raw_tasks, start=1):
+        item = _normalize_task(task, index)
+        if isinstance(item, str):
+            return item
+        normalized.append(item)
+    return normalized
 
 
-def _normalize_task(raw_task: Any, index: int) -> SubagentTask:
+def _normalize_task(raw_task: Any, index: int) -> SubagentTask | str:
     if not isinstance(raw_task, dict):
-        raise ValueError(f"task {index} must be an object with name and prompt")
+        return f"task {index} must be an object with name and prompt"
     name = _string_field(raw_task, "name").strip()
     prompt = _string_field(raw_task, "prompt").strip()
     label = _string_field(raw_task, "label").strip()
-    _validate_agent_name(name)
+    if error := _validate_agent_name(name):
+        return error
     if not prompt:
-        raise ValueError(f"task {index} prompt cannot be empty")
+        return f"task {index} prompt cannot be empty"
     return SubagentTask(name=name, prompt=prompt, label=label)
 
 
@@ -167,20 +237,29 @@ def _string_field(raw_task: dict[str, Any], key: str) -> str:
     return "" if value is None else str(value)
 
 
-def _bounded_int(value: int, name: str, minimum: int, maximum: int) -> int:
+def _bounded_int(value: int, name: str, minimum: int, maximum: int) -> int | str:
     try:
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be an integer") from exc
+    except (TypeError, ValueError):
+        return f"{name} must be an integer"
     if parsed < minimum:
-        raise ValueError(f"{name} must be at least {minimum}")
+        return f"{name} must be at least {minimum}"
     return min(parsed, maximum)
 
 
-def _prepare_task(task: SubagentTask) -> PreparedTask:
+def _prepare_task(task: SubagentTask) -> PreparedTask | str:
     meta = _load_agent(task.name)
+    if isinstance(meta, str):
+        return meta
+
     tool_names = _agent_tool_names(meta, task.name)
+    if isinstance(tool_names, str):
+        return tool_names
+
     tools = _resolve_tools(task.name, tool_names)
+    if isinstance(tools, str):
+        return tools
+
     parent_context = _parent_context(task)
     agent_prompt = build_subagent_prompt(task.name, meta.get("prompt", ""), parent_context)
     return PreparedTask(task=task, agent_prompt=agent_prompt, tools=tools)
@@ -198,23 +277,33 @@ async def _run_prepared_with_timeout(
     index: int,
     prepared: PreparedTask,
     model: Any,
-    depth: int,
     timeout_seconds: int,
 ) -> SubagentRunResult:
     task = prepared.task
     started = time.time()
     thread_id = f"subagent-{task.name}-{uuid.uuid4().hex[:8]}"
+    parent_thread_id = _parent_thread_id.get()
+
+    # register the subagent with the parent thread in threads db
+    if parent_thread_id:
+        register_subagent(
+            parent_thread_id,
+            thread_id,
+            agent_name=task.name,
+            label=task.label,
+        )
+
     try:
+        # .wait_for(): wrap a single coroutine with timeout and handle exceptions
         output = await asyncio.wait_for(
             _invoke_subagent(
                 prepared=prepared,
                 model=model,
-                depth=depth,
                 thread_id=thread_id,
             ),
             timeout=timeout_seconds,
         )
-        return SubagentRunResult(
+        result = SubagentRunResult(
             index=index,
             name=task.name,
             label=task.label,
@@ -223,62 +312,76 @@ async def _run_prepared_with_timeout(
             thread_id=thread_id,
             output=output,
         )
+    # handle exceptions
     except TimeoutError:
-        return SubagentRunResult(
+        result = SubagentRunResult(
             index=index,
             name=task.name,
             label=task.label,
             status="timeout",
             duration_ms=int((time.time() - started) * 1000),
             thread_id=thread_id,
-            output=f"Timed out after {timeout_seconds}s",
+            output=f"timed out after {timeout_seconds}s",
         )
     except Exception as exc:
-        return SubagentRunResult(
+        message = str(exc)
+        if message.startswith("Error: "):
+            message = message[7:]
+        result = SubagentRunResult(
             index=index,
             name=task.name,
             label=task.label,
             status="failed",
             duration_ms=int((time.time() - started) * 1000),
             thread_id=thread_id,
-            output=str(exc),
+            output=message,
         )
+
+    # complete the subagent run with the result stored in the threads db
+    if parent_thread_id:
+        complete_subagent(
+            thread_id,
+            status=result.status,
+            output=result.output,
+            duration_ms=result.duration_ms,
+        )
+    return result
 
 
 async def _invoke_subagent(
     prepared: PreparedTask,
     model: Any,
-    depth: int,
     thread_id: str,
 ) -> str:
+    """Main subagent invocation; uses the build_graph from agent.py"""
     from agent import build_graph
 
     app = build_graph(
         model,
-        tools=prepared.tools,
+        tools=prepared.tools, # read-only tools
         thread_id=thread_id,
-        agent_mode="normal",
+        agent_mode="normal", # subagents dont have plan mode
     )
     result = await app.ainvoke(
         {
             "messages": [HumanMessage(content=prepared.agent_prompt)],
             "approval_declined": False,
             "todos": [],
-            "subagent_depth": depth + 1,
             "agent_mode": "normal",
         },
         config={"configurable": {"thread_id": thread_id}},
     )
     messages = result.get("messages", [])
     final = next((m.content for m in reversed(messages) if m.type in ("ai", "assistant")), "")
+    # return the final assistant message or a default message if no final message
     return str(final or "Subagent completed without a final message")
 
 
-def _load_agent(name: str) -> dict[str, Any]:
-    _validate_agent_name(name)
+def _load_agent(name: str) -> dict[str, Any] | str:
+    # load the agent specific instructions from the .ness/agents folder and put them in the prompt
     path = AGENTS_DIR / f"{name}.md"
     if not path.exists():
-        raise FileNotFoundError(f"No agent definition at {path}")
+        return f"No agent definition at {path}"
 
     text = path.read_text(encoding="utf-8")
     if text.startswith("---"):
@@ -292,47 +395,50 @@ def _load_agent(name: str) -> dict[str, Any]:
     return {"prompt": text.strip(), "tools": list(DEFAULT_AGENT_TOOLS)}
 
 
-def _validate_agent_name(name: str) -> None:
+def _validate_agent_name(name: str) -> str | None:
     if not name or not AGENT_NAME_RE.fullmatch(name):
-        raise ValueError(
-            "agent name must start with a letter or number and contain only letters, numbers, dots, underscores, or hyphens"
+        return (
+            "agent name must start with a letter or number and contain only letters, "
+            "numbers, dots, underscores, or hyphens"
         )
+    available = _available_agent_names()
+    if name not in available:
+        listed = ", ".join(sorted(available)) or "none"
+        return f"unknown agent '{name}'; available agents: {listed}"
+    return None
 
 
-def _agent_tool_names(meta: dict[str, Any], agent_name: str) -> set[str]:
+def _agent_tool_names(meta: dict[str, Any], agent_name: str) -> set[str] | str:
     raw_tools = meta.get("tools", list(DEFAULT_AGENT_TOOLS))
-    if raw_tools is None:
-        raw_tools = list(DEFAULT_AGENT_TOOLS)
-    if not isinstance(raw_tools, list) or not all(isinstance(item, str) for item in raw_tools):
-        raise ValueError(f"tools for subagent {agent_name} must be a list of tool names")
+    if not all(isinstance(item, str) for item in raw_tools):
+        return f"tools for subagent {agent_name} must be a list of tool names"
     tool_names = {item.strip() for item in raw_tools if item.strip()}
     if not tool_names:
-        raise ValueError(f"subagent {agent_name} has no configured tools")
+        return f"subagent {agent_name} has no configured tools"
     return tool_names
 
 
-def _resolve_tools(agent_name: str, tool_names: set[str]) -> list[Any]:
-    from tools import READ_ONLY_TOOLS, TOOL_MAP, get_tools_for_names
+def _resolve_tools(agent_name: str, tool_names: set[str]) -> list[Any] | str:
+    # TODO: In future if subagents need more tool freedom; change access here
+    # resolve tools from string to tool objects
+    from tools import READ_ONLY_TOOLS, TOOL_MAP
 
     known_tool_names = set(TOOL_MAP)
+    # reject unknown tools
     unknown = sorted(tool_names - known_tool_names)
     if unknown:
-        raise ValueError(f"unknown tools for subagent {agent_name}: {', '.join(unknown)}")
+        return f"unknown tools for subagent {agent_name}: {', '.join(unknown)}"
 
+    # reject unsafe tools
     subagent_safe_tools = set(READ_ONLY_TOOLS) - {"spawn_subagent", "todo_write"}
     unsafe = sorted(tool_names - subagent_safe_tools)
     if unsafe:
-        raise ValueError(
+        return (
             "spawn_subagent only allows read-only native tools; "
             f"unsafe tools for subagent {agent_name}: {', '.join(unsafe)}"
         )
 
-    tools = get_tools_for_names(tool_names)
-    if len(tools) != len(tool_names):
-        resolved = {tool.name for tool in tools}
-        missing = sorted(tool_names - resolved)
-        raise ValueError(f"subagent {agent_name} has unresolved tools: {', '.join(missing)}")
-    return tools
+    return [TOOL_MAP[name] for name in sorted(tool_names)]
 
 
 def _format_single_result(result: SubagentRunResult) -> str:
@@ -353,14 +459,17 @@ def _format_batch_result(results: list[SubagentRunResult], duration_ms: int) -> 
         f"tasks_failed={failed}",
         "",
     ]
-    for result in sorted(results, key=lambda item: item.index):
+    for result in results:
         heading = (
             f"[{result.index}] name={result.name} status={result.status} "
             f"duration_ms={result.duration_ms} thread_id={result.thread_id}"
         )
         if result.label:
             heading += f" label={result.label}"
-        lines.extend([heading, result.output.strip(), ""])
+        output = result.output.strip()
+        if result.status != "ok":
+            output = f"error={output}"
+        lines.extend([heading, output, ""])
     return "\n".join(lines).rstrip()
 
 

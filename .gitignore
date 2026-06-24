@@ -15,5 +15,7 @@ wheels/
 
 # LiteHarness runtime data
 .ness/threads/
-# .ness/shells/
-cli/spinner.py
+.ness/plans/
+.ness/shells/
+.ness/cli_history
+.ness/sessions/

@@ -66,8 +66,8 @@ AVAILABLE_MODELS: tuple[str, ...] = (
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
 
-    model_name: str = Field(default="gpt-4o-mini", alias="MODEL_NAME")
-    reflection_model_name: str = Field(default="gpt-4o-mini", alias="REFLECTION_MODEL_NAME")
+    model_name: str = Field(default="deepseek-v4-flash", alias="MODEL_NAME")
+    reflection_model_name: str = Field(default="deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
     api_max_retries: int = Field(default=3, alias="API_MAX_RETRIES")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")
     auto_save_threads: bool = Field(default=True, alias="AUTO_SAVE_THREADS")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -171,7 +171,14 @@ def _serialize_for_compaction(messages: Iterable[BaseMessage]) -> str:
         f"{message.type}: {_content_text(message.content)}" for message in recent
     )
 
-async def summarize_history(messages: Iterable[BaseMessage], model) -> str:
+async def summarize_history(
+    messages: Iterable[BaseMessage],
+    model,
+    *,
+    thread_id: str | None = None,
+    action: CompactionAction = "summary",
+    kept_recent: int = 0,
+) -> str:
     # serialize the messages for compaction
     serialized = _serialize_for_compaction(messages)
     if not serialized.strip():
@@ -179,18 +186,63 @@ async def summarize_history(messages: Iterable[BaseMessage], model) -> str:
     if model is None:
         # if no model, use the fallback summary
         return _fallback_summary(serialized)
+    prompt = build_compaction_prompt(serialized)
     try:
-        response = await model.ainvoke([HumanMessage(content=build_compaction_prompt(serialized))])
+        response = await model.ainvoke([HumanMessage(content=prompt)])
     except Exception:
-        return _fallback_summary(serialized)
-    # track the cost
+        summary = _fallback_summary(serialized)
+        if thread_id:
+            _log_compaction_event(
+                thread_id,
+                prompt=prompt,
+                response=summary,
+                usage=None,
+                action=action,
+                kept_recent=kept_recent,
+            )
+        return summary
+
+    usage = None
     if response.usage_metadata:
-        cost_tracker.add(
+        usage = cost_tracker.add(
             response.usage_metadata,
             _model_name(model),
             response.response_metadata or {},
         )
-    return str(response.content).strip()
+    summary = str(response.content).strip()
+    if thread_id:
+        _log_compaction_event(
+            thread_id,
+            prompt=prompt,
+            response=summary,
+            usage=usage,
+            action=action,
+            kept_recent=kept_recent,
+        )
+    return summary
+
+
+def _log_compaction_event(
+    thread_id: str,
+    *,
+    prompt: str,
+    response: str,
+    usage: dict[str, Any] | None,
+    action: CompactionAction,
+    kept_recent: int,
+) -> None:
+    from session import append_event
+
+    event: dict[str, Any] = {
+        "kind": "compaction_llm",
+        "prompt": prompt,
+        "response": response,
+        "action": action,
+        "kept_recent": kept_recent,
+    }
+    if usage:
+        event.update(usage)
+    append_event(thread_id, event)
 
 
 def _fallback_summary(serialized: str) -> str:
@@ -301,6 +353,7 @@ async def compact_messages_progressively(
     summary_model=None,
     force: bool = False,
     model_name: str | None = None,
+    thread_id: str | None = None,
 ) -> CompactionResult:
     """Compact by model-relative pressure while preserving the legacy call shape."""
     # calculate the context pressure
@@ -344,7 +397,13 @@ async def compact_messages_progressively(
     # get the min no. of messages to keep and summarize the older messages
     keep = min(len(rest), keep_recent)
     older = rest[: len(rest) - keep]
-    summary = await summarize_history(older, summary_model)
+    summary = await summarize_history(
+        older,
+        summary_model,
+        thread_id=thread_id,
+        action=action,
+        kept_recent=keep,
+    )
     # add the system messages and the summary
     compacted = list(system)
     compacted.append(SystemMessage(content="COMPACTED HISTORY\n" + summary))

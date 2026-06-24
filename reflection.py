@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from context import build_reflection_prompt, render_todos
 from memory import append_session_bullets, load_session_memory
+from session import append_event
 
 """
 Reflection triggers:
@@ -103,13 +104,56 @@ async def run_reflection_gate(
                 [HumanMessage(content=prompt)]
             )
         except Exception as exc:
-            return ReflectionResult(error=str(exc))
+            result = ReflectionResult(error=str(exc))
+            _log_reflection_event(
+                thread_id,
+                prompt=prompt,
+                response={"new_bullet_points": []},
+                usage=None,
+                message_index=len(message_list),
+                memory_updated=False,
+                error=result.error,
+            )
+            return result
 
         bullets = _normalize_bullets(output.new_bullet_points)
         memory_updated = append_session_bullets(thread_id, bullets) if bullets else False
-        mark_reflection_complete(thread_id, len(message_list))
+        message_index = len(message_list)
+        mark_reflection_complete(thread_id, message_index)
 
+        _log_reflection_event(
+            thread_id,
+            prompt=prompt,
+            response=output.model_dump(),
+            usage=None,
+            message_index=message_index,
+            memory_updated=memory_updated,
+            error="",
+        )
         return ReflectionResult(memory_updated=memory_updated)
+
+
+def _log_reflection_event(
+    thread_id: str,
+    *,
+    prompt: str,
+    response: dict[str, Any],
+    usage: dict[str, Any] | None,
+    message_index: int,
+    memory_updated: bool,
+    error: str,
+) -> None:
+    event: dict[str, Any] = {
+        "kind": "reflection",
+        "prompt": prompt,
+        "response": response,
+        "message_index": message_index,
+        "memory_updated": memory_updated,
+        "error": error,
+    }
+    if usage:
+        event.update(usage)
+    append_event(thread_id, event)
 
 
 def _normalize_bullets(bullets: list[str]) -> list[str]:
@@ -134,7 +178,17 @@ async def finalize_session_reflection(
     try:
         snapshot = await app.aget_state({"configurable": {"thread_id": thread_id}})
     except Exception as exc:
-        return ReflectionResult(error=str(exc))
+        result = ReflectionResult(error=str(exc))
+        _log_reflection_event(
+            thread_id,
+            prompt="",
+            response={"new_bullet_points": []},
+            usage=None,
+            message_index=0,
+            memory_updated=False,
+            error=result.error,
+        )
+        return result
 
     state = dict(snapshot.values or {})
     messages = list(state.get("messages", []))
