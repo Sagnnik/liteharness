@@ -105,6 +105,9 @@ def reload_settings() -> None:
     fresh = Settings()
     for field in type(fresh).model_fields:
         setattr(settings, field, getattr(fresh, field))
+    from tools.web import reset_provider
+
+    reset_provider()
 
 
 class CostTracker:

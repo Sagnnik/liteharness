@@ -23,7 +23,7 @@ Useful environment variables:
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
-- `EXA_API_KEY`: optional Exa API key for `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)).
+- `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ Useful environment variables:
 - `compaction.py`: progressive context compaction by context pressure.
 - `reflection.py`: background session-memory reflection with structured output (distillation + loop detection).
 - `memory.py`: NESS.md, USER.md, and per-thread session memory helpers.
-- `tools/`: local tools for files, search, web (`web_search`, `fetch_url` via Exa), shell, git, todos, user clarification (`ask_user`), and subagents.
+- `tools/`: local tools for files, search, web (`web_search`, `fetch_url` via Exa or DuckDuckGo fallback), shell, git, todos, user clarification (`ask_user`), and subagents.
 - `permissions.py`: `.ness/permissions.json` allow/deny/ask matching.
 - `hooks.py`: `.ness/hooks.json` pre/post/user/session command hooks.
 - `mcp_client.py`: stdio MCP startup and namespaced MCP tool wrappers.
@@ -160,6 +160,17 @@ Small reference files (≤ 20 lines) are inlined into the prompt. Larger referen
 Deny rules win over allow rules. Rules are evaluated in order: persistent deny, session deny, persistent allow, session allow, then ask. Shell command allow/deny rules reject commands with unquoted shell operators (`;`, `&&`, `|`, `>`, `<`, newlines, etc.) so chained or redirect commands fall through to ask instead of matching a prefix rule.
 
 `web_search:*` is allowed by default. `fetch_url` asks for approval per normalized URL; approving one URL does not approve a different path or query, and changing `max_characters` does not require a new approval.
+
+### Web search providers
+
+`web_search` and `fetch_url` pick a provider automatically:
+
+| Provider | When used | Notes |
+|----------|-----------|-------|
+| **Exa** | `EXA_API_KEY` is set | Semantic search, content highlights, reliable fetch |
+| **DuckDuckGo fallback** | No Exa key | Keyword search via DuckDuckGo HTML; direct HTTP fetch with `trafilatura` / BeautifulSoup extraction |
+
+The fallback requires no API key but is less capable: no neural search, weaker snippets, no JavaScript rendering on fetch, and occasional DuckDuckGo rate limits or CAPTCHAs. Set `EXA_API_KEY` when you need more reliable web access.
 
 Approval choices are `y` yes, `S` session (allow for this CLI run), `a` always, `n` no, `N` never, `d` diff, and `s` show args.
 
