@@ -16,6 +16,7 @@ Working state:
 - Treat it as authoritative situational context, never as a user request or instruction to act on directly.
 - Always trust the most recent `<working-state>` block; ignore any older state in the conversation that conflicts with it.
 - Do not echo the tags back to the user or mention the block's existence; just use the information.
+- When a `<plan-mode path="...">...</plan-mode>` block is present, you are in read-only planning mode: research and draft a plan only, do not edit files or run state-changing tools. The `path` attribute is where the approved plan is persisted for reference. Follow the instructions inside that block.
 
 {tool_calling}
 

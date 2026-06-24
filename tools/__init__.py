@@ -5,6 +5,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from tools.ask import ask_user
 from tools.check_syntax import check_syntax
 from tools.fs import (
     apply_patch,
@@ -71,6 +72,7 @@ LOCAL_TOOLS = [
     todo_read,
     get_project_context,
     spawn_subagent,
+    ask_user,
 ]
 
 ALL_TOOLS = list(LOCAL_TOOLS)
@@ -80,6 +82,7 @@ TOOL_NAMES = list(TOOL_MAP)
 SMALL_ALWAYS_ON = {
     "todo_read",
     "todo_write",
+    "ask_user",
 }
 
 TIER_L1 = {
@@ -135,10 +138,7 @@ READ_ONLY_TOOLS = {
     "get_project_context",
     "todo_write",
     "spawn_subagent",
-}
-
-PLAN_MODE_TOOLS = READ_ONLY_TOOLS | {
-    "shell",
+    "ask_user",
 }
 
 EDIT_TOOLS = frozenset({
@@ -190,21 +190,6 @@ def get_tools_for_names(names: Iterable[str]) -> list[Any]:
     return [tool for tool in ALL_TOOLS if tool.name in wanted]
 
 
-def tool_names_for_mode(agent_mode: str = "normal", git_repo: bool | None = None) -> list[str]:
-    """Return the stable tool tier names for a mode."""
-    git_available = is_git_repo() if git_repo is None else git_repo
-    if agent_mode == "plan":
-        names = set(PLAN_MODE_TOOLS)
-    else:
-        names = set(SMALL_ALWAYS_ON) | set(TIER_L1) | set(TIER_L3_ADVANCED)
-    if git_available:
-        if agent_mode != "plan":
-            names |= set(GIT_TOOLS)
-    else:
-        names -= set(GIT_TOOLS)
-    return [name for name in TOOL_NAMES if name in names]
-
-
 def tool_names_for_session(git_repo: bool | None = None) -> list[str]:
     """Return the full stable tool set for the current session shape."""
     git_available = is_git_repo() if git_repo is None else git_repo
@@ -224,20 +209,6 @@ def select_tools_for_session(
     available = list(tools or ALL_TOOLS)
     session_names = set(tool_names_for_session(git_repo))
     return _dedupe_tools(tool for tool in available if tool.name in session_names)
-
-
-def select_tools_for_mode(
-    agent_mode: str = "normal",
-    git_repo: bool | None = None,
-    tools: Iterable[Any] | None = None,
-) -> list[Any]:
-    """Select native tools for the current mode and repository shape."""
-    available = list(tools or ALL_TOOLS)
-    tier_names = set(tool_names_for_mode(agent_mode, git_repo))
-    selected = [tool for tool in available if tool.name in tier_names]
-    if agent_mode != "plan":
-        selected.extend(tool for tool in available if tool.name in MCP_TOOLS)
-    return _dedupe_tools(selected)
 
 
 def is_destructive_tool(name: str) -> bool:

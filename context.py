@@ -129,7 +129,14 @@ def build_working_state_overlay(
     mode = (agent_mode or "normal").lower()
 
     if mode == "plan":
-        mode_block = load_instruction("plan_mode")
+        from config import settings
+
+        plan_path = f"{settings.ness_dir.rstrip('/')}/plans/"
+        mode_block = (
+            f'<plan-mode path="{plan_path}">\n'
+            + load_instruction("plan_mode")
+            + "\n</plan-mode>"
+        )
     else:
         mode_block = load_instruction("normal_mode")
     parts = [mode_block]

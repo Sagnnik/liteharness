@@ -31,11 +31,11 @@ def todo_write(
     id: str | None = None,
     index: int | None = None,
 ) -> str:
-    """Manage the current thread TODO list.
+    """Manage the current thread TODO list (CLI + working state).
 
-    action="replace" keeps the original behavior and replaces the list with
-    [{id, content, status}]. Other actions are insert, update, delete, and clear.
-    Indexes are one-based: index=1 is the front, len+1 appends.
+    Actions: replace (full list), insert, update, delete, clear.
+    Todo shape: {id, content, status} — status is pending, in_progress, or completed.
+    Indexes are one-based; omit index on insert to append.
     """
     action = str(action or "replace")
     if action not in VALID_ACTIONS:
