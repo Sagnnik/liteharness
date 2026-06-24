@@ -1,7 +1,7 @@
 [project]
 name = "liteharness"
 version = "0.1.0"
-description = "Add your description here"
+description = "LiteHarness is an experimental, hackable agent harness."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

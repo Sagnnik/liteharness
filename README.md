@@ -12,10 +12,12 @@ uv run python cli/main.py
 
 Useful environment variables:
 
-- `MODEL_NAME`: model passed to `ChatOpenRouter` (`gpt-4o-mini` by default).
+- `MODEL_NAME`: model passed to `ChatOpenRouter` (`deepseek-v4-flash` by default).
+- `REFLECTION_MODEL_NAME`: model for background session-memory reflection (defaults to `MODEL_NAME`).
 - `ENABLE_APPROVAL`: require approval for destructive tools.
 - `AUTO_SAVE_THREADS`: write thread events to `.ness/threads/`.
-- `REFLECTION_INTERVAL`: user turns between background session-memory reflection runs (default `5`; set `0` to disable).
+- `REFLECTION_TOKEN_RATIO`: fraction of the usable context budget that must accumulate in new messages before a background reflection run (default `0.4`; set `0` to disable).
+- `API_MAX_RETRIES`: retries for chat API calls (default `3`).
 - `COMPACTION_OUTPUT_RESERVE_TOKENS`: output reserve subtracted from the model context window (default `8192`).
 - `COMPACTION_INPUT_RESERVE_TOKENS`: input/system/tool reserve subtracted from the model context window (default `4096`).
 - `COMPACTION_TOKEN_BUDGET`: fallback compaction budget when the model context window is unknown (default `120000`).
@@ -25,6 +27,8 @@ Useful environment variables:
 - `NESS_DIR`: project config directory, default `.ness`.
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
+CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`. Use `/config` in-session to switch model, keys, approval, and autosave (persisted to `.env`).
+
 ## Architecture
 
 - `cli/main.py`: Rich CLI, slash commands, streaming, image/clipboard handling.
@@ -32,7 +36,7 @@ Useful environment variables:
 - `context.py`: layered prompt assembly from `instructions/` templates.
 - `instructions/`: markdown templates for L0/L1 prompt layers, modes, compaction, reflection, and subagents.
 - `compaction.py`: progressive context compaction by context pressure.
-- `reflection.py`: background session-memory reflection with structured output (distillation + loop detection).
+- `reflection.py`: background session-memory reflection with structured output (semantic distillation).
 - `memory.py`: NESS.md, USER.md, and per-thread session memory helpers.
 - `tools/`: local tools for files, search, web (`web_search`, `fetch_url` via Exa or DuckDuckGo fallback), shell, git, todos, user clarification (`ask_user`), and subagents.
 - `permissions.py`: `.ness/permissions.json` allow/deny/ask matching.
@@ -45,12 +49,12 @@ Useful environment variables:
 
 ## Prompt Layers
 
-LiteHarness splits context into three layers to keep prompt caching stable:
+LiteHarness splits context into four layers to keep prompt caching stable:
 
 1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
-3. **L2 project context** (`build_project_context_block`): repo structure, git availability, sticky skill cores, and current-thread session memory from `.ness/sessions/mem_<thread_id>.md`.
-4. **L3 working state** (`build_working_state_overlay`): wrapped in `<working-state>` tags and sent as a dedicated ephemeral `HumanMessage` at the tail of the message list each turn (never persisted to state, never mutating earlier messages, so the cached prefix stays stable through a tool loop). Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory. In plan mode, mode instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block inside that overlay (also not cached). L0 documents both tags so the model knows how to interpret them.
+3. **L2 project context** (`build_project_context_block`): repo structure, git availability, and sticky skill cores.
+4. **L3 working state** (`build_working_state_overlay`): wrapped in `<working-state>` tags and sent as a dedicated ephemeral `HumanMessage` at the tail of the message list each turn (never persisted to state, never mutating earlier messages, so the cached prefix stays stable through a tool loop). Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In plan mode, mode instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block inside that overlay (also not cached). L0 documents both tags so the model knows how to interpret them.
 
 Skills activate by trigger match and stay sticky for the session once loaded.
 
@@ -58,8 +62,8 @@ Skills activate by trigger match and stay sticky for the session once loaded.
 
 LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ normal switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). Mode instructions live in the ephemeral L3 overlay, not in the cached system prefix.
 
-- **Normal** (`/act`, Shift+Tab): execute with the full session tool set. All git tools (read and write) appear only inside a git repo.
-- **Plan** (`/plan`, Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user`, drafts a structured plan, and should end with `todo_write` for actionable steps. Assistant output is auto-saved under `.ness/plans/`. Use `/act` to switch back and execute.
+- **Normal** (Shift+Tab): execute with the full session tool set. All git tools (read and write) appear only inside a git repo.
+- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user`, drafts a structured plan, and should end with `todo_write` for actionable steps. Assistant output is auto-saved under `.ness/plans/`. Shift+Tab back to normal mode to execute.
 
 Plan-mode workflow (when requirements are ambiguous):
 
@@ -85,9 +89,9 @@ Three memory files live under `.ness/`:
 |------|---------|
 | `NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/init`, `/memory add`, or manual edit. Loaded into L1. |
 | `USER.md` | Cross-repo user preferences. Human-authored via `/user`; loaded into L1. |
-| `sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L2. Maintained by the reflection gate. |
+| `sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L3. Maintained by the reflection gate. |
 
-Reflection runs in the background every `REFLECTION_INTERVAL` user turns, when a todo is completed, and once more at session exit. It uses structured output to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md` and may inject a one-shot loop warning into the next turn. `NESS.md` remains human-authored; the CLI warns at startup when it exceeds 12,000 characters.
+Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget, and once more at session exit. It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md`. Bullets appear in the L3 working-state overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when it exceeds 20,000 characters.
 
 ## Compaction
 
@@ -99,7 +103,7 @@ Compaction is model-relative by default. LiteHarness estimates the usable contex
 | 70-85% | Compact large tool outputs |
 | >= 85% | Summarize older history; keep `max(4, int(10 * (1 - ratio) / 0.15))` recent messages |
 
-Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving `/plan` with `/act`, LiteHarness shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
+Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to normal), LiteHarness shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
 
 ## `.ness/` Layout
 
@@ -107,7 +111,7 @@ Use `/compact` to force compaction on the next model turn. Manual compaction run
 .ness/
 ├── NESS.md              Project conventions loaded into L1
 ├── USER.md              Cross-repo user preferences
-├── sessions/            Per-thread episodic memory (L2 tail)
+├── sessions/            Per-thread episodic memory (L3 overlay)
 │   └── mem_<thread_id>.md
 ├── permissions.json     Tool allow/deny/ask rules
 ├── hooks.json           Hook commands
@@ -242,30 +246,42 @@ Batch mode validates every task before starting any of them and returns one stru
 
 ## Slash Commands
 
-Shift+Tab toggles plan/normal mode without rebuilding the graph or invalidating the prompt cache.
+Shift+Tab toggles plan/normal mode without rebuilding the graph or invalidating the prompt cache. Current mode appears in the prompt prefix and bottom toolbar. Use `/menu` for a searchable command picker or `/help` for the full list.
 
-- `/plan [prompt]`: switch to read-only plan mode; optionally queue a prompt.
-- `/act [prompt]`: switch to normal mode; optionally queue a prompt.
-- `/mode`: show current agent mode.
-- `/context`: show project context.
+**General**
+
+- `/menu`: searchable command picker.
+- `/help`: show the command reference.
+- `/config`: switch model, set API keys, toggle approval/autosave (persisted to `.env`).
+- `/exit` or `/quit`: end the session.
+
+**Session**
+
 - `/cost`: show token/cost totals.
 - `/cache`: show prompt-cache reads/writes and cache hit rate.
-- `/skills`: list loaded skills and warnings.
-- `/init [force]`: generate `.ness/NESS.md`.
-- `/memory` or `/memory add <note>`: read or append project memory.
-- `/user` or `/user add <note>`: read or append user preferences.
-- `/permissions`: list/edit permission rules.
-- `/hooks`: list hooks.
-- `/mcp`: list MCP server status and tools.
 - `/threads`: list saved sessions.
 - `/resume <thread_id>`: resume a saved thread.
 - `/save`: archive the current thread with a headline summary.
 - `/reset`: archive and start a fresh thread.
 - `/compact`: mark/manual compaction request.
+
+**Context & memory**
+
+- `/skills`: list loaded skills and warnings.
+- `/init [force]`: generate `.ness/NESS.md`.
+- `/memory` or `/memory add <note>`: read or append project memory.
+- `/user` or `/user add <note>`: read or append user preferences.
+
+**Tools & policy**
+
+- `/permissions`: list/edit permission rules.
+- `/hooks`: list hooks.
+- `/mcp`: list MCP server status and tools.
+
+**Input**
+
 - `/copy`, `/copy code`, `/copy <n>`: copy assistant output.
 - `/image <path>`: attach an image to the next prompt (also `@image:path` inline).
-- `/save-threads [on|off]`: toggle thread autosave (prints current status).
-- `/exit` or `/quit`: end the session.
 
 Markdown files under `.ness/commands/*.md` become project-local slash commands. Their body is used as a prompt template with `{{args}}` substitution.
 
@@ -284,7 +300,7 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "assistant", "content": "...", "tool_calls": [], "t": "..."}
 {"kind": "tool", "tool": "read_file", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
 {"kind": "approval", "tool": "edit_file", "decision": "yes", "t": "..."}
-{"kind": "usage", "model": "gpt-4o-mini", "input_tokens": 100, "cached_input_tokens": 40, "cache_write_tokens": 10, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
+{"kind": "usage", "model": "deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "cache_write_tokens": 10, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
 {"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}
