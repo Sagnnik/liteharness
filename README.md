@@ -27,7 +27,21 @@ Useful environment variables:
 - `NESS_DIR`: project config directory, default `.ness`.
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
-CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`. Use `/config` in-session to switch model, keys, approval, and autosave (persisted to `.env`).
+CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--worktree` / `-w`. Use `/config` in-session to switch model, keys, approval, and autosave (persisted to `.env`).
+
+### Parallel sessions (git worktrees)
+
+Run a second agent in an isolated checkout and branch without touching your main working tree:
+
+```bash
+# Terminal 1 — main checkout
+uv run python cli/main.py
+
+# Terminal 2 — isolated agent (creates .ness/worktrees/auth on first launch)
+uv run python cli/main.py --worktree auth
+```
+
+Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, sessions, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. `.env` is copied from the repo root on first create. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
 
 ## Architecture
 
