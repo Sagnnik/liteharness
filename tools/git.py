@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 from langchain_core.tools import tool
 
 from permissions import PROJECT_ROOT, relative_to_root
+
+GIT_READ_ACTIONS = frozenset({"status", "diff", "log", "show"})
 
 
 def _git(args: list[str], timeout: int = 30, cwd: Path = PROJECT_ROOT) -> str:
@@ -58,25 +61,6 @@ def auto_git_snapshot(message: str = "agent: auto-snapshot") -> bool:
     return True
 
 
-@tool
-def git_status() -> str:
-    """Show concise git working tree status."""
-    return _git(["status", "--short"])
-
-
-@tool
-def git_diff(path: str = "", cached: bool = False, stat: bool = False) -> str:
-    """Show git diff for the working tree, optionally scoped to one path or staged changes."""
-    args = ["diff"]
-    if cached:
-        args.append("--cached")
-    if stat:
-        args.append("--stat")
-    if path:
-        args.extend(["--", relative_to_root(path)])
-    return _git(args)[:16000]
-
-
 def _clamp_log_count(n: int | str) -> int:
     try:
         count = int(n)
@@ -103,9 +87,22 @@ def _invalid_branch_name(value: str | None, label: str = "branch name") -> str |
     return None
 
 
-@tool
-def git_log(n: int | str = 20, path: str = "", grep: str = "") -> str:
-    """Show recent git commit history."""
+def _git_status() -> str:
+    return _git(["status", "--short"])
+
+
+def _git_diff(path: str = "", cached: bool = False, stat: bool = False) -> str:
+    args = ["diff"]
+    if cached:
+        args.append("--cached")
+    if stat:
+        args.append("--stat")
+    if path:
+        args.extend(["--", relative_to_root(path)])
+    return _git(args)[:16000]
+
+
+def _git_log(n: int | str = 20, path: str = "", grep: str = "") -> str:
     args = ["log", f"-{_clamp_log_count(n)}", "--oneline"]
     if grep:
         args.extend(["--grep", grep])
@@ -114,17 +111,15 @@ def git_log(n: int | str = 20, path: str = "", grep: str = "") -> str:
     return _git(args)
 
 
-@tool
-def git_show(rev: str = "HEAD") -> str:
-    """Show metadata for a git revision."""
+def _git_show(rev: str = "HEAD") -> str:
     if error := _invalid_option_like(rev, "revision"):
         return error
     return _git(["show", "--no-ext-diff", "--no-patch", rev])[:16000]
 
 
-@tool
-def git_commit(message: str, paths: str = "") -> str:
-    """Create a git commit, optionally staging selected whitespace-separated paths first."""
+def _git_commit(message: str, paths: str = "") -> str:
+    if not message:
+        return "Error: commit requires a message"
     if paths:
         rels = [relative_to_root(path) for path in paths.split()]
         add = _git(["add", *rels])
@@ -133,9 +128,7 @@ def git_commit(message: str, paths: str = "") -> str:
     return _git(["commit", "-m", message], timeout=60)
 
 
-@tool
-def git_checkout(branch: str, create: bool = False) -> str:
-    """Check out a git branch, optionally creating it."""
+def _git_checkout(branch: str, create: bool = False) -> str:
     if error := _invalid_branch_name(branch):
         return error
     args = ["checkout"]
@@ -145,24 +138,69 @@ def git_checkout(branch: str, create: bool = False) -> str:
     return _git(args)
 
 
-@tool
-def git_branch(name: str | None = None) -> str:
-    """List branches or create a branch by name."""
-    if name is None:
+def _git_branch(name: str | None = None) -> str:
+    if not name:
         return _git(["branch"])
     if error := _invalid_branch_name(name):
         return error
     return _git(["branch", name])
 
 
-@tool
-def git_stash(action: str = "list", message: str = "") -> str:
-    """Run a limited git stash action: list, push, pop, or apply."""
-    if action not in {"list", "push", "pop", "apply"}:
-        return "Error: action must be one of list, push, pop, apply"
-    if action == "push" and not message:
+def _git_stash(stash_action: str = "list", message: str = "") -> str:
+    if stash_action not in {"list", "push", "pop", "apply"}:
+        return "Error: stash action must be one of list, push, pop, apply"
+    if stash_action == "push" and not message:
         return "Error: push requires a message"
-    args = ["stash", action]
-    if action == "push":
+    args = ["stash", stash_action]
+    if stash_action == "push":
         args.extend(["-m", message])
     return _git(args)
+
+
+@tool
+def git(
+    action: Literal[
+        "status", "diff", "log", "show", "commit", "checkout", "branch", "stash"
+    ],
+    path: str = "",
+    cached: bool = False,
+    stat: bool = False,
+    n: int | str = 20,
+    grep: str = "",
+    rev: str = "HEAD",
+    message: str = "",
+    paths: str = "",
+    branch: str = "",
+    create: bool = False,
+    name: str = "",
+    stash_action: str = "list",
+) -> str:
+    """Run a git operation. Read actions (status, diff, log, show) need no approval.
+
+    Actions and their relevant parameters:
+      - 'status': working tree status.
+      - 'diff': working tree diff. Optional: path, cached, stat.
+      - 'log': recent history. Optional: n, path, grep.
+      - 'show': revision metadata. Optional: rev.
+      - 'commit': create a commit. Required: message. Optional: paths (whitespace-separated to stage first).
+      - 'checkout': switch branch. Required: branch. Optional: create.
+      - 'branch': list branches, or create one by name. Optional: name.
+      - 'stash': stash management. Optional: stash_action (list, push, pop, apply), message (required for push).
+    """
+    if action == "status":
+        return _git_status()
+    if action == "diff":
+        return _git_diff(path=path, cached=cached, stat=stat)
+    if action == "log":
+        return _git_log(n=n, path=path, grep=grep)
+    if action == "show":
+        return _git_show(rev=rev)
+    if action == "commit":
+        return _git_commit(message=message, paths=paths)
+    if action == "checkout":
+        return _git_checkout(branch=branch, create=create)
+    if action == "branch":
+        return _git_branch(name=name or None)
+    if action == "stash":
+        return _git_stash(stash_action=stash_action, message=message)
+    return f"Error: unknown git action {action}"

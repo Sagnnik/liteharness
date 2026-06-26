@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import ast
 import difflib
 import fnmatch
 import os
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -17,14 +15,6 @@ import permissions
 from config import settings
 from permissions import relative_to_root, validate_path
 from utils import is_ignored_dir
-
-"""
-TODO:
-In the System explicitly mention:
-1. Prefer multi_edit — explicit priority
-2. Provide exact strings including whitespace — reduce fuzzy match reliance
-3. If you need to change >10 locations, consider apply_patch — clear fallback threshold
-"""
 
 READ_FILE_DEFAULT_LIMIT = 400
 READ_FILE_MAX_LIMIT = 2000
@@ -111,107 +101,41 @@ class EditItem(BaseModel):
 
 
 @tool
-def edit_file(path: str, edit: EditItem) -> str:
-    """Replace text in a file, using exact match first and a conservative fuzzy fallback."""
+def edit(path: str, edits: list[EditItem]) -> str:
+    """Apply one or more exact-text replacements to a single file atomically.
+
+    Each edit uses exact match first with a conservative fuzzy fallback. All edits
+    are applied in order; if any edit finds no match, the file is left unchanged.
+    A single replacement is just a one-item edits list.
+    """
     try:
         abs_path = validate_path(path)
         rel = relative_to_root(abs_path)
         if error := _reject_protected_write(rel, "edit"):
             return error
+        if not edits:
+            return "Error: edits must contain at least one edit"
         p = Path(abs_path)
         content = p.read_text(encoding="utf-8")
-        new_content, count, fuzzy = _replace_content(
-            content, edit.old_string, edit.new_string, edit.replace_all
-        )
-        if count == 0:
-            return f"No match in {rel}"
-        _atomic_write(p, new_content)
-        auto_format(abs_path)
-        suffix = " using fuzzy match" if fuzzy else ""
-        return f"Edited {rel} ({count} replacement{'s' if count != 1 else ''}{suffix})"
-    except Exception as exc:
-        return f"Error: {exc}"
-
-
-@tool
-def multi_edit(path: str, edits: list[EditItem]) -> str:
-    """Apply multiple text replacements to one file atomically."""
-    try:
-        abs_path = validate_path(path)
-        rel = relative_to_root(abs_path)
-        if error := _reject_protected_write(rel, "edit"):
-            return error
-        p = Path(abs_path)
-        original = p.read_text(encoding="utf-8")
-        content = original
         total = 0
-        for idx, edit in enumerate(edits, 1):
-            content, count, _ = _replace_content(
-                content, edit.old_string, edit.new_string, edit.replace_all
+        fuzzy_any = False
+        for idx, item in enumerate(edits, 1):
+            content, count, fuzzy = _replace_content(
+                content, item.old_string, item.new_string, item.replace_all
             )
             if count == 0:
                 return f"No match for edit {idx} in {rel}; file was not changed"
             total += count
+            fuzzy_any = fuzzy_any or fuzzy
         _atomic_write(p, content)
         auto_format(abs_path)
-        return f"Applied {len(edits)} edits ({total} replacements) to {rel}"
+        suffix = " using fuzzy match" if fuzzy_any else ""
+        return (
+            f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
+            f"({total} replacement{'s' if total != 1 else ''}) to {rel}{suffix}"
+        )
     except Exception as exc:
         return f"Error: {exc}"
-
-
-@tool
-def apply_patch(patch: str) -> str:
-    """Apply a unified diff patch after validating touched paths are inside the project."""
-    patch_path = None
-    try:
-        touched, deleted = _parse_patch(patch)
-        if not touched:
-            return "Error: patch does not contain any file paths"
-        for path in touched:
-            abs_path = validate_path(path)
-            rel = relative_to_root(abs_path)
-            if is_protected_write_path(path) or is_protected_write_path(rel):
-                return f"Error: refusing to modify protected path {rel}"
-        for path in deleted:
-            abs_path = validate_path(path)
-            rel = relative_to_root(abs_path)
-            if is_protected_write_path(path) or is_protected_write_path(rel):
-                return f"Error: refusing to delete protected path {rel}"
-
-        with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False, encoding="utf-8") as f:
-            f.write(patch)
-            patch_path = f.name
-
-        check = subprocess.run(
-            ["git", "apply", "--check", patch_path],
-            cwd=permissions.PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if check.returncode != 0:
-            return f"Error: patch check failed\n{check.stderr or check.stdout}"
-
-        result = subprocess.run(
-            ["git", "apply", "--3way", patch_path],
-            cwd=permissions.PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            return f"Error: patch apply failed\n{result.stderr or result.stdout}"
-
-        for path in touched:
-            abs_path = validate_path(path)
-            if Path(abs_path).exists():
-                auto_format(abs_path)
-        return f"Patch applied ({len(touched)} file{'s' if len(touched) != 1 else ''})"
-    except Exception as exc:
-        return f"Error: {exc}"
-    finally:
-        if patch_path and os.path.exists(patch_path):
-            os.unlink(patch_path)
 
 
 @tool
@@ -339,86 +263,6 @@ def auto_format(path: str) -> None:
     cmd = formatters.get(suffix)
     if cmd:
         _run_formatter(cmd)
-
-
-def _parse_patch(patch: str) -> tuple[set[str], set[str]]:
-    """
-    Extract every project path mentioned by a git/unified patch.
-
-    This intentionally tracks both old and new paths from diff headers, file
-    headers, and rename/copy metadata so path validation sees deletes, renames,
-    and copies even when there is no content hunk.
-    """
-    touched: set[str] = set()
-    deleted: set[str] = set()
-    lines = patch.splitlines()
-    in_hunk = False
-
-    for i, line in enumerate(lines):
-        if line.startswith("diff --git "):
-            in_hunk = False
-            for path in _parse_diff_git_paths(line):
-                touched.add(path)
-            continue
-
-        if line.startswith("@@ "):
-            in_hunk = True
-            continue
-
-        for prefix in ("rename from ", "rename to ", "copy from ", "copy to "):
-            if line.startswith(prefix):
-                if path := _parse_patch_path(line[len(prefix) :]):
-                    touched.add(path)
-                break
-        else:
-            if in_hunk or not line.startswith(("--- ", "+++ ")):
-                continue
-            path = _parse_patch_path(line[4:])
-            if path is None:
-                continue
-            touched.add(path)
-            if (
-                line.startswith("--- ")
-                and i + 1 < len(lines)
-                and lines[i + 1].startswith("+++ ")
-                and _parse_patch_path(lines[i + 1][4:]) is None
-            ):
-                deleted.add(path)
-            continue
-    return touched, deleted
-
-
-def _parse_diff_git_paths(line: str) -> list[str]:
-    rest = line[len("diff --git ") :].strip()
-    raw_paths: list[str] = []
-    if rest.startswith("a/"):
-        split_at = rest.rfind(" b/")
-        if split_at > 0:
-            raw_paths = [rest[:split_at], rest[split_at + 1 :]]
-    if not raw_paths:
-        try:
-            parts = shlex.split(rest)
-        except ValueError:
-            parts = []
-        if len(parts) >= 2:
-            raw_paths = parts[:2]
-    return [path for raw in raw_paths if (path := _parse_patch_path(raw))]
-
-
-def _parse_patch_path(raw: str) -> str | None:
-    path = raw.split("\t", 1)[0].strip()
-    if path == "/dev/null" or not path:
-        return None
-    if path.startswith('"') and path.endswith('"'):
-        try:
-            value = ast.literal_eval(path)
-            if isinstance(value, str):
-                path = value
-        except (SyntaxError, ValueError):
-            path = path[1:-1]
-    if path.startswith(("a/", "b/")):
-        path = path[2:]
-    return path
 
 
 def is_git_repo(path: str = ".") -> bool:

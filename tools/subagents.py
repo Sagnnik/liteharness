@@ -430,7 +430,12 @@ def _resolve_tools(agent_name: str, tool_names: set[str]) -> list[Any] | str:
         return f"unknown tools for subagent {agent_name}: {', '.join(unknown)}"
 
     # reject unsafe tools
-    subagent_safe_tools = set(READ_ONLY_TOOLS) - {"spawn_subagent", "todo_write"}
+    subagent_safe_tools = set(READ_ONLY_TOOLS) - {
+        "spawn_subagent",
+        "todo",
+        "search_tools",
+        "add_tools",
+    }
     unsafe = sorted(tool_names - subagent_safe_tools)
     if unsafe:
         return (

@@ -23,7 +23,7 @@ def get_thread_todos(thread_id: str | None = None) -> list[dict]:
 
 
 @tool
-def todo_write(
+def todo(
     todos: list[dict] | None = None,
     action: str = "replace",
     content: str | None = None,
@@ -105,15 +105,6 @@ def todo_write(
         return f"Error: {exc}"
 
     return f"Error: unsupported action {action}"
-
-
-@tool
-def todo_read() -> str:
-    """Read the current thread TODO list."""
-    todos = get_thread_todos()
-    if not todos:
-        return "No todos"
-    return "\n".join(f"- [{todo['status']}] {todo['id']}: {todo['content']}" for todo in todos)
 
 
 def _normalize_todos(todos: list[dict]) -> list[dict]:
