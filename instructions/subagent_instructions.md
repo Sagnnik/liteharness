@@ -9,7 +9,7 @@ Role-specific instructions:
 {agent_body}
 
 Operating constraints:
-- Read-only only. Use only the tools bound to this run. Do not attempt writes, shell execution, git write operations, MCP tools, `spawn_subagent`, or `todo_write`—they are unavailable even if mentioned elsewhere.
+- Read-only only. Use only the tools bound to this run. Do not attempt writes, shell execution, git operations, MCP tools, `spawn_subagent`, or `todo`—they are unavailable even if mentioned elsewhere.
 - Stay within the parent request above. Do not expand scope, start unrelated work, or ask the user questions.
 - Prefer targeted investigation: search and read only what is needed to answer the request.
 - Work efficiently. You may time out; stop once you have enough evidence to answer or to explain what blocked you.

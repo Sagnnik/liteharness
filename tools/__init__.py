@@ -3,56 +3,30 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from langchain_core.tools import StructuredTool
-
 from tools.ask import ask_user
 from tools.check_syntax import check_syntax
+from tools.discover import add_tools, search_tools
 from tools.fs import (
-    apply_patch,
     delete_file,
-    edit_file,
+    edit,
     glob_files,
     is_git_repo,
     list_files,
-    multi_edit,
     read_file,
     write_file,
 )
-from tools.git import (
-    git_branch,
-    git_checkout,
-    git_commit,
-    git_diff,
-    git_log,
-    git_show,
-    git_stash,
-    git_status,
-)
+from tools.git import git
 from tools.search import grep
 from tools.shell import shell as shell_tool
 from tools.subagents import spawn_subagent
-from tools.todo import todo_read, todo_write
+from tools.todo import todo
 from tools.web import fetch_url, web_search
-
-def _load_project_context() -> str:
-    from memory import load_repo_context
-
-    return load_repo_context()
-
-
-get_project_context = StructuredTool.from_function(
-    name="get_project_context",
-    description="Return compact project structure and key manifest snippets.",
-    func=_load_project_context,
-)
 
 LOCAL_TOOLS = [
     read_file,
     write_file,
     delete_file,
-    edit_file,
-    multi_edit,
-    apply_patch,
+    edit,
     glob_files,
     list_files,
     grep,
@@ -60,17 +34,10 @@ LOCAL_TOOLS = [
     web_search,
     fetch_url,
     shell_tool,
-    git_status,
-    git_diff,
-    git_log,
-    git_show,
-    git_commit,
-    git_checkout,
-    git_branch,
-    git_stash,
-    todo_write,
-    todo_read,
-    get_project_context,
+    git,
+    todo,
+    search_tools,
+    add_tools,
     spawn_subagent,
     ask_user,
 ]
@@ -80,8 +47,7 @@ TOOL_MAP = {tool.name: tool for tool in ALL_TOOLS}
 TOOL_NAMES = list(TOOL_MAP)
 
 SMALL_ALWAYS_ON = {
-    "todo_read",
-    "todo_write",
+    "todo",
     "ask_user",
 }
 
@@ -89,9 +55,7 @@ TIER_L1 = {
     "read_file",
     "write_file",
     "delete_file",
-    "edit_file",
-    "multi_edit",
-    "apply_patch",
+    "edit",
     "grep",
     "check_syntax",
     "web_search",
@@ -99,28 +63,22 @@ TIER_L1 = {
     "glob_files",
     "list_files",
     "shell",
-    "get_project_context",
 }
 
-TIER_L2_GIT = {
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
+TIER_GIT = {
+    "git",
 }
 
-TIER_L3_GIT = {
-    "git_commit",
-    "git_checkout",
-    "git_branch",
-    "git_stash",
+TIER_DISCOVERY = {
+    "search_tools",
+    "add_tools",
 }
 
 TIER_L3_ADVANCED = {
     "spawn_subagent",
 }
 
-GIT_TOOLS = TIER_L2_GIT | TIER_L3_GIT
+GIT_TOOLS = set(TIER_GIT)
 
 READ_ONLY_TOOLS = {
     "read_file",
@@ -130,13 +88,9 @@ READ_ONLY_TOOLS = {
     "fetch_url",
     "glob_files",
     "list_files",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
-    "todo_read",
-    "get_project_context",
-    "todo_write",
+    "todo",
+    "search_tools",
+    "add_tools",
     "spawn_subagent",
     "ask_user",
 }
@@ -144,35 +98,84 @@ READ_ONLY_TOOLS = {
 EDIT_TOOLS = frozenset({
     "write_file",
     "delete_file",
-    "edit_file",
-    "multi_edit",
-    "apply_patch",
+    "edit",
 })
 
 DESTRUCTIVE_TOOLS = set(EDIT_TOOLS) | {
     "shell",
-    "git_commit",
-    "git_checkout",
-    "git_branch",
-    "git_stash",
+    "git",
 }
 
+# All registered MCP tool names (known catalog). Loaded lazily into the bound set.
 MCP_TOOLS: set[str] = set()
+
+# Subset of MCP tools actually bound to the model this session (starts empty;
+# grows via add_tools / the /mcp command). Keeping the bound set small preserves
+# the provider prefix cache and tool-selection accuracy.
+ACTIVE_MCP_TOOLS: set[str] = set()
+
+# Per-server MCP catalog used for search + L1 rendering (set at startup).
+# {server: {"description": str, "tools": [{"name", "tool", "description", "arg_names"}]}}
+_MCP_CATALOG: dict[str, dict[str, Any]] = {}
+
+# Bumped whenever the bound tool set changes so the agent can hot-rebind mid-session.
+_TOOLS_GENERATION = 0
 
 TOOL_CATALOG_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Small always-on", frozenset(SMALL_ALWAYS_ON)),
     ("L1 core", frozenset(TIER_L1)),
-    ("L2 git read", frozenset(TIER_L2_GIT)),
-    ("L3 git write", frozenset(TIER_L3_GIT)),
+    ("Git", frozenset(TIER_GIT)),
+    ("Tool discovery", frozenset(TIER_DISCOVERY)),
     ("L3 advanced", frozenset(TIER_L3_ADVANCED)),
 )
 
 
 def catalog_groups_for_render() -> list[tuple[str, set[str]]]:
-    """Return tier catalog groups plus the current MCP tool name set."""
+    """Return tier catalog groups plus the currently loaded MCP tool name set."""
     groups = [(label, set(names)) for label, names in TOOL_CATALOG_GROUPS]
-    groups.append(("Dynamic MCP", set(MCP_TOOLS)))
+    groups.append(("Loaded MCP tools", set(ACTIVE_MCP_TOOLS)))
     return groups
+
+
+def tools_generation() -> int:
+    """Monotonic counter that changes whenever the bound tool set changes."""
+    return _TOOLS_GENERATION
+
+
+def bump_tools_generation() -> int:
+    global _TOOLS_GENERATION
+    _TOOLS_GENERATION += 1
+    return _TOOLS_GENERATION
+
+
+def set_mcp_catalog(catalog: dict[str, dict[str, Any]]) -> None:
+    """Store the per-server MCP catalog (names + descriptions) for search/rendering."""
+    _MCP_CATALOG.clear()
+    _MCP_CATALOG.update(catalog or {})
+
+
+def mcp_catalog() -> dict[str, dict[str, Any]]:
+    return _MCP_CATALOG
+
+
+def activate_mcp_tools(names: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Mark MCP tools as active (bound). Returns (added, unknown).
+
+    Bumps the tools generation only when something new was activated so the next
+    agent turn hot-rebinds the model with the enlarged tool set.
+    """
+    added: list[str] = []
+    unknown: list[str] = []
+    for name in names:
+        if name not in TOOL_MAP or not name.startswith("mcp__"):
+            unknown.append(name)
+            continue
+        if name not in ACTIVE_MCP_TOOLS:
+            ACTIVE_MCP_TOOLS.add(name)
+            added.append(name)
+    if added:
+        bump_tools_generation()
+    return added, unknown
 
 
 def register_dynamic_tools(tools: Iterable[Any]) -> None:
@@ -191,9 +194,19 @@ def get_tools_for_names(names: Iterable[str]) -> list[Any]:
 
 
 def tool_names_for_session(git_repo: bool | None = None) -> list[str]:
-    """Return the full stable tool set for the current session shape."""
+    """Return the currently bound tool set for the current session shape.
+
+    Only MCP tools that have been activated (ACTIVE_MCP_TOOLS) are included, so
+    adding MCP servers does not bloat the bound tool set until tools are loaded.
+    """
     git_available = is_git_repo() if git_repo is None else git_repo
-    names = set(SMALL_ALWAYS_ON) | set(TIER_L1) | set(TIER_L3_ADVANCED) | set(MCP_TOOLS)
+    names = (
+        set(SMALL_ALWAYS_ON)
+        | set(TIER_L1)
+        | set(TIER_DISCOVERY)
+        | set(TIER_L3_ADVANCED)
+        | set(ACTIVE_MCP_TOOLS)
+    )
     if git_available:
         names |= set(GIT_TOOLS)
     else:
@@ -218,17 +231,35 @@ def is_destructive_tool(name: str) -> bool:
 def is_read_only_tool_call(name: str, args: dict[str, Any]) -> bool:
     if name == "shell":
         return _shell_action(args) in {"jobs", "read"}
+    if name == "git":
+        return _git_is_read_only(args)
     return name in READ_ONLY_TOOLS
 
 
 def is_destructive_tool_call(name: str, args: dict[str, Any]) -> bool:
     if name == "shell":
         return _shell_action(args) in {"run", "start", "kill"}
+    if name == "git":
+        return not _git_is_read_only(args)
     return is_destructive_tool(name)
 
 
 def _shell_action(args: dict[str, Any]) -> str:
     return str(args.get("action") or "").strip().lower()
+
+
+def _git_is_read_only(args: dict[str, Any]) -> bool:
+    """git read actions (status/diff/log/show) plus inspection-only branch/stash."""
+    from tools.git import GIT_READ_ACTIONS
+
+    action = str(args.get("action") or "").strip().lower()
+    if action in GIT_READ_ACTIONS:
+        return True
+    if action == "branch":
+        return not str(args.get("name") or "").strip()
+    if action == "stash":
+        return str(args.get("stash_action") or "list").strip().lower() == "list"
+    return False
 
 
 def _dedupe_tools(tools: Iterable[Any]) -> list[Any]:

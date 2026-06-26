@@ -83,6 +83,9 @@ def build_project_context_block(
     return "\n\n".join(section for section in sections if section).strip()
 
 
+_MCP_DESC_MAX_CHARS = 100
+
+
 def _render_tool_catalog(tools: Iterable[Any]) -> str:
     from tools import catalog_groups_for_render
 
@@ -97,7 +100,47 @@ def _render_tool_catalog(tools: Iterable[Any]) -> str:
     ungrouped = sorted(name for name in names if not any(name in group for _, group in groups))
     if ungrouped:
         lines.append(f"- Other active tools: {', '.join(ungrouped)}")
+
+    deferred = _render_deferred_mcp_servers()
+    if deferred:
+        lines.append(deferred)
     return "\n".join(lines) if lines else "- No tools registered"
+
+
+def _render_deferred_mcp_servers() -> str:
+    """List MCP servers whose tools are not yet loaded, so the model knows what it
+    can discover via search_tools. Names are cheap; full schemas stay deferred."""
+    from tools import ACTIVE_MCP_TOOLS, mcp_catalog
+
+    catalog = mcp_catalog()
+    if not catalog:
+        return ""
+
+    server_lines: list[str] = []
+    for server in sorted(catalog):
+        info = catalog[server]
+        deferred_count = sum(
+            1 for entry in info.get("tools", []) if entry.get("name") not in ACTIVE_MCP_TOOLS
+        )
+        if deferred_count == 0:
+            continue
+        desc = str(info.get("description") or "").strip().replace("\n", " ")
+        if not desc:
+            sample = [
+                str(entry.get("tool") or "")
+                for entry in info.get("tools", [])
+                if entry.get("name") not in ACTIVE_MCP_TOOLS
+            ][:4]
+            desc = ", ".join(t for t in sample if t)
+        if len(desc) > _MCP_DESC_MAX_CHARS:
+            desc = desc[:_MCP_DESC_MAX_CHARS].rstrip() + "..."
+        suffix = f": {desc}" if desc else ""
+        server_lines.append(f"  - mcp__{server}__* ({deferred_count} tool(s)){suffix}")
+
+    if not server_lines:
+        return ""
+    header = "- Available MCP servers (use search_tools to find, add_tools to load):"
+    return "\n".join([header, *server_lines])
 
 
 def render_todos(todos: list[dict] | None) -> str:

@@ -38,6 +38,10 @@ class MCPManager:
         # {"mcp__{server_name}__{tool_name}": StructuredTool}
         self.tools: dict[str, StructuredTool] = {} 
 
+        # catalog metadata for deferred-tool search/rendering
+        # {"mcp__{server}__{tool}": {"server", "tool", "description", "arg_names"}}
+        self.tool_meta: dict[str, dict[str, Any]] = {}
+
         # AsyncExitStack: dynamic container for managing multiple async context managers.
         # easier to maintain and cleanup of mcp servers.
         # {"server_name": AsyncExitStack}
@@ -78,11 +82,34 @@ class MCPManager:
         self._stacks.clear()
         self.sessions.clear()
         self.tools.clear()
+        self.tool_meta.clear()
         self.servers.clear()
         self._started = False
 
     def list_tools(self) -> list[str]:
         return sorted(self.tools)
+
+    def catalog(self) -> dict[str, dict[str, Any]]:
+        """Per-server catalog of tool names + descriptions for deferred-tool search."""
+        catalog: dict[str, dict[str, Any]] = {}
+        for full_name, meta in self.tool_meta.items():
+            server = meta.get("server", "")
+            entry = catalog.setdefault(
+                server,
+                {
+                    "description": str(self.servers.get(server, {}).get("description") or ""),
+                    "tools": [],
+                },
+            )
+            entry["tools"].append(
+                {
+                    "name": full_name,
+                    "tool": meta.get("tool", ""),
+                    "description": meta.get("description", ""),
+                    "arg_names": meta.get("arg_names", []),
+                }
+            )
+        return catalog
 
     def startup_summary(self) -> tuple[str, str]:
         """Return a one-line boot summary: ok, warn, or none."""
@@ -208,12 +235,22 @@ class MCPManager:
         
         self.sessions[name] = session
         result = await session.list_tools() # list tools in a server
-        self.servers[name] = {"status": "connected", "tools": [tool.name for tool in result.tools]}
+        self.servers[name] = {
+            "status": "connected",
+            "description": str(spec.get("description") or ""),
+            "tools": [tool.name for tool in result.tools],
+        }
 
         # wrap the tools for langchain tool
         for mcp_tool in result.tools:
             full_name = f"mcp__{name}__{mcp_tool.name}"
             self.tools[full_name] = self._wrap_tool(name, mcp_tool)
+            self.tool_meta[full_name] = {
+                "server": name,
+                "tool": mcp_tool.name,
+                "description": getattr(mcp_tool, "description", "") or "",
+                "arg_names": _input_arg_names(getattr(mcp_tool, "inputSchema", None)),
+            }
 
     def _wrap_tool(self, server_name: str, mcp_tool: Any) -> StructuredTool:
         """Translate MCP tool to LangChain tool (StructuredTool)"""
@@ -237,6 +274,15 @@ class MCPManager:
             coroutine=_call, # marks the tool as a coroutine to be executed asynchronously
             args_schema=args_schema,
         )
+
+
+def _input_arg_names(schema: dict[str, Any] | None) -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    return list(properties.keys())
 
 
 def _command_and_args(spec: dict[str, Any]) -> tuple[str, list[str]]:

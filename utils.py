@@ -90,8 +90,6 @@ def get_project_context(max_files: int = 80) -> str:
 def preview_diff(tool: str, args: dict) -> str:
     """Preview a proposed file edit without writing it."""
     path = args.get("path", "")
-    if tool == "apply_patch":
-        return str(args.get("patch", ""))
     if not path:
         return f"{tool}({args})"
 
@@ -103,13 +101,7 @@ def preview_diff(tool: str, args: dict) -> str:
 
     if tool == "write_file":
         new = str(args.get("content", ""))
-    elif tool == "edit_file":
-        edit = args.get("edit") or {}
-        old_s = str(edit.get("old_string", ""))
-        new_s = str(edit.get("new_string", ""))
-        count = -1 if edit.get("replace_all") else 1
-        new = old.replace(old_s, new_s, count)
-    elif tool == "multi_edit":
+    elif tool == "edit":
         new = old
         for edit in args.get("edits", []):
             old_s = str(edit.get("old_string", ""))

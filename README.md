@@ -76,24 +76,24 @@ Skills activate by trigger match and stay sticky for the session once loaded.
 
 LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ normal switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). Mode instructions live in the ephemeral L3 overlay, not in the cached system prefix.
 
-- **Normal** (Shift+Tab): execute with the full session tool set. All git tools (read and write) appear only inside a git repo.
-- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user`, drafts a structured plan, and should end with `todo_write` for actionable steps. Assistant output is auto-saved under `.ness/plans/`. Shift+Tab back to normal mode to execute.
+- **Normal** (Shift+Tab): execute with the full session tool set. The `git` tool appears only inside a git repo.
+- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user`, drafts a structured plan, and should end with `todo` for actionable steps. Assistant output is auto-saved under `.ness/plans/`. Shift+Tab back to normal mode to execute.
 
 Plan-mode workflow (when requirements are ambiguous):
 
 1. **Clarify** — call `ask_user` with MCQ options (mark the recommended choice; the user may add a note per question).
 2. **Research** — read-only tools and `spawn_subagent` for parallel investigation.
 3. **Plan** — numbered steps with file paths, verification, and risks.
-4. **Todos** — call `todo_write` at the end of every plan.
+4. **Todos** — call `todo` at the end of every plan.
 
 Session tool tiers (same set bound in both modes):
 
-- Small always-on: `todo_read`, `todo_write`, `ask_user`
-- L1 core: file, search, syntax checks (`check_syntax`), web (`web_search`, `fetch_url`), shell, and project-context tools
-- L2 git read: `git_status`, `git_diff`, `git_log`, `git_show`
-- L3 git write: `git_commit`, `git_checkout`, `git_branch`, `git_stash`
+- Small always-on: `todo`, `ask_user`
+- L1 core: file (`read_file`, `write_file`, `delete_file`, `edit`), search, syntax checks (`check_syntax`), web (`web_search`, `fetch_url`), and shell
+- Git: a single action-based `git` tool (read actions need no approval; write actions do). Present only inside a git repo.
+- Tool discovery: `search_tools`, `add_tools` for loading deferred MCP tools on demand
 - L3 advanced: `spawn_subagent`
-- Dynamic MCP: any `mcp__*` tool registered at startup
+- Loaded MCP tools: any `mcp__*` tool activated this session (deferred by default; load via `search_tools`/`add_tools` or `/mcp <server> [tool]`)
 
 ## Memory
 
@@ -233,7 +233,7 @@ Tools are exposed as `mcp__<server>__<tool>`. On boot the CLI prints a one-line 
 }
 ```
 
-**Subagents:** subagents are read-only. MCP tools, write tools, shell execution, git write tools, nested subagents, and `todo_write` are rejected even if listed in frontmatter.
+**Subagents:** subagents are read-only. MCP tools, write tools, shell execution, the `git` tool, nested subagents, and `todo` are rejected even if listed in frontmatter.
 
 ```markdown
 ---
@@ -313,7 +313,7 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "user", "content": "...", "t": "..."}
 {"kind": "assistant", "content": "...", "tool_calls": [], "t": "..."}
 {"kind": "tool", "tool": "read_file", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
-{"kind": "approval", "tool": "edit_file", "decision": "yes", "t": "..."}
+{"kind": "approval", "tool": "edit", "decision": "yes", "t": "..."}
 {"kind": "usage", "model": "deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "cache_write_tokens": 10, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
 {"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}

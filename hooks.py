@@ -19,7 +19,7 @@ hooks are defined in the .ness/hooks.json file
 simple example: 
 "postToolUse": [
     {
-    "matcher": "write_file|edit_file|multi_edit",
+    "matcher": "write_file|edit",
     "command": "python -c \"import sys; print('file formatted')\"",
     "blocking": false
     }

@@ -20,5 +20,5 @@ Produce the plan:
 - Keep the plan proportional to the request; do not over-engineer simple tasks.
 
 Finish:
-- Conclude EVERY plan by calling `todo_write` to record the actionable steps as todos.
+- Conclude EVERY plan by calling `todo` to record the actionable steps as todos.
 - Summarize the plan clearly so the user can switch to `/act` to execute.

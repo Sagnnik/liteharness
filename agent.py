@@ -46,6 +46,7 @@ from tools import (
     is_git_repo,
     is_read_only_tool_call,
     select_tools_for_session,
+    tools_generation,
 )
 from tools.ask import QuestionHandler, set_question_runtime
 from tools.git import git_worktree_summary
@@ -89,18 +90,30 @@ def build_graph(
     resolved_mode = (agent_mode or "normal").lower()
     repo_has_git = is_git_repo() if git_available is None else git_available
 
-    # make a tool map
-    # accepts the tools given else bind the full tool list
-    # the FULL session set is always bound regardless of mode so the provider
-    # prefix cache survives plan<->normal switches. Mode is enforced at runtime.
-    candidate_tools = ALL_TOOLS if tools is None else tools
-    active_tools = select_tools_for_session(repo_has_git, candidate_tools)
-    tool_map = {tool.name: tool for tool in active_tools}
-    tool_names = list(tool_map)
+    # Runtime tool holder. The bound tool set can grow mid-session when MCP tools
+    # are loaded (search_tools/add_tools or /mcp). We hot-rebind the model when the
+    # tools generation changes instead of recompiling the graph, so MemorySaver
+    # state is preserved. Loading a tool costs exactly one prefix-cache break (the
+    # _stable_prefix key includes tool_names), then the new set re-stabilizes.
+    # Subagents pass an explicit `tools` list and keep a fixed set (is_dynamic=False).
+    is_dynamic = tools is None
+    runtime: dict[str, Any] = {}
 
-    # bind the tools to the model and load the skills from the .ness/skills folder
-    # cuz of .bind_tools() no need to worry about format or caching
-    bound_model = model.bind_tools(active_tools)
+    def _sync_runtime(force: bool = False) -> None:
+        if runtime and not force:
+            if not is_dynamic:
+                return
+            if runtime.get("generation") == tools_generation():
+                return
+        candidate_tools = ALL_TOOLS if tools is None else tools
+        active = select_tools_for_session(repo_has_git, candidate_tools)
+        runtime["active_tools"] = active
+        runtime["tool_map"] = {t.name: t for t in active}
+        runtime["tool_names"] = list(runtime["tool_map"])
+        runtime["bound_model"] = model.bind_tools(active)
+        runtime["generation"] = tools_generation()
+
+    _sync_runtime(force=True)
     all_skills = load_skills()
 
     # create buffers
@@ -115,6 +128,9 @@ def build_graph(
     # 3. Define the Agent Node
     async def agent_node(state: AgentState) -> AgentState:
         messages = list(state.get("messages", []))
+
+        # hot-rebind the model if MCP tools were loaded since the last turn
+        _sync_runtime()
 
         # checking for /compact; if yes then clear the prefix cache
         if state.get("force_compact"):
@@ -178,7 +194,7 @@ def build_graph(
 
         # append the L3 working state as a dedicated ephemeral message at the tail
         model_messages = [system] + _with_working_state_tail(conversation, overlay)
-        response: AIMessage = await bound_model.ainvoke(model_messages)
+        response: AIMessage = await runtime["bound_model"].ainvoke(model_messages)
 
         updates: AgentState = {
             "messages": [response],
@@ -322,7 +338,7 @@ def build_graph(
 
             # run the tool and measure the duration
             started = time.time()
-            tool = tool_map.get(name)
+            tool = runtime["tool_map"].get(name)
             try:
                 if tool is None:
                     result = f"Error: unknown tool {name}"
@@ -384,9 +400,10 @@ def build_graph(
         the mode block lives in the ephemeral L3 overlay, so mode switches must not
         invalidate the cached prefix.
         """
+        active_tools = runtime["active_tools"]
         key = (
             DEFAULT_PERSONA_ID,
-            tuple(tool_names),
+            tuple(runtime["tool_names"]),
             tuple(sorted(str(skill.get("name", "")) for skill in active_skills)),
             repo_has_git,
             ness_key(),
