@@ -22,13 +22,15 @@ _SUMMARY_MESSAGE_LIMIT = 40
 _FALLBACK_SUMMARY_CHARS = 8000
 
 # --- pressure thresholds ---
+# Summary compaction triggers at 80% (not at the ceiling): the summarizing model
+# is already degraded by context rot past this point, so compact before it worsens.
 COMPACTION_TOOL_RATIO = 0.70
-COMPACTION_SUMMARY_RATIO = 0.85
+COMPACTION_SUMMARY_RATIO = 0.80
 COMPACTION_HARD_RATIO = 0.92
 PLAN_COMPACTION_CHECKPOINT_RATIO = 0.75
 
 # --- keep-count ---
-_MIN_KEEP_RECENT = 4
+_MIN_KEEP_RECENT = 2
 _MAX_KEEP_RECENT = 10
 
 # --- manual force floor ---
@@ -118,14 +120,15 @@ def compaction_action_for_ratio(ratio: float) -> tuple[CompactionAction, int]:
     # if ration < 0.70, we will not compact the conversation
     if ratio < COMPACTION_TOOL_RATIO:
         return "none", 0
-    # if ration < 0.85, we will compact the conversation to tool outputs only
+    # below the summary threshold, we compact the conversation to tool outputs only
     if ratio < COMPACTION_SUMMARY_RATIO:
         return "tool_outputs", 0
-    # if ration >= 0.85, we will compact the conversation to a LLM generated summary
-    # we will keep the last 10 -> 4 messages based on the ratio rest would be summarized
+    # at/above the summary threshold, summarize with an LLM. Keep _MAX_KEEP_RECENT
+    # recent messages at the threshold, decaying to _MIN_KEEP_RECENT as pressure rises.
+    span = max(1.0 - COMPACTION_SUMMARY_RATIO, 1e-6)
     keep = max(
         _MIN_KEEP_RECENT,
-        int(_MAX_KEEP_RECENT * (1.0 - ratio) / 0.15),
+        min(_MAX_KEEP_RECENT, int(_MAX_KEEP_RECENT * (1.0 - ratio) / span)),
     )
     return "summary", keep
 

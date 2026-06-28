@@ -101,6 +101,25 @@ async def cmd_skills(app: "SessionApp", args: str) -> None:
         render.render_warning("Skill load warnings:\n" + "\n".join(errors))
 
 
+async def cmd_skill(app: "SessionApp", args: str) -> None:
+    name = args.strip()
+    skills = load_skills()
+    if not name:
+        if not skills:
+            render.render_notice("No skills found under .ness/skills/.")
+            return
+        rows = [[s.get("name", ""), (s.get("description", "") or "").splitlines()[0] if s.get("description") else ""] for s in skills.values()]
+        render.render_table(title="skills", columns=["skill", "description"], rows=rows)
+        render.console.print(render.Text("Load a skill's full instructions with /skill <name>.", style="muted"))
+        return
+    if name not in skills:
+        render.render_error(f"Unknown skill: {name}  (/skill to list)")
+        return
+    if name not in app.pending_skills:
+        app.pending_skills.append(name)
+    render.render_notice(f"Skill '{name}' will load on your next message.", title="skill")
+
+
 async def cmd_init(app: "SessionApp", args: str) -> None:
     force = args.strip() in {"force", "--force"}
     with render.thinking("generating NESS.md"):
@@ -289,6 +308,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "cost": cmd_cost,
     "cache": cmd_cache,
     "skills": cmd_skills,
+    "skill": cmd_skill,
     "init": cmd_init,
     "memory": cmd_memory,
     "user": cmd_user,

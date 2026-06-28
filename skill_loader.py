@@ -75,16 +75,14 @@ def load_skills() -> dict[str, dict[str, Any]]:
 def load_skill_errors() -> list[str]:
     return list(_LAST_ERRORS)
 
-# TODO: Need to replace triggers with LLM based selection
+
 def select_skills(user_input: str, skills: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Select skills by trigger, name, or description keyword match."""
+    """Select skills whose frontmatter triggers appear in the user message."""
     text = user_input.lower()
     matched: list[dict[str, Any]] = []
     for skill in skills.values():
-        name = str(skill.get("name", "")).lower()
-        name_phrase = name.replace("_", " ")
         triggers = [str(t).lower() for t in skill.get("triggers", [])]
-        if any(trigger and trigger in text for trigger in triggers) or name in text or name_phrase in text:
+        if any(trigger and trigger in text for trigger in triggers):
             matched.append(skill)
     return matched
 
@@ -93,12 +91,44 @@ def select_sticky_skills(
     user_input: str,
     skills: dict[str, dict[str, Any]],
     sticky_names: set[str],
+    explicit_names: list[str] | set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Select skills and keep activated skill cores sticky for the session."""
-    matched_skills = select_skills(user_input, skills)
-    for skill in matched_skills:
+    """Load full skill bodies into L2 on trigger match or `/skill <name>`.
+
+    the agent can read `.ness/skills/<name>/SKILL.md` via read_file and keep it in conversation.
+    Once a skill is sticky it stays loaded for the session."""
+    for skill in select_skills(user_input, skills):
         sticky_names.add(str(skill.get("name", "")))
+    for name in explicit_names or []:
+        if name in skills:
+            sticky_names.add(name)
     return [skills[name] for name in sorted(sticky_names) if name in skills]
+
+
+def render_skill_catalog(
+    skills: dict[str, dict[str, Any]], relevant: set[str] | None = None
+) -> str:
+    """Render an always-on one-line catalog of every available skill for L1.
+
+    Optionally marks skills whose triggers/name matched the current request so the
+    model knows which to consider loading. Full instructions stay deferred."""
+    if not skills:
+        return ""
+    relevant = relevant or set()
+    lines = [
+        "Skill catalog (one-line summaries; full instructions load on trigger match or /skill <name> user request):"
+    ]
+    for name in sorted(skills):
+        skill = skills[name]
+        description = str(skill.get("description", "")).strip().splitlines()
+        summary = description[0].strip() if description else "" 
+        marker = " [relevant to this request]" if name in relevant else ""
+        if summary:
+            entry = f"- {name}: {summary}"
+        else:
+            entry = f"- {name}"
+        lines.append(entry + marker)
+    return "\n".join(lines)
 
 
 def inject_skills(base_prompt: str, skills: list[dict[str, Any]]) -> str:

@@ -101,6 +101,43 @@ def _render_mcp_startup() -> None:
     render.console.print(render.Text(message + hint, style=style))
 
 
+_STATIC_PREFIX_TOKEN_TARGET = 7000
+
+
+def _check_prompt_budget(git_available: bool) -> str | None:
+    """Soft-warn when the cached static prefix (L0+L1+L2) exceeds the token target."""
+    from langchain_core.messages import SystemMessage
+
+    from compaction import resolve_token_count
+    from context import (
+        DEFAULT_PERSONA,
+        build_l0,
+        build_l1,
+        build_project_context_block,
+    )
+    from memory import load_ness_memory, load_repo_context, load_user_memory
+    from skill_loader import load_skills, render_skill_catalog
+    from tools import select_tools_for_session
+
+    tools = select_tools_for_session(git_available)
+    catalog = render_skill_catalog(load_skills())
+    prefix = "\n\n".join(
+        [
+            build_l0(tools),
+            build_l1(DEFAULT_PERSONA, tools, load_user_memory(), load_ness_memory(), catalog),
+            build_project_context_block(load_repo_context(), [], git_available),
+        ]
+    ).strip()
+    tokens = resolve_token_count([SystemMessage(content=prefix)], known_input_tokens=None)
+    if tokens > _STATIC_PREFIX_TOKEN_TARGET:
+        return (
+            f"Static prompt prefix (L0+L1+L2) is ~{tokens:,} tokens "
+            f"(> {_STATIC_PREFIX_TOKEN_TARGET:,} target). Consider trimming NESS.md, "
+            "its @includes, or USER.md."
+        )
+    return None
+
+
 async def _main() -> None:
     git_available = is_git_repo()
     clear_session_rules()
@@ -125,6 +162,9 @@ async def _main() -> None:
     warning = check_ness_health()
     if warning:
         render.render_warning(warning)
+    budget_warning = _check_prompt_budget(git_available)
+    if budget_warning:
+        render.render_warning(budget_warning)
     _render_mcp_startup()
 
     controller = PromptController(

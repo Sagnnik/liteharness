@@ -40,7 +40,7 @@ from reflection import (
     run_reflection_gate,
 )
 from session import append_event
-from skill_loader import load_skills, select_sticky_skills
+from skill_loader import load_skills, render_skill_catalog, select_sticky_skills
 from tools import (
     ALL_TOOLS,
     is_destructive_tool_call,
@@ -65,6 +65,7 @@ class AgentState(TypedDict, total=False):
     approval_declined: bool
     todos: list[dict]
     agent_mode: str
+    activate_skills: list[str]
     last_reflected_message_index: int
     compacted_messages: list[BaseMessage]
     compaction_message_count: int
@@ -140,8 +141,15 @@ def build_graph(
         user_input = next((m.content for m in reversed(messages) if m.type == "human"), "")
         
         previous_skill_key = tuple(sorted(sticky_skill_names))
-        active_skills = select_sticky_skills(user_input, all_skills, sticky_skill_names)
-        
+        # Full skill bodies load into L2 on trigger match or /skill; otherwise the
+        # agent can read_file the path from the L1 catalog.
+        active_skills = select_sticky_skills(
+            user_input,
+            all_skills,
+            sticky_skill_names,
+            explicit_names=state.get("activate_skills") or [],
+        )
+
         # check the cache key to see if the sticky skills have changed
         if tuple(sorted(sticky_skill_names)) != previous_skill_key:
             prefix_cache.clear()
@@ -201,6 +209,7 @@ def build_graph(
             "messages": [response],
             "approval_declined": False,
             "force_compact": False,
+            "activate_skills": [],
         }
 
         # track conversation for auto-compaction
@@ -402,9 +411,13 @@ def build_graph(
         invalidate the cached prefix.
         """
         active_tools = runtime["active_tools"]
+        # Static one-line catalog of every available skill (no per-request markers,
+        # so it stays byte-stable across turns and preserves the prefix cache).
+        skill_catalog = render_skill_catalog(all_skills)
         key = (
             DEFAULT_PERSONA_ID,
             tuple(runtime["tool_names"]),
+            tuple(sorted(all_skills)),
             tuple(sorted(str(skill.get("name", "")) for skill in active_skills)),
             repo_has_git,
             ness_key(),
@@ -420,6 +433,7 @@ def build_graph(
                         active_tools,
                         load_user_memory(),
                         load_ness_memory(),
+                        skill_catalog,
                     ),
                     build_project_context_block(
                         load_repo_context(),

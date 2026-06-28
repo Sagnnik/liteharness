@@ -50,8 +50,9 @@ def build_l1(
     tools: Iterable[Any],
     user_memory: str = "",
     ness_memory: str = "",
+    skill_catalog: str = "",
 ) -> str:
-    """Build L1: profile/persona details, stable tool catalog, USER.md, and NESS.md."""
+    """Build L1: profile/persona details, stable tool catalog, skill catalog, USER.md, and NESS.md."""
     catalog = _render_tool_catalog(tools)
     persona_text = _persona_text(persona)
     user_section = _user_memory_section(user_memory)
@@ -59,6 +60,7 @@ def build_l1(
     return load_instruction("l1_profile").format(
         persona=persona_text,
         catalog=catalog,
+        skill_catalog=skill_catalog.strip(),
         user_section=user_section,
         ness_section=ness_section,
     )
@@ -305,8 +307,9 @@ def _ness_memory_section(ness_memory: str) -> str:
     if not ness_memory.strip():
         return ""
     return (
-        "Project conventions (.ness/NESS.md; human-authored, stable; honor unless the "
-        f"current turn explicitly overrides):\n{ness_memory.strip()}"
+        "Project conventions (.ness/NESS.md, which may inline @AGENTS.md / @CLAUDE.md "
+        "includes; human-authored, stable; honor unless the current turn explicitly "
+        f"overrides):\n{ness_memory.strip()}"
     )
 
 

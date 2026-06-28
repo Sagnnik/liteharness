@@ -19,6 +19,9 @@ Rules:
 - Do not mention thread ids, dates, or file paths.
 - Use an empty list when nothing new is worth recording.
 
+Self-check before emitting:
+- Re-read each candidate bullet and drop any that is not substantive, duplicates current session memory, or records a durable project convention. Prefer emitting fewer, higher-signal bullets over filling the list.
+
 Current session memory:
 {current_session_bullets}
 

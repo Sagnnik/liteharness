@@ -66,11 +66,11 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 LiteHarness splits context into four layers to keep prompt caching stable:
 
 1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
-2. **L1 profile** (`build_l1`): persona, stable tool catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
-3. **L2 project context** (`build_project_context_block`): repo structure, git availability, and sticky skill cores.
+2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
+3. **L2 project context** (`build_project_context_block`): repo structure, git availability, and the full bodies of explicitly-activated (sticky) skills.
 4. **L3 working state** (`build_working_state_overlay`): wrapped in `<system-reminder>` tags and sent as a dedicated ephemeral `HumanMessage` at the tail of the message list each turn (never persisted to state, never mutating earlier messages, so the cached prefix stays stable through a tool loop). Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In plan mode, mode instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block inside that overlay (also not cached). L0 documents both tags so the model knows how to interpret them.
 
-Skills activate by trigger match and stay sticky for the session once loaded.
+The L1 skill catalog lists every available skill with its path; full skill bodies load into L2 on trigger match or `/skill <name>` and stay sticky for the session once loaded (see Skills below).
 
 ## Agent Modes
 
@@ -101,11 +101,24 @@ Three memory files live under `.ness/`:
 
 | File | Purpose |
 |------|---------|
-| `NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/init`, `/memory add`, or manual edit. Loaded into L1. |
+| `NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/init`, `/memory add`, or manual edit. Loaded into L1. May inline existing `@AGENTS.md` / `@CLAUDE.md` files (see below). |
 | `USER.md` | Cross-repo user preferences. Human-authored via `/user`; loaded into L1. |
 | `sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L3. Maintained by the reflection gate. |
 
-Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget, and once more at session exit. It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md`. Bullets appear in the L3 system-reminder overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when it exceeds 20,000 characters.
+Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget, and once more at session exit. It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md`. Bullets appear in the L3 system-reminder overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when its resolved size exceeds 20,000 characters.
+
+### NESS.md includes
+
+A standalone line in `NESS.md` of the form `@<path>` inlines that file's contents in place at runtime, so a repo that already ships an `AGENTS.md` or `CLAUDE.md` is picked up without duplication:
+
+```markdown
+@AGENTS.md
+@CLAUDE.md
+
+<extra LiteHarness-specific conventions here>
+```
+
+Includes resolve relative to the project root, reject paths that escape it, skip missing files (leaving a `# (missing include: ...)` marker), guard against cycles, and are size-capped. Changes to an included file invalidate the L1 prompt cache. The CLI also warns at startup when the assembled static prefix (L0+L1+L2) exceeds ~7,000 tokens.
 
 ## Compaction
 
@@ -114,10 +127,10 @@ Compaction is model-relative by default. LiteHarness estimates the usable contex
 | Pressure | Action |
 |----------|--------|
 | < 70% | No compaction |
-| 70-85% | Compact large tool outputs |
-| >= 85% | Summarize older history; keep `max(4, int(10 * (1 - ratio) / 0.15))` recent messages |
+| 70-80% | Compact large tool outputs |
+| >= 80% | Summarize older history; keep `max(4, min(10, int(10 * (1 - ratio) / 0.20)))` recent messages |
 
-Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to act), LiteHarness shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
+Summary compaction triggers at 80% (not at the context ceiling): past that point the summarizing model is already degraded by context rot, so LiteHarness compacts before the summary itself would degrade. Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to act), LiteHarness shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
 
 ## `.ness/` Layout
 
@@ -162,6 +175,8 @@ Skill instructions go here.
 ```
 
 Small reference files (≤ 20 lines) are inlined into the prompt. Larger references are listed for on-demand `read_file` fetch.
+
+Skill loading is two-stage. A one-line catalog of every available skill (`name: description`, plus path) is always present in L1. Full `SKILL.md` bodies load into L2 when a frontmatter trigger matches the user's message, or when the user runs `/skill <name>`. Otherwise the agent can `read_file` the path from the catalog; that content stays in the conversation via tool messages. Once a skill is sticky in L2 it remains for the rest of the session.
 
 ## Permissions
 
@@ -282,6 +297,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Context & memory**
 
 - `/skills`: list loaded skills and warnings.
+- `/skill [<name>]`: list skills, or load a skill's full instructions on the next message.
 - `/init [force]`: generate `.ness/NESS.md`.
 - `/memory` or `/memory add <note>`: read or append project memory.
 - `/user` or `/user add <note>`: read or append user preferences.

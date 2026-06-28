@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from config import settings
@@ -23,6 +24,76 @@ def user_memory_path() -> Path:
 USER_FILE = user_memory_path()
 
 MAX_NESS_CHARS = 20_000
+
+# Total character budget for files inlined via @path includes in NESS.md.
+MAX_NESS_INCLUDE_CHARS = 40_000
+
+# A standalone line that is exactly `@<path>` (no leading whitespace) is an include directive.
+_NESS_INCLUDE_RE = re.compile(r"^@(\S+)\s*$")
+
+
+def _project_root() -> Path:
+    """Project root used to resolve @path includes (the parent of .ness)."""
+    return Path.cwd().resolve()
+
+
+def _resolve_include_path(ref: str) -> Path | None:
+    """Resolve an include reference under the project root, rejecting path escapes.
+    <project root>/AGENTS.md
+    <project root>/CLAUDE.md
+    """
+    root = _project_root()
+    try:
+        candidate = (root / ref).resolve()
+        candidate.relative_to(root)
+    except (ValueError, OSError):
+        return None
+    return candidate
+
+
+def _expand_ness_includes(text: str) -> tuple[str, list[Path]]:
+    """Inline standalone `@path` directives with the referenced file contents.
+
+    Resolves relative to the project root, rejects escapes, skips missing files,
+    guards against include cycles, and caps the total inlined size. Returns the
+    expanded text and the ordered list of resolved files that were inlined (for
+    cache invalidation)."""
+    collected: list[Path] = []
+    seen: set[Path] = set()
+    budget = [MAX_NESS_INCLUDE_CHARS]
+
+    def expand(body: str) -> str:
+        out: list[str] = []
+        for line in body.splitlines():
+            match = _NESS_INCLUDE_RE.match(line)
+            if not match:
+                out.append(line)
+                continue
+            ref = match.group(1)
+            path = _resolve_include_path(ref)
+            if path is None or not path.is_file():
+                out.append(f"# (missing include: {ref})")
+                continue
+            if path in seen:
+                out.append(f"# (skipped circular include: {ref})")
+                continue
+            seen.add(path)
+            collected.append(path)
+            if budget[0] <= 0:
+                out.append(f"# (include budget exceeded, skipped: {ref})")
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except OSError:
+                out.append(f"# (unreadable include: {ref})")
+                continue
+            if len(content) > budget[0]:
+                content = content[: budget[0]]
+            budget[0] -= len(content)
+            out.append(expand(content).rstrip("\n"))
+        return "\n".join(out)
+
+    return expand(text), collected
 
 
 def _file_key(path: Path) -> tuple[bool, int, int]:
@@ -70,9 +141,10 @@ def load_repo_context() -> str:
 # --- NESS.md: Project Memory (Durable, Human-Managed) (L1) ---
 
 def load_ness_memory() -> str:
-    """Load .ness/NESS.md project memory."""
+    """Load .ness/NESS.md project memory, inlining any @AGENTS.md / @CLAUDE.md includes."""
     if NESS_FILE.exists():
-        return NESS_FILE.read_text(encoding="utf-8")
+        expanded, _ = _expand_ness_includes(NESS_FILE.read_text(encoding="utf-8"))
+        return expanded
     return ""
 
 
@@ -101,9 +173,19 @@ def write_ness_memory(text: str, overwrite: bool = False) -> str:
     return f"Wrote {NESS_FILE}"
 
 
-def ness_key() -> tuple[bool, int, int]:
-    """Cheap signature for durable project memory cache invalidation."""
-    return _file_key(NESS_FILE)
+def ness_key() -> tuple[tuple[bool, int, int], ...]:
+    """Cheap signature for durable project memory cache invalidation.
+
+    Folds in NESS.md plus every file inlined via @path includes, so the L1 prefix
+    cache refreshes when an included AGENTS.md / CLAUDE.md changes."""
+    base = _file_key(NESS_FILE)
+    if not NESS_FILE.exists():
+        return (base,)
+    try:
+        _, includes = _expand_ness_includes(NESS_FILE.read_text(encoding="utf-8"))
+    except OSError:
+        return (base,)
+    return (base, *(_file_key(path) for path in includes))
 
 
 # --- USER.md: Cross-Repo Identity / Preferences (L1, Human-Authored Only) ---

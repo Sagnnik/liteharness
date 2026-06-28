@@ -60,6 +60,8 @@ class SessionApp:
         self.should_exit = False
         self.pending_image = ""
         self.queued_prompt = ""
+        # Skills explicitly activated via /skill, drained into the next turn's payload.
+        self.pending_skills: list[str] = []
         self.assistant_history: list[str] = []
         self.last_usage: dict[str, Any] | None = None
 
@@ -144,11 +146,14 @@ class SessionApp:
 
         config = {"configurable": {"thread_id": self.thread_id}}
         initial = self._bootstrap.pop(self.thread_id, [])
+        activate_skills = self.pending_skills
+        self.pending_skills = []
         payload = {
             "messages": [*initial, user_message],
             "approval_declined": False,
             "agent_mode": self.agent_mode,
             "force_compact": self._consume_force_compact(),
+            "activate_skills": activate_skills,
         }
 
         before = self._cost_snapshot()

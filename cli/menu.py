@@ -47,6 +47,7 @@ COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("compact", "Force compaction on the next turn", "Session", "/compact"),
     # context & memory
     CommandSpec("skills", "List loaded skills and warnings", "Context", "/skills"),
+    CommandSpec("skill", "Load a skill's full instructions next turn", "Context", "/skill [<name>]"),
     CommandSpec("init", "Generate .ness/NESS.md", "Context", "/init [force]"),
     CommandSpec("memory", "Read or append project memory", "Context", "/memory [add <note>]"),
     CommandSpec("user", "Read or append user preferences", "Context", "/user [add <note>]"),
