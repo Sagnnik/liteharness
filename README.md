@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner-light-geo.svg" alt="LiteHarness — hackable coding-agent harness" width="100%">
+</p>
+
 # LiteHarness
 
 LiteHarness is an experimental, hackable coding-agent harness for engineers who want to own the loop. It uses OpenRouter-compatible chat models, LangGraph for orchestration, native tool-calling by default, and filesystem-driven extension points under `.ness/`.

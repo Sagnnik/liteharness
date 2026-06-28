@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="240" viewBox="0 0 1200 240" role="img" aria-label="LiteHarness">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f7f4f2"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c4715b"/>
+      <stop offset="100%" stop-color="#a65d47"/>
+    </linearGradient>
+    <pattern id="diagonal" width="18" height="18" patternUnits="userSpaceOnUse" patternTransform="rotate(-32)">
+      <line x1="0" y1="0" x2="0" y2="18" stroke="#ebe5df" stroke-width="0.65"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="240" fill="url(#bg)"/>
+  <rect width="1200" height="240" fill="url(#diagonal)"/>
+
+  <!-- geometric accents (right side) -->
+  <g fill="none" stroke="#e6dfd8" opacity="0.85">
+    <circle cx="1020" cy="120" r="168" stroke-width="1"/>
+    <circle cx="1020" cy="120" r="112" stroke-width="0.75"/>
+    <circle cx="1020" cy="120" r="56" stroke-width="0.75"/>
+    <line x1="640" y1="-20" x2="1240" y2="260" stroke-width="0.6"/>
+    <line x1="760" y1="-20" x2="1200" y2="200" stroke-width="0.6"/>
+  </g>
+
+  <rect x="0" y="236" width="1200" height="4" fill="url(#accent)" opacity="0.55"/>
+
+  <!-- loop mark -->
+  <g transform="translate(72, 32)">
+    <circle cx="88" cy="88" r="76" fill="none" stroke="#ebe5df" stroke-width="1.5"/>
+    <path
+      d="M 88 28 A 60 60 0 1 1 87.8 28"
+      fill="none"
+      stroke="#1a1a1a"
+      stroke-width="4"
+      stroke-linecap="round"
+    />
+    <circle cx="88" cy="28" r="7" fill="#c4715b"/>
+    <circle cx="140" cy="118" r="5.5" fill="#9b8b82"/>
+    <circle cx="36" cy="118" r="5.5" fill="#9b8b82"/>
+    <line x1="88" y1="35" x2="134" y2="112" stroke="#6b5e57" stroke-width="2" opacity="0.35"/>
+    <line x1="88" y1="35" x2="42" y2="112" stroke="#6b5e57" stroke-width="2" opacity="0.35"/>
+  </g>
+
+  <line x1="264" y1="64" x2="264" y2="176" stroke="#e8e0dc" stroke-width="2"/>
+
+  <text
+    x="296"
+    y="118"
+    font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+    font-size="52"
+    font-weight="600"
+    letter-spacing="-0.5"
+  >
+    <tspan fill="#c4715b">Lite</tspan><tspan fill="#1a1a1a">Harness</tspan>
+  </text>
+
+  <text
+    x="298"
+    y="154"
+    font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+    font-size="18"
+    font-weight="400"
+    fill="#6b5e57"
+  >
+    Hackable coding-agent harness
+  </text>
+</svg>
