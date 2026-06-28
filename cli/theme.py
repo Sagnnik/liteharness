@@ -59,7 +59,7 @@ RICH_THEME = Theme(
         # tables
         "table.header": f"bold {CYAN}",
         "table.dim": GRAY_DIM,
-        "mode.normal": f"bold {GREEN}",
+        "mode.act": f"bold {GREEN}",
         "mode.plan": f"bold {CYAN}",
     }
 )

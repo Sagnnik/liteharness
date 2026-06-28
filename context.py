@@ -12,6 +12,11 @@ DEFAULT_PERSONA_ID = "default"
 DEFAULT_PERSONA = "You are an expert software engineer working inside the user's repository."
 
 
+def normalize_agent_mode(mode: str | None) -> str:
+    m = (mode or "act").lower()
+    return "act" if m == "normal" else m
+
+
 @lru_cache(maxsize=None)
 def load_instruction(stem: str) -> str:
     path = INSTRUCTIONS_DIR / f"{stem}_instructions.md"
@@ -37,7 +42,7 @@ def build_system_prompt(
 
 def build_l0(tools: Iterable[Any] | None = None) -> str:
     """Build L0: stable harness identity, universal rules, and tool protocol."""
-    return load_instruction("l0_harness").format(tool_calling=_native_tool_calling())
+    return load_instruction("l0_harness")
 
 
 def build_l1(
@@ -161,7 +166,7 @@ def build_working_state_overlay(
     compaction_note: str = "",
 ) -> str:
     """
-    Build L3 working state. The agent wraps this in <working-state> tags and sends it as a
+    Build L3 working state. The agent wraps this in <system-reminder> tags and sends it as a
     dedicated ephemeral HumanMessage at the tail of the message list (never persisted to state).
     Currently it has:
     - GIT SNAPSHOT (git branch + git status --porcelain)
@@ -169,7 +174,7 @@ def build_working_state_overlay(
     - TODOS
     - SESSION MEMORY (distilled episodic bullets for this thread)
     """
-    mode = (agent_mode or "normal").lower()
+    mode = normalize_agent_mode(agent_mode)
 
     if mode == "plan":
         from config import settings
@@ -181,7 +186,7 @@ def build_working_state_overlay(
             + "\n</plan-mode>"
         )
     else:
-        mode_block = load_instruction("normal_mode")
+        mode_block = load_instruction("act_mode")
     parts = [mode_block]
 
     if git_snapshot.strip():
@@ -351,7 +356,3 @@ def _content_text(content) -> str:
     if isinstance(content, list):
         return " ".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
     return str(content)
-
-
-def _native_tool_calling() -> str:
-    return load_instruction("native_tool_calling")

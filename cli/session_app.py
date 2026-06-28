@@ -1,7 +1,7 @@
 """SessionApp: the CLI controller that owns app state and drives the graph.
 
 Responsibilities: build/rebuild the LangGraph app, run a turn (stream + render +
-per-turn usage), themed permission prompts, mode toggling with the plan->normal
+per-turn usage), themed permission prompts, mode toggling with the plan->act
 compaction checkpoint, and full-transcript resume / reset / save.
 """
 
@@ -47,7 +47,7 @@ def graph_rebuild_needed(current_thread: str, built_thread: str) -> bool:
     """A graph rebuild is needed only when the thread id changed.
 
     Mode is enforced at runtime via state["agent_mode"] and the full tool set is
-    always bound, so a plan<->normal switch never requires a rebuild.
+    always bound, so a plan<->act switch never requires a rebuild.
     """
     return current_thread != built_thread
 
@@ -56,7 +56,7 @@ class SessionApp:
     def __init__(self, *, git_available: bool) -> None:
         self.git_available = git_available
         self.thread_id = new_thread_id()
-        self.agent_mode = "normal"
+        self.agent_mode = "act"
         self.should_exit = False
         self.pending_image = ""
         self.queued_prompt = ""
@@ -98,10 +98,10 @@ class SessionApp:
 
     # --- mode toggle -------------------------------------------------------
     def toggle_mode(self) -> None:
-        if self.agent_mode == "normal":
+        if self.agent_mode == "act":
             self.agent_mode = "plan"
         else:
-            self.agent_mode = "normal"
+            self.agent_mode = "act"
             self._pending_act_checkpoint = True
 
     # --- header ------------------------------------------------------------
@@ -134,7 +134,7 @@ class SessionApp:
 
     # --- the turn ----------------------------------------------------------
     async def run_turn(self, user_text: str) -> None:
-        if self._pending_act_checkpoint and self.agent_mode == "normal":
+        if self._pending_act_checkpoint and self.agent_mode == "act":
             await self._maybe_checkpoint_before_act()
             self._pending_act_checkpoint = False
         self._ensure_graph()
@@ -284,7 +284,7 @@ class SessionApp:
             self._line_session = PromptSession(style=Style.from_dict(PTK_STYLE_RULES))
         return await self._line_session.prompt_async([("class:prompt", message)])
 
-    # --- compaction checkpoint (plan -> normal) ----------------------------
+    # --- compaction checkpoint (plan -> act) ----------------------------
     async def _maybe_checkpoint_before_act(self) -> None:
         try:
             snapshot = await self.app.aget_state({"configurable": {"thread_id": self.thread_id}})

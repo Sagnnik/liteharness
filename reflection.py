@@ -17,7 +17,7 @@ Reflection triggers:
 2. Session exit (finalize_session_reflection)
 
 Job: distill recent work into up to 2 bullet points -> ./ness/sessions/mem_<thread_id>.md
-Bullets are injected into L3 working-state overlay on subsequent turns.
+Bullets are injected into L3 system-reminder overlay on subsequent turns.
 """
 
 _reflection_locks: dict[str, asyncio.Lock] = {}

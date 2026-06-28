@@ -57,7 +57,7 @@ async def cmd_help(app: "SessionApp", args: str) -> None:
         for spec in specs:
             rows.append([spec.usage or f"/{spec.name}", spec.summary])
     render.render_table(title="commands", columns=["command", "description"], rows=rows)
-    render.console.print(render.Text("Shift+Tab toggles plan/normal mode.", style="muted"))
+    render.console.print(render.Text("Shift+Tab toggles plan/act mode.", style="muted"))
 
 
 async def cmd_menu(app: "SessionApp", args: str) -> None:

@@ -21,4 +21,4 @@ Produce the plan:
 
 Finish:
 - Conclude EVERY plan by calling `todo` to record the actionable steps as todos.
-- Summarize the plan clearly so the user can switch to `/act` to execute.
+- Summarize the plan clearly so the user can Shift+Tab to act mode to execute.

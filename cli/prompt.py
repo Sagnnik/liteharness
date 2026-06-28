@@ -1,5 +1,5 @@
 """prompt_toolkit input layer: history, slash completion, bottom toolbar and the
-Shift+Tab plan/normal mode toggle.
+Shift+Tab plan/act mode toggle.
 
 Kept separate from rendering so the read side (input) and write side (output) do
 not entangle. The PromptController pulls live state via callbacks supplied by the

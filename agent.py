@@ -31,6 +31,7 @@ from context import (
     build_l1,
     build_project_context_block,
     build_working_state_overlay,
+    normalize_agent_mode,
     render_todos,
 )
 from reflection import (
@@ -87,7 +88,7 @@ def build_graph(
     question_handler: QuestionHandler | None = None,
 ) -> Runnable:
     # define the mode
-    resolved_mode = (agent_mode or "normal").lower()
+    resolved_mode = normalize_agent_mode(agent_mode)
     repo_has_git = is_git_repo() if git_available is None else git_available
 
     # Runtime tool holder. The bound tool set can grow mid-session when MCP tools
@@ -179,7 +180,7 @@ def build_graph(
             had_stored_compaction=bool(state.get("compacted_messages")),
         )
 
-        current_mode = (state.get("agent_mode") or resolved_mode).lower()
+        current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
         git_snapshot = git_worktree_summary() if repo_has_git else ""
         session_memory = load_session_memory(thread_id)
 
@@ -301,10 +302,10 @@ def build_graph(
 
         # store tool results in a list of ToolMessage objects
         results: list[ToolMessage] = []
-        current_mode = (state.get("agent_mode") or resolved_mode).lower()
+        current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
         for name, args, call_id in calls:
             if current_mode == "plan" and not is_read_only_tool_call(name, args):
-                content = "Unavailable in plan mode. Switch to /act to execute."
+                content = "Unavailable in plan mode. Switch to act mode (Shift+Tab) to execute."
                 # hidden=True keeps the rejection in state (the model sees it and adapts)
                 # but the CLI render layer skips it, so the user is not shown the noise.
                 results.append(
@@ -371,7 +372,7 @@ def build_graph(
         calls = extract_tool_calls(last)
         if not calls:
             return END
-        current_mode = (state.get("agent_mode") or resolved_mode).lower()
+        current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
         if current_mode == "plan" and any(not is_read_only_tool_call(name, args) for name, args, _ in calls):
             return "tools"
         if any(_needs_approval(name, args) for name, args, _ in calls):
@@ -529,7 +530,7 @@ def _with_working_state_tail(messages: list[BaseMessage], overlay: str) -> list[
     # - never written back to state: it lives only in this transient model_messages list
     if not overlay.strip():
         return list(messages)
-    block = f"<working-state>\n{overlay.strip()}\n</working-state>"
+    block = f"<system-reminder>\n{overlay.strip()}\n</system-reminder>"
     return list(messages) + [HumanMessage(content=block)]
 
 

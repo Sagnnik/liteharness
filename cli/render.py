@@ -31,7 +31,7 @@ def render_header(*, mode: str, model: str, approval: bool, autosave: bool) -> N
     meta.append("model ", style="usage")
     meta.append(model, style="usage.value")
     meta.append("   mode ", style="usage")
-    meta.append(mode, style="mode.plan" if mode == "plan" else "mode.normal")
+    meta.append(mode, style="mode.plan" if mode == "plan" else "mode.act")
     meta.append("   approval ", style="usage")
     meta.append("on" if approval else "off", style="usage.value")
     meta.append("   autosave ", style="usage")
@@ -39,7 +39,7 @@ def render_header(*, mode: str, model: str, approval: bool, autosave: bool) -> N
     body.add_row(title)
     body.add_row(meta)
     console.print(Panel(body, box=ROUNDED, border_style="header.frame", padding=(0, 1)))
-    console.print(Text("Shift+Tab toggles plan/normal  •  /menu for commands  •  /help", style="muted"))
+    console.print(Text("Shift+Tab toggles plan/act  •  /menu for commands  •  /help", style="muted"))
 
 
 # --- user echo --------------------------------------------------------------

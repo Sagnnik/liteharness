@@ -25,7 +25,7 @@ _GIT_LOG_MAX_COUNT = 100
 
 
 def git_worktree_summary(cwd: Path = PROJECT_ROOT) -> str:
-    """Compact branch + dirty-state snapshot for per-turn working-state overlays."""
+    """Compact branch + dirty-state snapshot for per-turn system-reminder overlays."""
     branch_out = _git(["branch", "--show-current"], timeout=5, cwd=cwd)
     if branch_out.startswith("Error:"):
         return ""

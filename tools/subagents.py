@@ -360,14 +360,14 @@ async def _invoke_subagent(
         model,
         tools=prepared.tools, # read-only tools
         thread_id=thread_id,
-        agent_mode="normal", # subagents dont have plan mode
+        agent_mode="act", # subagents dont have plan mode
     )
     result = await app.ainvoke(
         {
             "messages": [HumanMessage(content=prepared.agent_prompt)],
             "approval_declined": False,
             "todos": [],
-            "agent_mode": "normal",
+            "agent_mode": "act",
         },
         config={"configurable": {"thread_id": thread_id}},
     )
