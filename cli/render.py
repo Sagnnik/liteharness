@@ -181,13 +181,13 @@ _STATUS_GLYPH = {
 
 
 def render_todos(todos: Iterable[dict]) -> None:
-    todos = list(todos or [])
-    if not todos:
+    active = [todo for todo in (todos or []) if todo.get("status") != "completed"]
+    if not active:
         return
     table = Table(box=SIMPLE, show_header=False, padding=(0, 1), expand=False)
     table.add_column(width=2)
     table.add_column()
-    for todo in todos:
+    for todo in active:
         glyph, style = _STATUS_GLYPH.get(str(todo.get("status", "")), ("○", "muted"))
         content = str(todo.get("content", ""))
         style_text = "muted" if todo.get("status") == "completed" else "default"

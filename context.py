@@ -152,11 +152,15 @@ def _render_deferred_mcp_servers() -> str:
 
 def render_todos(todos: list[dict] | None) -> str:
     # used by the agent: - [status] <id>: <content>
+    # Exclude completed todos — they stay in state but are omitted from L3 and CLI.
     if not todos:
-        return "No todos"
+        return ""
+    active = [t for t in todos if t.get("status") != "completed"]
+    if not active:
+        return ""
     return "\n".join(
         f"- [{todo.get('status', 'pending')}] {todo.get('id', '')}: {todo.get('content', '')}"
-        for todo in todos
+        for todo in active
     )
 
 
@@ -173,7 +177,7 @@ def build_working_state_overlay(
     Currently it has:
     - GIT SNAPSHOT (git branch + git status --porcelain)
     - COMPACTION
-    - TODOS
+    - TODOS (only when there are non-completed items)
     - SESSION MEMORY (distilled episodic bullets for this thread)
     """
     mode = normalize_agent_mode(agent_mode)
@@ -197,7 +201,8 @@ def build_working_state_overlay(
     if compaction_note.strip():
         parts.append("COMPACTION\n" + compaction_note.strip())
 
-    parts.append("TODOS\n" + (todos.strip() or "No todos"))
+    if todos.strip():
+        parts.append("TODOS\n" + todos.strip())
 
     if session_memory.strip():
         parts.append("SESSION MEMORY\n" + session_memory.strip())
