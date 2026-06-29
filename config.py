@@ -18,6 +18,10 @@ MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-3-haiku": (0.25, 1.25, 0.10, 1.25),
     "deepseek-chat": (0.14, 0.28, 0.10, 1.0),
     "deepseek-v4-flash": (0.09, 0.18, 0.22, 1.0),
+    "glm-5.1": (0.98, 3.08, 0.19, 1.0),
+    "glm-5.2": (0.95, 3.00, 0.19, 1.0),
+    "kimi-k2.6": (0.66, 3.41, 0.50, 1.0),
+    "kimi-k2.7-code": (0.74, 3.50, 0.22, 1.0),
 }
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -34,6 +38,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "deepseek-chat": 128_000,
     "deepseek-v4-flash": 1_000_000,
     "gemini-2.0-flash": 1_000_000,
+    "glm-5.1": 203_000,
+    "glm-5.2": 1_000_000,
+    "kimi-k2.6": 262_000,
+    "kimi-k2.7-code": 262_000,
 }
 
 VISION_MODELS = {
@@ -45,6 +53,9 @@ VISION_MODELS = {
     "claude-3-haiku",
     "gemini-pro-vision",
     "gemini-2.0-flash",
+    "glm-5.1",
+    "kimi-k2.6",
+    "kimi-k2.7-code",
 }
 
 # Curated OpenRouter slugs offered by the /config model switcher. Edit freely.
@@ -60,6 +71,10 @@ AVAILABLE_MODELS: tuple[str, ...] = (
     "google/gemini-2.0-flash",
     "deepseek/deepseek-chat",
     "deepseek/deepseek-v4-flash",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code",
+    "z-ai/glm-5.1",
+    "z-ai/glm-5.2",
 )
 
 
