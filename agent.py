@@ -540,12 +540,30 @@ def _effective_conversation(messages: list[BaseMessage], state: AgentState) -> l
 
 
 def _with_working_state_tail(messages: list[BaseMessage], overlay: str) -> list[BaseMessage]:
-    # Append the L3 working state as a dedicated ephemeral message at the TAIL.
-    # - never written back to state: it lives only in this transient model_messages list
+    """Inject L3 working state ephemerally for the model API call (never persisted to state).
+
+    Fresh user turn (last message is human): append <system-reminder> to that message so
+    mode/todos/git context accompanies the user's request (matches L0).
+
+    Tool loop (last message is AI or tool): append a separate tail HumanMessage so the
+    user's text stays byte-stable for prefix caching while fresh overlay lands after results.
+    """
     if not overlay.strip():
         return list(messages)
-    block = f"<system-reminder>\n{overlay.strip()}\n</system-reminder>"
-    return list(messages) + [HumanMessage(content=block)]
+    block = f"\n\n<system-reminder>\n{overlay.strip()}\n</system-reminder>"
+    result = list(messages)
+    if result and result[-1].type == "human":
+        last = result[-1]
+        if isinstance(last.content, str):
+            result[-1] = HumanMessage(content=last.content + block)
+            return result
+        if isinstance(last.content, list):
+            result[-1] = HumanMessage(
+                content=[*last.content, {"type": "text", "text": block.lstrip()}]
+            )
+            return result
+    reminder = f"<system-reminder>\n{overlay.strip()}\n</system-reminder>"
+    return result + [HumanMessage(content=reminder)]
 
 
 def _reflection_token_delta(messages: list[BaseMessage], since_index: int) -> int:

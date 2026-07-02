@@ -174,7 +174,8 @@ def build_working_state_overlay(
     """
     Build L3 working state. The agent wraps this in <system-reminder> tags and sends it as a
     dedicated ephemeral HumanMessage at the tail of the message list (never persisted to state).
-    Currently it has:
+    Plan mode: <plan-mode> block with plan instructions. Act mode: no specific instructions block; 
+    only dynamic sections below when present:
     - GIT SNAPSHOT (git branch + git status --porcelain)
     - COMPACTION
     - TODOS (only when there are non-completed items)
@@ -182,18 +183,16 @@ def build_working_state_overlay(
     """
     mode = normalize_agent_mode(agent_mode)
 
+    parts: list[str] = []
     if mode == "plan":
         from config import settings
 
         plan_path = f"{settings.ness_dir.rstrip('/')}/plans/"
-        mode_block = (
+        parts.append(
             f'<plan-mode path="{plan_path}">\n'
             + load_instruction("plan_mode")
             + "\n</plan-mode>"
         )
-    else:
-        mode_block = load_instruction("act_mode")
-    parts = [mode_block]
 
     if git_snapshot.strip():
         parts.append("GIT\n" + git_snapshot.strip())

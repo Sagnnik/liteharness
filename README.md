@@ -73,23 +73,24 @@ LiteHarness splits context into four layers to keep prompt caching stable:
 1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
 3. **L2 project context** (`build_project_context_block`): repo structure, git availability, and the full bodies of explicitly-activated (sticky) skills.
-4. **L3 working state** (`build_working_state_overlay`): wrapped in `<system-reminder>` tags and sent as a dedicated ephemeral `HumanMessage` at the tail of the message list each turn (never persisted to state, never mutating earlier messages, so the cached prefix stays stable through a tool loop). Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In plan mode, mode instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block inside that overlay (also not cached). L0 documents both tags so the model knows how to interpret them.
+4. **L3 working state** (`build_working_state_overlay`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn it is appended to the latest human message; during a tool loop it is sent as a separate tail `HumanMessage` so the user's text stays byte-stable for prefix caching. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
 
 The L1 skill catalog lists every available skill with its path; full skill bodies load into L2 on trigger match or `/skill <name>` and stay sticky for the session once loaded (see Skills below).
 
 ## Agent Modes
 
-LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). Mode instructions live in the ephemeral L3 overlay, not in the cached system prefix.
+LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). **Plan** mode instructions live in the ephemeral L3 `<plan-mode>` overlay; **act** mode has no mode block (like OpenCode build — L0 + tools + dynamic L3 state only).
 
-- **Act** (Shift+Tab): execute with the full session tool set. The `git` tool appears only inside a git repo.
+- **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. The `git` tool appears only inside a git repo.
 - **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user`, drafts a structured plan, and should end with `todo` for actionable steps. Assistant output is auto-saved under `.ness/plans/`. Shift+Tab back to act mode to execute.
 
 Plan-mode workflow (when requirements are ambiguous):
 
 1. **Clarify** — call `ask_user` with MCQ options (mark the recommended choice; the user may add a note per question).
-2. **Research** — read-only tools and `spawn_subagent` for parallel investigation.
+2. **Research** — read-only tools first; use `spawn_subagent` sparingly (see L0 subagents rule).
 3. **Plan** — numbered steps with file paths, verification, and risks.
 4. **Todos** — call `todo` at the end of every plan.
+5. **Act** — Shift+Tab to act/build mode and execute the todos; do not re-plan unless blocked or the user redirects.
 
 Session tool tiers (same set bound in both modes):
 
