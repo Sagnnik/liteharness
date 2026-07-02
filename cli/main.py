@@ -47,17 +47,16 @@ _bootstrap_worktree()
 
 import typer
 
-from config import cost_tracker, settings
+from config import REASONING_EFFORTS, cost_tracker, settings
 from memory import check_ness_health
 from mcp_client import mcp_manager
-from model import ModelOverrides, active_model_name, configure_model
+from model import ModelOverrides, configure_model, validate_reasoning_effort_for_model
 from permissions import clear_session_rules
 from tools import is_git_repo, register_dynamic_tools, set_mcp_catalog
 
 from cli import render
-from cli.commands import dispatch
-from cli.prompt import PromptController
 from cli.session_app import SessionApp
+from cli.tui import TuiApp
 
 app = typer.Typer(add_completion=False, help="LiteHarness agent CLI")
 
@@ -68,6 +67,7 @@ def _overrides(
     api_key: str | None,
     base_url: str | None,
     session_id: str | None,
+    reasoning_effort: str | None,
 ) -> ModelOverrides | None:
     fields = {
         "model_name": model,
@@ -75,7 +75,17 @@ def _overrides(
         "openai_api_key": api_key,
         "openai_base_url": base_url,
         "openrouter_session_id": session_id,
+        "reasoning_effort": reasoning_effort,
     }
+    if reasoning_effort is not None:
+        if reasoning_effort not in REASONING_EFFORTS:
+            allowed = ", ".join(REASONING_EFFORTS)
+            raise typer.BadParameter(f"reasoning effort must be one of: {allowed}")
+        target_model = model or settings.model_name
+        try:
+            validate_reasoning_effort_for_model(target_model, reasoning_effort)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     active = {key: value for key, value in fields.items() if value is not None}
     return ModelOverrides(**active) if active else None
 
@@ -87,18 +97,25 @@ def run(
     api_key: str = typer.Option(None, "--api-key", help="OpenAI-compatible API key"),
     base_url: str = typer.Option(None, "--base-url", help="OpenAI-compatible base URL"),
     session_id: str = typer.Option(None, "--openrouter-session-id", help="Stable prompt-cache session id"),
+    reasoning_effort: str = typer.Option(
+        None,
+        "--reasoning-effort",
+        help="OpenRouter reasoning effort: none, minimal, low, medium, high, xhigh, max",
+    ),
     worktree: str = typer.Option(None, "--worktree", "-w", help="Run inside an isolated git worktree"),
 ) -> None:
     """Start an interactive LiteHarness session."""
-    configure_model(_overrides(model, reflection_model, api_key, base_url, session_id))
+    configure_model(_overrides(model, reflection_model, api_key, base_url, session_id, reasoning_effort))
     asyncio.run(_main())
 
 
 def _render_mcp_startup() -> None:
     message, level = mcp_manager.startup_summary()
-    style = {"ok": "accent", "warn": "warning", "none": "muted"}.get(level, "muted")
     hint = "" if level == "ok" else "  (/mcp for details)"
-    render.console.print(render.Text(message + hint, style=style))
+    if level == "warn":
+        render.render_warning(message + hint)
+    else:
+        render.render_notice(message + hint, title="mcp" if level == "ok" else None)
 
 
 _STATIC_PREFIX_TOKEN_TARGET = 7000
@@ -149,6 +166,11 @@ async def _main() -> None:
     set_mcp_catalog(mcp_manager.catalog())
 
     session = SessionApp(git_available=git_available)
+    ui = TuiApp(
+        session,
+        history_path=Path(settings.ness_dir) / "cli_history",
+    )
+    render.set_sink(ui)
     session.render_header()
 
     worktree_name = os.environ.get("LITEHARNESS_WORKTREE")
@@ -167,39 +189,8 @@ async def _main() -> None:
         render.render_warning(budget_warning)
     _render_mcp_startup()
 
-    controller = PromptController(
-        get_mode=lambda: session.agent_mode,
-        get_model=active_model_name,
-        get_usage=lambda: session.last_usage,
-        toggle_mode=session.toggle_mode,
-        history_path=Path(settings.ness_dir) / "cli_history",
-    )
-
     try:
-        while not session.should_exit:
-            queued = session.queued_prompt
-            session.queued_prompt = ""
-            if queued:
-                user_input = queued
-            else:
-                try:
-                    user_input = (await controller.ask()).strip()
-                except (EOFError, KeyboardInterrupt):
-                    break
-
-            if not user_input:
-                continue
-
-            if user_input.startswith("/"):
-                await dispatch(session, user_input)
-                if session.should_exit:
-                    break
-                continue
-
-            try:
-                await session.run_turn(user_input)
-            except KeyboardInterrupt:
-                render.render_warning("Turn interrupted.")
+        await ui.run_async()
     finally:
         try:
             await session.finalize_reflection()
@@ -208,6 +199,7 @@ async def _main() -> None:
             render.render_warning(f"Archive skipped: {exc}")
         await mcp_manager.stop()
         render.render_panel_text(cost_tracker.report(), title="session summary", style="usage.value")
+        render.set_sink(None)
 
 
 if __name__ == "__main__":

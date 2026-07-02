@@ -31,7 +31,9 @@ from context import (
     build_l1,
     build_project_context_block,
     build_working_state_overlay,
+    build_working_state_sections,
     normalize_agent_mode,
+    render_overlay_delta,
     render_todos,
 )
 from reflection import (
@@ -71,6 +73,7 @@ class AgentState(TypedDict, total=False):
     compaction_message_count: int
     force_compact: bool
     last_input_tokens: int
+    mode_switch: str
 
 # 2. Build the Graph
 # Approval handler: given (tool_name, args) returns a normalized decision in
@@ -128,6 +131,11 @@ def build_graph(
     compaction_model = create_compaction_model(thread_id)
 
     # 3. Define the Agent Node
+    # Tracks the L3 overlay sections the model saw on the last invocation, so that
+    # tool-loop iterations can inject only the per-section delta instead of the full
+    # overlay (which would re-prime planning by re-injecting the <plan-mode> block).
+    _last_sections: dict[str, str] = {}
+
     async def agent_node(state: AgentState) -> AgentState:
         messages = list(state.get("messages", []))
 
@@ -164,8 +172,11 @@ def build_graph(
         set_current_thread(thread_id)
         set_thread_todos(thread_id, list(state.get("todos", [])))
         
-        # estimate the total input tokens (- L3 working state) for compaction requirements
-        estimated_model_input_tokens = resolve_token_count(
+        # estimate the total input tokens (- L3 working state) for compaction requirements.
+        # run in a thread: tokenizer pass over the full conversation is sync CPU and would
+        # stall the event loop (and the TUI working spinner) before the first token lands.
+        estimated_model_input_tokens = await asyncio.to_thread(
+            resolve_token_count,
             [system] + conversation,
             known_input_tokens=state.get("last_input_tokens") or None,
         )
@@ -189,17 +200,36 @@ def build_graph(
         )
 
         current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
-        git_snapshot = git_worktree_summary() if repo_has_git else ""
-        session_memory = load_session_memory(thread_id)
+        mode_switch = state.get("mode_switch") or ""
+        # offload blocking IO/subprocess to a thread so the TUI spinner keeps animating
+        git_snapshot = await asyncio.to_thread(git_worktree_summary) if repo_has_git else ""
+        session_memory = await asyncio.to_thread(load_session_memory, thread_id)
 
-        # build the working state overlay (L3): Git snapshot, compaction note, todos, session memory
-        overlay = build_working_state_overlay(
+        # build the L3 working-state sections (single source of truth)
+        sections = build_working_state_sections(
             current_mode,
             todos=render_todos(state.get("todos", [])),
             session_memory=session_memory,
             git_snapshot=git_snapshot,
             compaction_note=compaction_note,
+            mode_switch=mode_switch,
         )
+
+        # Fresh turn (last conversation message is a HumanMessage) or post-compaction
+        # (model context was rewritten) -> inject the FULL overlay so plan-mode
+        # instructions are (re)established.  Tool loop -> inject only the per-section
+        # delta, skipping the static plan_mode block (already on the user message).
+        is_fresh_turn = bool(conversation) and conversation[-1].type == "human"
+        if is_fresh_turn or compaction.compacted:
+            overlay = "\n\n".join(sections.values())
+        else:
+            overlay = render_overlay_delta(
+                sections, _last_sections, skip=frozenset({"plan_mode"})
+            )
+
+        # record what the model will see this invocation, for the next delta
+        _last_sections.clear()
+        _last_sections.update(sections)
 
         # append the L3 working state as a dedicated ephemeral message at the tail
         model_messages = [system] + _with_working_state_tail(conversation, overlay)
@@ -210,6 +240,7 @@ def build_graph(
             "approval_declined": False,
             "force_compact": False,
             "activate_skills": [],
+            "mode_switch": "",
         }
 
         # track conversation for auto-compaction
@@ -540,12 +571,30 @@ def _effective_conversation(messages: list[BaseMessage], state: AgentState) -> l
 
 
 def _with_working_state_tail(messages: list[BaseMessage], overlay: str) -> list[BaseMessage]:
-    # Append the L3 working state as a dedicated ephemeral message at the TAIL.
-    # - never written back to state: it lives only in this transient model_messages list
+    """Inject L3 working state ephemerally for the model API call (never persisted to state).
+
+    Fresh user turn (last message is human): append <system-reminder> to that message so
+    mode/todos/git context accompanies the user's request (matches L0).
+
+    Tool loop (last message is AI or tool): append a separate tail HumanMessage so the
+    user's text stays byte-stable for prefix caching while fresh overlay lands after results.
+    """
     if not overlay.strip():
         return list(messages)
-    block = f"<system-reminder>\n{overlay.strip()}\n</system-reminder>"
-    return list(messages) + [HumanMessage(content=block)]
+    block = f"\n\n<system-reminder>\n{overlay.strip()}\n</system-reminder>"
+    result = list(messages)
+    if result and result[-1].type == "human":
+        last = result[-1]
+        if isinstance(last.content, str):
+            result[-1] = HumanMessage(content=last.content + block)
+            return result
+        if isinstance(last.content, list):
+            result[-1] = HumanMessage(
+                content=[*last.content, {"type": "text", "text": block.lstrip()}]
+            )
+            return result
+    reminder = f"<system-reminder>\n{overlay.strip()}\n</system-reminder>"
+    return result + [HumanMessage(content=reminder)]
 
 
 def _reflection_token_delta(messages: list[BaseMessage], since_index: int) -> int:

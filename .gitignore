@@ -8,6 +8,10 @@ wheels/
 .ruff_cache/
 .pytest_cache/
 
+# extra files & folders
+coding_agents_sc/
+instructions/liteharness_prompt_analysis.md
+scripts/
 
 # Virtual environments
 .venv
@@ -20,3 +24,4 @@ wheels/
 .ness/shells/
 .ness/cli_history
 .ness/sessions/
+.ness/test_cli_history

@@ -17,8 +17,6 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
-from prompt_toolkit import PromptSession
-from prompt_toolkit.styles import Style
 
 from agent import _effective_conversation, build_graph
 from compaction import (
@@ -26,17 +24,16 @@ from compaction import (
     apply_force_floor,
     calculate_context_pressure,
     compaction_label,
+    resolve_usable_context_budget,
 )
 from config import cost_tracker, settings
 from model import active_model_name, create_model, create_reflection_model
 from reflection import finalize_session_reflection
 from session import append_event, archive_thread, list_subagents, load_thread_events
-from tools import EDIT_TOOLS
+from tools.subagents import subagent_runs_active
 from tools.todo import get_thread_todos
-from utils import preview_diff
 
 from cli import render
-from cli.theme import PTK_STYLE_RULES
 
 
 def new_thread_id() -> str:
@@ -58,20 +55,21 @@ class SessionApp:
         self.thread_id = new_thread_id()
         self.agent_mode = "act"
         self.should_exit = False
-        self.pending_image = ""
         self.queued_prompt = ""
-        # Skills explicitly activated via /skill, drained into the next turn's payload.
         self.pending_skills: list[str] = []
         self.assistant_history: list[str] = []
         self.last_usage: dict[str, Any] | None = None
+        self.turn_count = 0
+        self.context_used = 0
+        self.context_total = resolve_usable_context_budget(model_name=settings.model_name)
 
         self._force_compact = False
         self._pending_act_checkpoint = False
         self._bootstrap: dict[str, list[BaseMessage]] = {}
         self._seen: dict[str, int] = {}
+        self._plan_turn_texts: list[str] = []
 
         self.checkpointer = MemorySaver()
-        self._line_session: PromptSession | None = None
 
         self.model = create_model(self.thread_id)
         self._built_thread_id = self.thread_id
@@ -113,6 +111,7 @@ class SessionApp:
             model=active_model_name(),
             approval=settings.enable_approval,
             autosave=settings.auto_save_threads,
+            session_end_reflection=settings.session_end_reflection,
         )
 
     # --- per-turn cost helpers --------------------------------------------
@@ -136,13 +135,16 @@ class SessionApp:
 
     # --- the turn ----------------------------------------------------------
     async def run_turn(self, user_text: str) -> None:
+        mode_switch = ""
         if self._pending_act_checkpoint and self.agent_mode == "act":
             await self._maybe_checkpoint_before_act()
             self._pending_act_checkpoint = False
+            mode_switch = "plan->act"
         self._ensure_graph()
 
         user_message = self._build_user_message(user_text)
         append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
+        self.turn_count += 1
 
         config = {"configurable": {"thread_id": self.thread_id}}
         initial = self._bootstrap.pop(self.thread_id, [])
@@ -154,45 +156,70 @@ class SessionApp:
             "agent_mode": self.agent_mode,
             "force_compact": self._consume_force_compact(),
             "activate_skills": activate_skills,
+            "mode_switch": mode_switch,
         }
 
         before = self._cost_snapshot()
         stream: render.AssistantStream | None = None
         streamed_any = False
+        self._plan_turn_texts = []
 
-        async for event in self.app.astream_events(payload, config=config, version="v2"):
-            etype = event.get("event")
-            name = event.get("name", "")
+        render.begin_turn()
 
-            if etype == "on_chat_model_start":
-                stream = render.AssistantStream()
-                streamed_any = False
-            elif etype == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                text = getattr(chunk, "content", "")
-                if isinstance(text, str) and text and stream is not None:
-                    stream.feed(text)
-                    streamed_any = True
-            elif etype == "on_chat_model_end":
-                if stream is not None:
-                    stream.stop()
-                    if streamed_any and stream.text.strip():
-                        self._record_assistant(stream.text)
-                    stream = None
-            elif etype == "on_chain_end" and name == "agent":
-                self._render_agent_output(event, streamed_any)
-            elif etype == "on_chain_end" and name == "tools":
-                self._render_tool_results(event)
+        try:
+            async for event in self.app.astream_events(payload, config=config, version="v2"):
+                etype = event.get("event")
+                name = event.get("name", "")
 
-        after = self._cost_snapshot()
-        self.last_usage = self._usage_delta(before, after)
-        render.render_usage_footer(self.last_usage)
-        render.render_todos(get_thread_todos(self.thread_id))
+                if subagent_runs_active() > 0:
+                    if etype == "on_chat_model_end" and stream is not None:
+                        stream.stop()
+                        stream = None
+                        streamed_any = False
+                    continue
+
+                if etype == "on_chat_model_start":
+                    stream = render.AssistantStream()
+                    streamed_any = False
+                elif etype == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    text = getattr(chunk, "content", "")
+                    if isinstance(text, str) and text and stream is not None:
+                        stream.feed(text)
+                        streamed_any = True
+                elif etype == "on_chat_model_end":
+                    if stream is not None:
+                        stream.stop()
+                        if streamed_any and stream.text.strip():
+                            self._record_assistant(stream.text)
+                        stream = None
+                # on_chain_end -> each langgraph node end, name -> node name
+                elif etype == "on_chain_end" and name == "agent":
+                    self._render_agent_output(event, streamed_any)
+                elif etype == "on_chain_end" and name == "tools":
+                    self._render_tool_results(event)
+
+            after = self._cost_snapshot()
+            self.last_usage = self._usage_delta(before, after)
+            render.render_usage_footer(self.last_usage)
+            render.render_todos(get_thread_todos(self.thread_id))
+            self._autosave_plan_turn()
+            await self.refresh_context_snapshot()
+        finally:
+            render.finish_turn()
 
     def _record_assistant(self, text: str) -> None:
-        self.assistant_history.append(text)
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        self.assistant_history.append(cleaned)
         if self.agent_mode == "plan":
-            self._save_plan(text)
+            self._plan_turn_texts.append(cleaned)
+
+    def _autosave_plan_turn(self) -> None:
+        plan_text = plan_autosave_text(self._plan_turn_texts)
+        if plan_text is not None:
+            self._save_plan(plan_text)
 
     def _render_agent_output(self, event: dict, streamed_any: bool) -> None:
         for msg in _messages_from_event(event):
@@ -200,8 +227,7 @@ class SessionApp:
                 continue
             tool_calls = getattr(msg, "tool_calls", None) or []
             if tool_calls:
-                for call in tool_calls:
-                    render.render_tool_call(call.get("name", "?"), call.get("args", {}))
+                render.render_tool_calls(tool_calls)
             elif msg.content and not streamed_any:
                 text = str(msg.content)
                 render.render_assistant_panel(text)
@@ -217,77 +243,34 @@ class SessionApp:
 
     # --- approval handler --------------------------------------------------
     async def _approval(self, name: str, args: dict) -> str:
-        render.console.print()
-        render.render_warning(f"approval needed: {name}")
-        render.render_tool_call(name, args)
-        if name in EDIT_TOOLS:
-            diff = preview_diff(name, args)
-            if diff and diff.strip():
-                render.render_diff(diff)
-        while True:
-            choice = (await self._ask_line("approve? [y=yes S=session a=always n=no N=never d=diff s=show] ")).strip()
-            low = choice.lower()
-            if low in {"d", "diff"}:
-                render.render_diff(preview_diff(name, args) or "(no diff)")
-                continue
-            if low in {"s", "show"}:
-                render.render_panel_text(_format_args_full(args), title=f"{name} args", style="usage.value")
-                continue
-            if low in {"a", "always"}:
-                return "always"
-            if choice == "S" or low == "session":
-                return "session"
-            if choice == "N" or low == "never":
-                return "never"
-            if low in {"y", "yes"}:
-                return "yes"
-            if low in {"n", "no"}:
-                return "no"
-            render.render_warning("Choose y, S, a, n, N, d, or s.")
+        return await render.ask_approval(name, args)
 
     # --- interactive MCQ clarification handler -----------------------------
     async def _ask_questions(self, questions: list[dict]) -> list[dict]:
-        answers: list[dict] = []
-        for q_index, question in enumerate(questions, 1):
-            options = question.get("options", [])
-            render.console.print()
-            render.render_notice(question.get("prompt", ""), title=f"question {q_index}")
-            for opt_index, option in enumerate(options, 1):
-                line = render.Text()
-                line.append(f"  {opt_index}. ", style="usage")
-                line.append(str(option.get("label", "")), style="usage.value")
-                if option.get("recommended"):
-                    line.append("  (recommended)", style="mode.plan")
-                render.console.print(line)
-
-            choice = await self._ask_option_choice(len(options))
-            selected = options[choice]
-            note = ""
-            if question.get("allow_note", True):
-                note = (await self._ask_line("note (optional, Enter to skip): ")).strip()
-
-            answers.append(
-                {
-                    "id": question.get("id", str(q_index)),
-                    "selected": {"id": selected.get("id"), "label": selected.get("label")},
-                    "note": note,
-                }
-            )
-        return answers
-
-    async def _ask_option_choice(self, count: int) -> int:
-        while True:
-            raw = (await self._ask_line(f"choose [1-{count}]: ")).strip()
-            if raw.isdigit():
-                idx = int(raw)
-                if 1 <= idx <= count:
-                    return idx - 1
-            render.render_warning(f"Enter a number between 1 and {count}.")
+        return await render.ask_questions(questions)
 
     async def _ask_line(self, message: str) -> str:
-        if self._line_session is None:
-            self._line_session = PromptSession(style=Style.from_dict(PTK_STYLE_RULES))
-        return await self._line_session.prompt_async([("class:prompt", message)])
+        return await render.ask_line(message)
+
+    async def refresh_context_snapshot(self) -> None:
+        self.context_total = resolve_usable_context_budget(model_name=settings.model_name)
+        try:
+            snapshot = await self.app.aget_state({"configurable": {"thread_id": self.thread_id}})
+        except Exception:
+            return
+        state = dict(snapshot.values or {})
+        messages = list(state.get("messages", []))
+        if not messages:
+            self.context_used = 0
+            return
+        conversation = _effective_conversation(messages, state)
+        pressure = calculate_context_pressure(
+            conversation,
+            known_input_tokens=state.get("last_input_tokens") or None,
+            model_name=settings.model_name,
+        )
+        self.context_used = pressure.token_count
+        self.context_total = pressure.usable_budget
 
     # --- compaction checkpoint (plan -> act) ----------------------------
     async def _maybe_checkpoint_before_act(self) -> None:
@@ -295,6 +278,7 @@ class SessionApp:
             snapshot = await self.app.aget_state({"configurable": {"thread_id": self.thread_id}})
         except Exception:
             return
+
         state = dict(snapshot.values or {})
         messages = list(state.get("messages", []))
         if not messages:
@@ -336,6 +320,8 @@ class SessionApp:
         return value
 
     async def finalize_reflection(self) -> None:
+        if not settings.session_end_reflection:
+            return
         try:
             await finalize_session_reflection(self.app, self.thread_id, create_reflection_model(self.thread_id))
         except Exception as exc:
@@ -351,7 +337,9 @@ class SessionApp:
         self.thread_id = new_thread_id()
         self._seen.pop(self.thread_id, None)
         self.assistant_history.clear()
+        self.turn_count = 0
         self.rebuild_graph()
+        await self.refresh_context_snapshot()
 
     async def resume_thread(self, thread_id: str) -> None:
         events = load_thread_events(thread_id)
@@ -372,22 +360,21 @@ class SessionApp:
         self.assistant_history = [
             str(m.content) for m in messages if getattr(m, "type", None) in {"ai", "assistant"} and m.content
         ]
+        self.turn_count = sum(1 for m in messages if getattr(m, "type", None) == "human")
         self.rebuild_graph()
+        await self.refresh_context_snapshot()
         render.render_notice(f"Resumed thread {thread_id} ({len(messages)} messages restored).", title="resume")
 
     # --- message building --------------------------------------------------
     def _build_user_message(self, text: str) -> HumanMessage:
-        pending = self.pending_image
-        self.pending_image = ""
         cleaned, inline_images = _extract_inline_images(text)
-        images = ([pending] if pending else []) + inline_images
-        if not images:
+        if not inline_images:
             return HumanMessage(content=cleaned)
         if not settings.supports_vision:
             render.render_warning("Current model is not marked vision-capable; sending text only.")
             return HumanMessage(content=cleaned)
         blocks: list[dict[str, Any]] = [{"type": "text", "text": cleaned or "Please inspect this image."}]
-        for image_path in images:
+        for image_path in inline_images:
             blocks.append({"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}})
         return HumanMessage(content=blocks)
 
@@ -401,6 +388,12 @@ class SessionApp:
 
 
 # --- module helpers ---------------------------------------------------------
+def plan_autosave_text(assistant_texts: list[str]) -> str | None:
+    """Return the last non-empty assistant text from a plan turn, if any."""
+    cleaned = [text.strip() for text in assistant_texts if text.strip()]
+    return cleaned[-1] if cleaned else None
+
+
 def _messages_from_event(event: dict) -> list[BaseMessage]:
     output = event.get("data", {}).get("output")
     if isinstance(output, dict):
@@ -494,7 +487,6 @@ def _restore_cost_from_events(events: list[dict]) -> None:
         cost_tracker.input_tokens += int(event.get("input_tokens", 0) or 0)
         cost_tracker.uncached_input_tokens += int(event.get("uncached_input_tokens", 0) or 0)
         cost_tracker.cached_input_tokens += int(event.get("cached_input_tokens", 0) or 0)
-        cost_tracker.cache_write_tokens += int(event.get("cache_write_tokens", 0) or 0)
         cost_tracker.output_tokens += int(event.get("output_tokens", 0) or 0)
         cost_tracker.cost_usd += float(event.get("cost_usd", 0.0) or 0.0)
         cost_tracker.calls += 1
@@ -515,15 +507,6 @@ def _image_to_data_url(path: str) -> str:
     data = base64.b64encode(p.read_bytes()).decode("ascii")
     mime = mimetypes.guess_type(str(p))[0] or "image/png"
     return f"data:{mime};base64,{data}"
-
-
-def _format_args_full(args: Any) -> str:
-    import json
-
-    try:
-        return json.dumps(args, indent=2, ensure_ascii=False)
-    except TypeError:
-        return str(args)
 
 
 def _event_content(content: Any) -> Any:

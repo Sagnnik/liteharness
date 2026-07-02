@@ -1,8 +1,7 @@
 """Slash-command registry and handlers for the kept command set.
 
 Each handler takes the SessionApp controller and the raw argument string. The
-dispatcher also resolves project-local disk commands (.ness/commands/*.md) and
-the /menu overlay.
+    dispatcher also resolves project-local disk commands (.ness/commands/*.md).
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ from memory import (
     load_user_memory,
     write_ness_memory,
 )
-from model import active_model_name, effective_openrouter_session_id
+from model import active_model_name, active_reasoning_effort, effective_openrouter_session_id
 from permissions import list_rules, persist_rule, remove_rule
 from session import list_threads
 from skill_loader import load_skill_errors, load_skills
@@ -35,15 +34,12 @@ from utils import get_project_context
 
 from cli import render
 from cli.config_panel import run_config
-from cli.menu import COMMAND_CATALOG, get_command, open_menu
+from cli.menu import COMMAND_CATALOG
 
 if TYPE_CHECKING:
     from cli.session_app import SessionApp
 
 CommandHandler = Callable[["SessionApp", str], Awaitable[None]]
-
-_GROUP_ORDER = ("General", "Session", "Context", "Tools", "Input")
-
 
 # --- handlers ---------------------------------------------------------------
 async def cmd_exit(app: "SessionApp", args: str) -> None:
@@ -52,19 +48,10 @@ async def cmd_exit(app: "SessionApp", args: str) -> None:
 
 async def cmd_help(app: "SessionApp", args: str) -> None:
     rows: list[list[str]] = []
-    for group in _GROUP_ORDER:
-        specs = [s for s in COMMAND_CATALOG if s.group == group]
-        for spec in specs:
-            rows.append([spec.usage or f"/{spec.name}", spec.summary])
+    for spec in COMMAND_CATALOG:
+        rows.append([spec.usage or f"/{spec.name}", spec.summary])
     render.render_table(title="commands", columns=["command", "description"], rows=rows)
-    render.console.print(render.Text("Shift+Tab toggles plan/act mode.", style="muted"))
-
-
-async def cmd_menu(app: "SessionApp", args: str) -> None:
-    choice = await open_menu()
-    if not choice:
-        return
-    await dispatch(app, f"/{choice}")
+    render.render_notice("Shift+Tab toggles plan/act mode.")
 
 
 async def cmd_config(app: "SessionApp", args: str) -> None:
@@ -73,32 +60,28 @@ async def cmd_config(app: "SessionApp", args: str) -> None:
         render.render_notice(message)
     if result.rebuild:
         app.rebuild_graph()
-        render.render_notice("Model client rebuilt.")
-    app.render_header()
+    if result.session_update:
+        app.render_header()
 
 
-async def cmd_cost(app: "SessionApp", args: str) -> None:
-    render.render_panel_text(cost_tracker.report(), title="session cost", style="usage.value")
-
-
-async def cmd_cache(app: "SessionApp", args: str) -> None:
+async def cmd_status(app: "SessionApp", args: str) -> None:
     session_id = effective_openrouter_session_id(app.thread_id)
-    render.render_panel_text(cost_tracker.report(session_id), title="prompt cache", style="usage.value")
-
-
-async def cmd_skills(app: "SessionApp", args: str) -> None:
-    skills = load_skills()
-    if not skills:
-        render.render_notice("No skills found under .ness/skills/.")
-    else:
-        rows = [
-            [s.get("name", ""), s.get("source", ""), ", ".join(s.get("triggers", []))]
-            for s in skills.values()
-        ]
-        render.render_table(title="skills", columns=["skill", "source", "triggers"], rows=rows)
-    errors = load_skill_errors()
-    if errors:
-        render.render_warning("Skill load warnings:\n" + "\n".join(errors))
+    input_tokens = int(cost_tracker.input_tokens or 0)
+    cached = int(cost_tracker.cached_input_tokens or 0)
+    cache_hit = cached / input_tokens if input_tokens else None
+    lines = [
+        f"session id     {app.thread_id}",
+        f"model          {active_model_name()}",
+        f"reasoning      {active_reasoning_effort()}",
+        f"input tokens   {input_tokens:,}",
+        f"output tokens  {int(cost_tracker.output_tokens or 0):,}",
+        f"cost           ${cost_tracker.cost_usd:.4f}" if cost_tracker.cost_usd > 0 else "cost           unknown",
+        f"turns          {int(getattr(app, 'turn_count', 0) or 0)}",
+        f"cache read     {cached:,}",
+        f"cache hit      {cache_hit:.0%}" if cache_hit is not None else "cache hit      n/a",
+        f"openrouter id  {session_id or 'not set'}",
+    ]
+    render.render_panel_text("\n".join(lines), title="session status", style="usage.value")
 
 
 async def cmd_skill(app: "SessionApp", args: str) -> None:
@@ -107,10 +90,16 @@ async def cmd_skill(app: "SessionApp", args: str) -> None:
     if not name:
         if not skills:
             render.render_notice("No skills found under .ness/skills/.")
-            return
-        rows = [[s.get("name", ""), (s.get("description", "") or "").splitlines()[0] if s.get("description") else ""] for s in skills.values()]
-        render.render_table(title="skills", columns=["skill", "description"], rows=rows)
-        render.console.print(render.Text("Load a skill's full instructions with /skill <name>.", style="muted"))
+        else:
+            rows = [
+                [s.get("name", ""), s.get("source", ""), ", ".join(s.get("triggers", []))]
+                for s in skills.values()
+            ]
+            render.render_table(title="skills", columns=["skill", "source", "triggers"], rows=rows)
+        errors = load_skill_errors()
+        if errors:
+            render.render_warning("Skill load warnings:\n" + "\n".join(errors))
+        render.render_notice("Load a skill with /skill <name>.")
         return
     if name not in skills:
         render.render_error(f"Unknown skill: {name}  (/skill to list)")
@@ -290,24 +279,12 @@ async def cmd_copy(app: "SessionApp", args: str) -> None:
         render.render_panel_text(text, title="clipboard unavailable", style="usage.value")
 
 
-async def cmd_image(app: "SessionApp", args: str) -> None:
-    path = args.strip()
-    if not path:
-        render.render_error("Usage: /image <path>")
-        return
-    app.pending_image = path
-    render.render_notice("Image attached. Enter your question for it next.")
-
-
 HANDLERS: dict[str, CommandHandler] = {
     "exit": cmd_exit,
     "quit": cmd_exit,
     "help": cmd_help,
-    "menu": cmd_menu,
     "config": cmd_config,
-    "cost": cmd_cost,
-    "cache": cmd_cache,
-    "skills": cmd_skills,
+    "status": cmd_status,
     "skill": cmd_skill,
     "init": cmd_init,
     "memory": cmd_memory,
@@ -321,7 +298,6 @@ HANDLERS: dict[str, CommandHandler] = {
     "reset": cmd_reset,
     "compact": cmd_compact,
     "copy": cmd_copy,
-    "image": cmd_image,
 }
 
 
@@ -342,7 +318,7 @@ async def dispatch(app: "SessionApp", command_line: str) -> None:
         app.queued_prompt = disk_command.replace("{{args}}", args)
         return
 
-    render.render_error(f"Unknown command: /{name}  (try /menu or /help)")
+    render.render_error(f"Unknown command: /{name}  (try /help)")
 
 
 def _load_disk_commands() -> dict[str, str]:

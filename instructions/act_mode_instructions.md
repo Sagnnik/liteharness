@@ -1,3 +1,3 @@
-MODE: ACT
-- Execute the requested work with the active tool set.
-- Track multi-step work with todos. Session notes accumulate in `.ness/sessions/mem_<thread_id>.md` via the reflection gate; project conventions live in NESS.md and are human-authored via `/init` or `/memory add`.
+MODE SWITCH: plan -> act. The user just switched from plan to act mode. The plan above is approved.
+
+Begin implementing it now with the full tool set. Do not re-plan, do not ask for re-approval, and do not restate the plan. Work through the todos in order, marking each completed as you finish. Verify each step before moving on.
