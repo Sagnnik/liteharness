@@ -67,6 +67,7 @@ class SessionApp:
         self._pending_act_checkpoint = False
         self._bootstrap: dict[str, list[BaseMessage]] = {}
         self._seen: dict[str, int] = {}
+        self._plan_turn_texts: list[str] = []
 
         self.checkpointer = MemorySaver()
 
@@ -134,9 +135,11 @@ class SessionApp:
 
     # --- the turn ----------------------------------------------------------
     async def run_turn(self, user_text: str) -> None:
+        mode_switch = ""
         if self._pending_act_checkpoint and self.agent_mode == "act":
             await self._maybe_checkpoint_before_act()
             self._pending_act_checkpoint = False
+            mode_switch = "plan->act"
         self._ensure_graph()
 
         user_message = self._build_user_message(user_text)
@@ -153,11 +156,13 @@ class SessionApp:
             "agent_mode": self.agent_mode,
             "force_compact": self._consume_force_compact(),
             "activate_skills": activate_skills,
+            "mode_switch": mode_switch,
         }
 
         before = self._cost_snapshot()
         stream: render.AssistantStream | None = None
         streamed_any = False
+        self._plan_turn_texts = []
 
         render.begin_turn()
 
@@ -198,14 +203,23 @@ class SessionApp:
             self.last_usage = self._usage_delta(before, after)
             render.render_usage_footer(self.last_usage)
             render.render_todos(get_thread_todos(self.thread_id))
+            self._autosave_plan_turn()
             await self.refresh_context_snapshot()
         finally:
             render.finish_turn()
 
     def _record_assistant(self, text: str) -> None:
-        self.assistant_history.append(text)
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        self.assistant_history.append(cleaned)
         if self.agent_mode == "plan":
-            self._save_plan(text)
+            self._plan_turn_texts.append(cleaned)
+
+    def _autosave_plan_turn(self) -> None:
+        plan_text = plan_autosave_text(self._plan_turn_texts)
+        if plan_text is not None:
+            self._save_plan(plan_text)
 
     def _render_agent_output(self, event: dict, streamed_any: bool) -> None:
         for msg in _messages_from_event(event):
@@ -374,6 +388,12 @@ class SessionApp:
 
 
 # --- module helpers ---------------------------------------------------------
+def plan_autosave_text(assistant_texts: list[str]) -> str | None:
+    """Return the last non-empty assistant text from a plan turn, if any."""
+    cleaned = [text.strip() for text in assistant_texts if text.strip()]
+    return cleaned[-1] if cleaned else None
+
+
 def _messages_from_event(event: dict) -> list[BaseMessage]:
     output = event.get("data", {}).get("output")
     if isinstance(output, dict):

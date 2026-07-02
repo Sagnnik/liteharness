@@ -13,6 +13,7 @@ SILENT_RESULT_TOOLS = frozenset(
         "glob_files",
         "list_files",
         "check_syntax",
+        "todo",
     }
 )
 

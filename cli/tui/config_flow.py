@@ -5,7 +5,7 @@ import asyncio
 from cli.config_panel import ConfigResult, current_config_lines, note_model_reasoning_changes
 from cli.tui.constants import FORM_LABELS
 from cli.tui.utils import write_env
-from config import reload_settings, settings
+from config import reasoning_efforts_for_model, reload_settings, settings
 from model import active_model_name, active_reasoning_effort, set_active_model, set_active_reasoning_effort
 
 
@@ -50,6 +50,9 @@ class ConfigFlowMixin:
             index = next((i for i, item in enumerate(self._config_model_items()) if item.key == current), 0)
             self._open_picker("config_models", "/config", index=index)
             return
+        if key == "reasoning":
+            self._open_config_reasoning_picker()
+            return
         if key == "approval":
             settings.enable_approval = not settings.enable_approval
             write_env("ENABLE_APPROVAL", "true" if settings.enable_approval else "false")
@@ -78,18 +81,42 @@ class ConfigFlowMixin:
         if key in FORM_LABELS:
             self._open_form(key, FORM_LABELS[key])
 
+    def _open_config_reasoning_picker(self) -> None:
+        model_name = active_model_name()
+        efforts = reasoning_efforts_for_model(model_name)
+        if not efforts:
+            self._config_note("Current model does not support reasoning effort.")
+            self._finish_config()
+            return
+        current_effort = active_reasoning_effort()
+        index = next((i for i, item in enumerate(self._config_reasoning_items()) if item.key == current_effort), 0)
+        self._open_picker("config_reasoning", "/config", index=index)
+
     def _apply_config_model(self, model_name: str) -> None:
         current = self._current_model_slug()
         self._model_pick_changed = model_name != current
         self._model_pick_name = model_name
+        coerced: str | None = None
         if self._model_pick_changed:
-            set_active_model(model_name)
+            coerced = set_active_model(model_name)
             write_env("MODEL_NAME", model_name)
+            if coerced:
+                write_env("REASONING_EFFORT", coerced)
             self._config_rebuild()
             self._config_session_update()
-        current_effort = active_reasoning_effort()
-        index = next((i for i, item in enumerate(self._config_reasoning_items()) if item.key == current_effort), 0)
-        self._open_picker("config_reasoning", "/config", index=index)
+        efforts = reasoning_efforts_for_model(model_name)
+        if not efforts:
+            if self._config_result is not None:
+                note_model_reasoning_changes(
+                    self._config_result,
+                    model_changed=self._model_pick_changed,
+                    model_name=self._model_pick_name,
+                    reasoning_changed=bool(coerced),
+                    reasoning=coerced or active_reasoning_effort(),
+                )
+            self._finish_config()
+            return
+        self._open_config_reasoning_picker()
 
     def _apply_config_reasoning(self, effort: str) -> None:
         current = active_reasoning_effort()

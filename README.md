@@ -73,7 +73,7 @@ LiteHarness splits context into four layers to keep prompt caching stable:
 1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
 3. **L2 project context** (`build_project_context_block`): repo structure, git availability, and the full bodies of explicitly-activated (sticky) skills.
-4. **L3 working state** (`build_working_state_overlay`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn it is appended to the latest human message; during a tool loop it is sent as a separate tail `HumanMessage` so the user's text stays byte-stable for prefix caching. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
+4. **L3 working state** (`build_working_state_sections` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
 
 The L1 skill catalog lists every available skill with its path; full skill bodies load into L2 on trigger match or `/skill <name>` and stay sticky for the session once loaded (see Skills below).
 
@@ -81,15 +81,15 @@ The L1 skill catalog lists every available skill with its path; full skill bodie
 
 LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). **Plan** mode instructions live in the ephemeral L3 `<plan-mode>` overlay; **act** mode has no mode block (like OpenCode build — L0 + tools + dynamic L3 state only).
 
-- **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. The `git` tool appears only inside a git repo.
-- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user`, drafts a structured plan, and should end with `todo` for actionable steps. Assistant output is auto-saved under `.ness/plans/`. Shift+Tab back to act mode to execute.
+- **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. The `git` tool appears only inside a git repo. On the first act turn after a plan→act toggle, L3 prepends a one-shot `MODE SWITCH` note (inside the existing `<system-reminder>`) telling the model the plan is approved and to begin implementing; it is cleared from state after that single model call so it never repeats.
+- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user` (before any plan prose), optionally records todos in a tool-only message, then delivers exactly one final plan. Only the terminal plan message is auto-saved under `.ness/plans/`. Shift+Tab back to act mode to execute.
 
-Plan-mode workflow (when requirements are ambiguous):
+Plan-mode workflow:
 
-1. **Clarify** — call `ask_user` with MCQ options (mark the recommended choice; the user may add a note per question).
-2. **Research** — read-only tools first; use `spawn_subagent` sparingly (see L0 subagents rule).
-3. **Plan** — numbered steps with file paths, verification, and risks.
-4. **Todos** — call `todo` at the end of every plan.
+1. **Clarify** — if a decision materially changes the plan, call `ask_user` with MCQ options before drafting (mark the recommended choice; never ask in prose).
+2. **Research** — read-only tools first; use `spawn_subagent` only when a few targeted reads are insufficient (see L0 subagents rule).
+3. **Todos (optional)** — call `todo` in a tool-only message to record actionable steps.
+4. **Plan** — one final message: numbered steps with file paths, verification, and risks; no tool calls in that message.
 5. **Act** — Shift+Tab to act/build mode and execute the todos; do not re-plan unless blocked or the user redirects.
 
 Session tool tiers (same set bound in both modes):

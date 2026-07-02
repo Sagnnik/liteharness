@@ -77,8 +77,20 @@ AVAILABLE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.2",
 )
 
-ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
-REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+# Per-model reasoning metadata (sync via scripts/fetch_openrouter_models.py).
+# Keys are short slugs; matched with `key in model_name.lower()` like pricing.
+# `efforts: None` means all gateway values in REASONING_EFFORTS are accepted.
+MODEL_REASONING: dict[str, dict[str, Any]] = {
+    "o4-mini": {"efforts": None, "default": None, "mandatory": False},
+    "deepseek-v4-flash": {"efforts": ("xhigh", "high"), "default": "high", "mandatory": False},
+    "kimi-k2.6": {"efforts": None, "default": None, "mandatory": False},
+    "kimi-k2.7-code": {"efforts": None, "default": None, "mandatory": True},
+    "glm-5.1": {"efforts": None, "default": None, "mandatory": False},
+    "glm-5.2": {"efforts": ("xhigh", "high"), "default": "high", "mandatory": False},
+}
+
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 class Settings(BaseSettings):
@@ -218,14 +230,60 @@ class CostTracker:
         return "\n".join(lines)
 
 
+def resolve_model_key(model_name: str, catalog: dict[str, Any]) -> str | None:
+    model = model_name.lower()
+    return next((candidate for candidate in catalog if candidate in model), None)
+
+
+def _reasoning_entry(model_name: str) -> dict[str, Any] | None:
+    key = resolve_model_key(model_name, MODEL_REASONING)
+    if key is None:
+        return None
+    return MODEL_REASONING[key]
+
+
+def model_supports_reasoning(model_name: str) -> bool:
+    return _reasoning_entry(model_name) is not None
+
+
+def reasoning_efforts_for_model(model_name: str) -> tuple[str, ...]:
+    entry = _reasoning_entry(model_name)
+    if entry is None:
+        return ()
+    efforts = entry.get("efforts")
+    supported = REASONING_EFFORTS if efforts is None else tuple(efforts)
+    if entry.get("mandatory"):
+        supported = tuple(level for level in supported if level != "none")
+    return supported
+
+
+def default_reasoning_effort_for_model(model_name: str) -> str | None:
+    efforts = reasoning_efforts_for_model(model_name)
+    if not efforts:
+        return None
+    entry = _reasoning_entry(model_name) or {}
+    default = entry.get("default")
+    if default and default in efforts:
+        return str(default)
+    return efforts[0]
+
+
+def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
+    efforts = reasoning_efforts_for_model(model_name)
+    if not efforts:
+        return None
+    if effort and effort in efforts:
+        return effort
+    return default_reasoning_effort_for_model(model_name)
+
+
 def _estimate_cost(
     model_name: str,
     uncached_input_tokens: int,
     cached_input_tokens: int,
     output_tokens: int,
 ) -> float | None:
-    model = model_name.lower()
-    key = next((candidate for candidate in MODEL_PRICING if candidate in model), None)
+    key = resolve_model_key(model_name, MODEL_PRICING)
     if key is None:
         return None
     input_per_m, output_per_m, read_ratio = MODEL_PRICING[key]

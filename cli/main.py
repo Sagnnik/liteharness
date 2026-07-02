@@ -50,7 +50,7 @@ import typer
 from config import REASONING_EFFORTS, cost_tracker, settings
 from memory import check_ness_health
 from mcp_client import mcp_manager
-from model import ModelOverrides, configure_model
+from model import ModelOverrides, configure_model, validate_reasoning_effort_for_model
 from permissions import clear_session_rules
 from tools import is_git_repo, register_dynamic_tools, set_mcp_catalog
 
@@ -77,9 +77,15 @@ def _overrides(
         "openrouter_session_id": session_id,
         "reasoning_effort": reasoning_effort,
     }
-    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
-        allowed = ", ".join(REASONING_EFFORTS)
-        raise typer.BadParameter(f"reasoning effort must be one of: {allowed}")
+    if reasoning_effort is not None:
+        if reasoning_effort not in REASONING_EFFORTS:
+            allowed = ", ".join(REASONING_EFFORTS)
+            raise typer.BadParameter(f"reasoning effort must be one of: {allowed}")
+        target_model = model or settings.model_name
+        try:
+            validate_reasoning_effort_for_model(target_model, reasoning_effort)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     active = {key: value for key, value in fields.items() if value is not None}
     return ModelOverrides(**active) if active else None
 
@@ -94,7 +100,7 @@ def run(
     reasoning_effort: str = typer.Option(
         None,
         "--reasoning-effort",
-        help="OpenRouter reasoning effort: none, low, medium, high, xhigh, max",
+        help="OpenRouter reasoning effort: none, minimal, low, medium, high, xhigh, max",
     ),
     worktree: str = typer.Option(None, "--worktree", "-w", help="Run inside an isolated git worktree"),
 ) -> None:

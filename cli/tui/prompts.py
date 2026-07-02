@@ -9,6 +9,13 @@ from cli.tui.utils import term_width
 from utils import preview_diff
 
 
+def default_question_index(options: list[dict]) -> int:
+    for index, option in enumerate(options):
+        if option.get("recommended"):
+            return index
+    return 0
+
+
 class PromptMixin:
     """Approval, question, and line prompts."""
 
@@ -69,7 +76,7 @@ class PromptMixin:
         self._prompt_question = question
         self._prompt_note_active = False
         self._form_buffer.text = ""
-        self._open_picker("question", "", index=0)
+        self._open_picker("question", "", index=default_question_index(options))
         result = await self._prompt_future
         self._clear_prompt()
         selected_index = int(result["index"])

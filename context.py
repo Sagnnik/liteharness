@@ -164,48 +164,103 @@ def render_todos(todos: list[dict] | None) -> str:
     )
 
 
-def build_working_state_overlay(
+def build_working_state_sections(
     agent_mode: str,
     todos: str = "",
     session_memory: str = "",
     git_snapshot: str = "",
     compaction_note: str = "",
-) -> str:
+    mode_switch: str = "",
+) -> dict[str, str]:
     """
-    Build L3 working state. The agent wraps this in <system-reminder> tags and sends it as a
-    dedicated ephemeral HumanMessage at the tail of the message list (never persisted to state).
-    Plan mode: <plan-mode> block with plan instructions. Act mode: no specific instructions block; 
-    only dynamic sections below when present:
-    - GIT SNAPSHOT (git branch + git status --porcelain)
-    - COMPACTION
-    - TODOS (only when there are non-completed items)
-    - SESSION MEMORY (distilled episodic bullets for this thread)
+    Build L3 working state as ordered named sections (single source of truth).
+
+    Returns a dict mapping section name to rendered text, in insertion order:
+    - mode_switch (one-shot, on the first act turn after a plan->act toggle)
+    - plan_mode (plan mode only; <plan-mode> block with plan instructions)
+    - git (git branch + git status --porcelain)
+    - compaction
+    - todos (only when there are non-completed items)
+    - session_memory (distilled episodic bullets for this thread)
     """
     mode = normalize_agent_mode(agent_mode)
+    sections: dict[str, str] = {}
 
-    parts: list[str] = []
+    if mode_switch.strip():
+        sections["mode_switch"] = load_instruction("act_mode")
+
     if mode == "plan":
         from config import settings
 
         plan_path = f"{settings.ness_dir.rstrip('/')}/plans/"
-        parts.append(
+        sections["plan_mode"] = (
             f'<plan-mode path="{plan_path}">\n'
             + load_instruction("plan_mode")
             + "\n</plan-mode>"
         )
 
     if git_snapshot.strip():
-        parts.append("GIT\n" + git_snapshot.strip())
+        sections["git"] = "GIT\n" + git_snapshot.strip()
 
     if compaction_note.strip():
-        parts.append("COMPACTION\n" + compaction_note.strip())
+        sections["compaction"] = "COMPACTION\n" + compaction_note.strip()
 
     if todos.strip():
-        parts.append("TODOS\n" + todos.strip())
+        sections["todos"] = "TODOS\n" + todos.strip()
 
     if session_memory.strip():
-        parts.append("SESSION MEMORY\n" + session_memory.strip())
+        sections["session_memory"] = "SESSION MEMORY\n" + session_memory.strip()
+
+    return sections
+
+
+def render_overlay_delta(
+    sections: dict[str, str],
+    previous: dict[str, str],
+    *,
+    skip: frozenset[str] = frozenset(),
+) -> str:
+    """
+    Render only non-empty sections that differ from ``previous``.
+
+    Used on tool-loop iterations to inject just the changed dynamic context
+    (git/todos/compaction/etc.) without re-injecting static blocks like
+    ``plan_mode`` (pass it in ``skip``).  Sections absent from ``sections``
+    are never emitted as removals — the model already saw them.
+    """
+    parts: list[str] = []
+    for name, text in sections.items():
+        if name in skip:
+            continue
+        if text.strip() and text != previous.get(name, ""):
+            parts.append(text)
     return "\n\n".join(parts)
+
+
+def build_working_state_overlay(
+    agent_mode: str,
+    todos: str = "",
+    session_memory: str = "",
+    git_snapshot: str = "",
+    compaction_note: str = "",
+    mode_switch: str = "",
+) -> str:
+    """
+    Build the full L3 working state overlay as a single string.
+
+    This is a backward-compat wrapper around ``build_working_state_sections``;
+    new callers that need per-section delta tracking should call the sections
+    builder and ``render_overlay_delta`` directly.
+    """
+    sections = build_working_state_sections(
+        agent_mode,
+        todos=todos,
+        session_memory=session_memory,
+        git_snapshot=git_snapshot,
+        compaction_note=compaction_note,
+        mode_switch=mode_switch,
+    )
+    return "\n\n".join(sections.values())
 
 
 def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:

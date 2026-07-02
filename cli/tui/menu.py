@@ -8,7 +8,7 @@ from cli.menu import COMMAND_CATALOG
 from cli.tui.constants import MENU_DESC_COL, MENU_MAX_ROWS, PICKER_MODES
 from cli.tui.models import MenuItem
 from cli.tui.utils import term_width
-from config import AVAILABLE_MODELS, REASONING_EFFORTS, settings
+from config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
 from model import active_model_name, active_reasoning_effort
 
 
@@ -51,8 +51,9 @@ class MenuMixin:
         return current
 
     def _config_action_items(self) -> list[MenuItem]:
-        return [
+        items = [
             MenuItem("model", "Switch chat model"),
+            MenuItem("reasoning", "Switch reasoning effort"),
             MenuItem("openai_key", "Set provider API key"),
             MenuItem("exa_key", "Set Exa API key (web search)"),
             MenuItem("base_url", "Set OpenAI-compatible base URL"),
@@ -64,6 +65,7 @@ class MenuMixin:
             ),
             MenuItem("view", "View current config"),
         ]
+        return items
 
     def _config_model_items(self) -> list[MenuItem]:
         current = self._current_model_slug()
@@ -74,7 +76,8 @@ class MenuMixin:
 
     def _config_reasoning_items(self) -> list[MenuItem]:
         current = active_reasoning_effort()
-        return [MenuItem(level, level, suffix="(current)" if level == current else "") for level in REASONING_EFFORTS]
+        levels = reasoning_efforts_for_model(active_model_name())
+        return [MenuItem(level, level, suffix="(current)" if level == current else "") for level in levels]
 
     def _slash_menu_items(self) -> list[MenuItem]:
         query = self._slash_filter().lower()

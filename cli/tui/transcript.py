@@ -331,13 +331,6 @@ class TranscriptMixin:
         if not should_show_tool_result(name):
             return
 
-        if name == "todo":
-            preview = " ".join(str(content).split())
-            if len(preview) > 320:
-                preview = preview[:320] + "..."
-            self._append_transcript(self._tool_call_line("todo", preview), self._tool_spacer_line())
-            return
-
         if name == "spawn_subagent":
             summary = spawn_subagent_result_summary(content)
             summary_text = f"  └ {summary}"
