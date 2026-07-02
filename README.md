@@ -349,5 +349,5 @@ Threads are archived on `/save`, `/reset`, `/resume`, and session exit. Archived
 
 ```bash
 OPENAI_API_KEY=test uv run python -m compileall -q .
-OPENAI_API_KEY=test uv run python -m unittest discover -s tests -v
+OPENAI_API_KEY=test uv run pytest -q
 ```
