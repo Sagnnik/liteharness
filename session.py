@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS threads (
     total_cost_usd REAL NOT NULL DEFAULT 0.0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0
 );
 
@@ -103,7 +102,7 @@ def list_threads(n: int = 10) -> list[dict[str, Any]]:
                 thread_id, started_at, updated_at, archived_at,
                 turn_count, model, summary,
                 total_cost_usd, input_tokens, cached_input_tokens,
-                cache_write_tokens, output_tokens
+                output_tokens
             FROM threads
             WHERE thread_id LIKE ?
             ORDER BY updated_at DESC
@@ -123,7 +122,6 @@ def list_threads(n: int = 10) -> list[dict[str, Any]]:
             "total_cost_usd": float(row["total_cost_usd"]),
             "input_tokens": int(row["input_tokens"]),
             "cached_input_tokens": int(row["cached_input_tokens"]),
-            "cache_write_tokens": int(row["cache_write_tokens"]),
             "output_tokens": int(row["output_tokens"]),
             **({"archived_at": row["archived_at"]} if row["archived_at"] else {}),
         }
@@ -329,14 +327,12 @@ def _apply_event_to_thread(
     cost_delta = 0.0
     input_delta = 0
     cached_delta = 0
-    cache_write_delta = 0
     output_delta = 0
 
     if event.get("kind") == "usage":
         cost_delta = float(event.get("cost_usd") or 0.0)
         input_delta = int(event.get("input_tokens") or 0)
         cached_delta = int(event.get("cached_input_tokens") or 0)
-        cache_write_delta = int(event.get("cache_write_tokens") or 0)
         output_delta = int(event.get("output_tokens") or 0)
 
     conn.execute(
@@ -347,7 +343,6 @@ def _apply_event_to_thread(
             total_cost_usd = total_cost_usd + ?,
             input_tokens = input_tokens + ?,
             cached_input_tokens = cached_input_tokens + ?,
-            cache_write_tokens = cache_write_tokens + ?,
             output_tokens = output_tokens + ?
         WHERE thread_id = ?
         """,
@@ -357,7 +352,6 @@ def _apply_event_to_thread(
             cost_delta,
             input_delta,
             cached_delta,
-            cache_write_delta,
             output_delta,
             thread_id,
         ),

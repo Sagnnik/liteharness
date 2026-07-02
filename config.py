@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -9,19 +9,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 load_dotenv()
 
 
-# USD per 1M tokens: (input, output, cache_read_ratio, cache_write_ratio)
+# USD per 1M tokens: (input, output, cache_read_ratio)
 # Fallback when the provider does not return cost in response metadata.
-MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
-    "gpt-4o-mini": (0.15, 0.60, 0.50, 1.0),
-    "gpt-4o": (2.50, 10.00, 0.50, 1.0),
-    "claude-3.5-sonnet": (3.00, 15.00, 0.10, 1.25),
-    "claude-3-haiku": (0.25, 1.25, 0.10, 1.25),
-    "deepseek-chat": (0.14, 0.28, 0.10, 1.0),
-    "deepseek-v4-flash": (0.09, 0.18, 0.22, 1.0),
-    "glm-5.1": (0.98, 3.08, 0.19, 1.0),
-    "glm-5.2": (0.95, 3.00, 0.19, 1.0),
-    "kimi-k2.6": (0.66, 3.41, 0.50, 1.0),
-    "kimi-k2.7-code": (0.74, 3.50, 0.22, 1.0),
+MODEL_PRICING: dict[str, tuple[float, float, float]] = {
+    "gpt-4o-mini": (0.15, 0.60, 0.50),
+    "gpt-4o": (2.50, 10.00, 0.50),
+    "claude-3.5-sonnet": (3.00, 15.00, 0.10),
+    "claude-3-haiku": (0.25, 1.25, 0.10),
+    "deepseek-chat": (0.14, 0.28, 0.10),
+    "deepseek-v4-flash": (0.09, 0.18, 0.22),
+    "glm-5.1": (0.98, 3.08, 0.19),
+    "glm-5.2": (0.95, 3.00, 0.19),
+    "kimi-k2.6": (0.66, 3.41, 0.50),
+    "kimi-k2.7-code": (0.74, 3.50, 0.22),
 }
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -77,15 +77,20 @@ AVAILABLE_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.2",
 )
 
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
 
     model_name: str = Field(default="deepseek-v4-flash", alias="MODEL_NAME")
     reflection_model_name: str = Field(default="deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
+    reasoning_effort: ReasoningEffort = Field(default="xhigh", alias="REASONING_EFFORT")
     api_max_retries: int = Field(default=3, alias="API_MAX_RETRIES")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")
     auto_save_threads: bool = Field(default=True, alias="AUTO_SAVE_THREADS")
+    session_end_reflection: bool = Field(default=False, alias="SESSION_END_REFLECTION")
     reflection_token_ratio: float = Field(default=0.4, alias="REFLECTION_TOKEN_RATIO")
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
     compaction_output_reserve_tokens: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE_TOKENS")
@@ -132,7 +137,6 @@ class CostTracker:
         self.input_tokens = 0
         self.uncached_input_tokens = 0
         self.cached_input_tokens = 0
-        self.cache_write_tokens = 0
         self.output_tokens = 0
         self.calls = 0
         self.cost_usd = 0.0
@@ -154,17 +158,15 @@ class CostTracker:
         output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
         total_tokens = _usage_value(usage, "total_tokens") or input_tokens + output_tokens
         cache_read = _detail_value(usage, "input_token_details", "cache_read", "cached_tokens")
-        cache_write = _detail_value(usage, "input_token_details", "cache_creation", "cache_write_tokens")
-        uncached_input = max(input_tokens - cache_read - cache_write, 0)
+        uncached_input = max(input_tokens - cache_read, 0)
         provider_cost = _provider_cost(response_metadata or {})
-        estimated_cost = _estimate_cost(model, uncached_input, cache_read, cache_write, output_tokens)
+        estimated_cost = _estimate_cost(model, uncached_input, cache_read, output_tokens)
         cost_usd = provider_cost if provider_cost is not None else estimated_cost
         cost_source = "provider" if provider_cost is not None else "estimated"
 
         self.input_tokens += input_tokens
         self.uncached_input_tokens += uncached_input
         self.cached_input_tokens += cache_read
-        self.cache_write_tokens += cache_write
         self.output_tokens += output_tokens
         self.calls += 1
         if cost_usd is not None:
@@ -175,7 +177,6 @@ class CostTracker:
             "input_tokens": input_tokens,
             "uncached_input_tokens": uncached_input,
             "cached_input_tokens": cache_read,
-            "cache_write_tokens": cache_write,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
             "cost_usd": cost_usd,
@@ -208,7 +209,6 @@ class CostTracker:
                 f"Input tokens: {self.input_tokens:,}",
                 f"Uncached input: {self.uncached_input_tokens:,}",
                 f"Cached read: {self.cached_input_tokens:,}",
-                f"Cache write: {self.cache_write_tokens:,}",
                 f"Output tokens: {self.output_tokens:,}",
                 f"Total tokens: {self.total_tokens:,}",
                 f"Cache hit rate: {self.cache_hit_rate:.1%}",
@@ -222,18 +222,16 @@ def _estimate_cost(
     model_name: str,
     uncached_input_tokens: int,
     cached_input_tokens: int,
-    cache_write_tokens: int,
     output_tokens: int,
 ) -> float | None:
     model = model_name.lower()
     key = next((candidate for candidate in MODEL_PRICING if candidate in model), None)
     if key is None:
         return None
-    input_per_m, output_per_m, read_ratio, write_ratio = MODEL_PRICING[key]
+    input_per_m, output_per_m, read_ratio = MODEL_PRICING[key]
     return (
         uncached_input_tokens * input_per_m
         + cached_input_tokens * input_per_m * read_ratio
-        + cache_write_tokens * input_per_m * write_ratio
         + output_tokens * output_per_m
     ) / 1_000_000
 

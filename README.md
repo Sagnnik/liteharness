@@ -20,6 +20,7 @@ Useful environment variables:
 - `REFLECTION_MODEL_NAME`: model for background session-memory reflection (defaults to `MODEL_NAME`).
 - `ENABLE_APPROVAL`: require approval for destructive tools.
 - `AUTO_SAVE_THREADS`: write thread events to `.ness/threads/`.
+- `SESSION_END_REFLECTION`: run a final reflection pass when a session ends (default off). Mid-session reflection is still controlled by `REFLECTION_TOKEN_RATIO`.
 - `REFLECTION_TOKEN_RATIO`: fraction of the usable context budget that must accumulate in new messages before a background reflection run (default `0.4`; set `0` to disable).
 - `API_MAX_RETRIES`: retries for chat API calls (default `3`).
 - `COMPACTION_OUTPUT_RESERVE_TOKENS`: output reserve subtracted from the model context window (default `8192`).
@@ -31,7 +32,7 @@ Useful environment variables:
 - `NESS_DIR`: project config directory, default `.ness`.
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
-CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--worktree` / `-w`. Use `/config` in-session to switch model, keys, approval, and autosave (persisted to `.env`).
+CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`. Use `/config` in-session to switch model, reasoning effort, keys, approval, autosave, and session-end reflection (persisted to `.env`).
 
 ### Parallel sessions (git worktrees)
 
@@ -49,7 +50,7 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 
 ## Architecture
 
-- `cli/main.py`: Rich CLI, slash commands, streaming, image/clipboard handling.
+- `cli/main.py` and `cli/tui/`: full-screen TUI, slash commands, streaming, and clipboard handling.
 - `agent.py`: LangGraph loop: agent, approval gate, tool executor.
 - `context.py`: layered prompt assembly from `instructions/` templates.
 - `instructions/`: markdown templates for L0/L1 prompt layers, modes, compaction, reflection, and subagents.
@@ -109,7 +110,7 @@ Three memory files live under `.ness/`:
 | `USER.md` | Cross-repo user preferences. Human-authored via `/user`; loaded into L1. |
 | `sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L3. Maintained by the reflection gate. |
 
-Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget, and once more at session exit. It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md`. Bullets appear in the L3 system-reminder overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when its resolved size exceeds 20,000 characters.
+Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget. An optional final pass at session exit is controlled by `SESSION_END_REFLECTION` (default off). It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md`. Bullets appear in the L3 system-reminder overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when its resolved size exceeds 20,000 characters.
 
 ### NESS.md includes
 
@@ -279,19 +280,17 @@ Batch mode validates every task before starting any of them and returns one stru
 
 ## Slash Commands
 
-Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the prompt cache. Current mode appears in the prompt prefix and bottom toolbar. Use `/menu` for a searchable command picker or `/help` for the full list.
+Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the prompt cache. Current mode appears in the prompt prefix and footer. Type `/` for the command picker or `/help` for the full list.
 
 **General**
 
-- `/menu`: searchable command picker.
 - `/help`: show the command reference.
-- `/config`: switch model, set API keys, toggle approval/autosave (persisted to `.env`).
+- `/config`: switch model/reasoning, set API keys, toggle approval/autosave/session-end reflection (persisted to `.env`).
 - `/exit` or `/quit`: end the session.
 
 **Session**
 
-- `/cost`: show token/cost totals.
-- `/cache`: show prompt-cache reads/writes and cache hit rate.
+- `/status`: show session, model, token, cost, and cache stats.
 - `/threads`: list saved sessions.
 - `/resume <thread_id>`: resume a saved thread.
 - `/save`: archive the current thread with a headline summary.
@@ -300,7 +299,6 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 
 **Context & memory**
 
-- `/skills`: list loaded skills and warnings.
 - `/skill [<name>]`: list skills, or load a skill's full instructions on the next message.
 - `/init [force]`: generate `.ness/NESS.md`.
 - `/memory` or `/memory add <note>`: read or append project memory.
@@ -315,7 +313,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Input**
 
 - `/copy`, `/copy code`, `/copy <n>`: copy assistant output.
-- `/image <path>`: attach an image to the next prompt (also `@image:path` inline).
+- `@image:path`: attach an inline image path to the current prompt.
 
 Markdown files under `.ness/commands/*.md` become project-local slash commands. Their body is used as a prompt template with `{{args}}` substitution.
 
@@ -334,7 +332,7 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "assistant", "content": "...", "tool_calls": [], "t": "..."}
 {"kind": "tool", "tool": "read_file", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
 {"kind": "approval", "tool": "edit", "decision": "yes", "t": "..."}
-{"kind": "usage", "model": "deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "cache_write_tokens": 10, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
+{"kind": "usage", "model": "deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
 {"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}

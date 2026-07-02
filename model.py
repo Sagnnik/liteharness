@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from typing import Any, cast
 
 from langchain_openrouter import ChatOpenRouter
 
-from config import settings
+from config import REASONING_EFFORTS, ReasoningEffort, settings
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class ModelOverrides:
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openrouter_session_id: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
 
 
 _overrides: ModelOverrides | None = None
@@ -41,6 +43,16 @@ def set_active_model(model_name: str) -> None:
     settings.model_name = model_name
 
 
+def set_active_reasoning_effort(reasoning_effort: ReasoningEffort) -> None:
+    """Switch the active OpenRouter reasoning effort at runtime."""
+    if reasoning_effort not in REASONING_EFFORTS:
+        raise ValueError(f"invalid reasoning effort: {reasoning_effort}")
+    global _overrides
+    base = _overrides or ModelOverrides()
+    _overrides = replace(base, reasoning_effort=reasoning_effort)
+    settings.reasoning_effort = reasoning_effort
+
+
 def _resolved(field: str) -> str | int | None:
     if _overrides is not None:
         value = getattr(_overrides, field, None)
@@ -51,6 +63,10 @@ def _resolved(field: str) -> str | int | None:
 
 def active_model_name() -> str:
     return _resolved("model_name")
+
+
+def active_reasoning_effort() -> ReasoningEffort:
+    return cast(ReasoningEffort, _resolved("reasoning_effort"))
 
 
 def effective_openrouter_session_id(thread_id: str, *, suffix: str = "") -> str:
@@ -67,11 +83,14 @@ def build_chat_model(
     session_suffix: str = "",
 ) -> ChatOpenRouter:
     resolved_model = model_name or _resolved("model_name")
-    model_kwargs: dict[str, str] = {
+    model_kwargs: dict[str, Any] = {
         "model": resolved_model,
         "api_key": _resolved("openai_api_key"),
         "session_id": effective_openrouter_session_id(thread_id, suffix=session_suffix),
     }
+    reasoning_effort = _resolved("reasoning_effort")
+    if reasoning_effort:
+        model_kwargs["reasoning"] = {"effort": reasoning_effort}
     base_url = _resolved("openai_base_url")
     if base_url:
         model_kwargs["base_url"] = base_url
@@ -103,6 +122,7 @@ def model_overrides_from_args(args: argparse.Namespace) -> ModelOverrides | None
         "openai_api_key": args.api_key,
         "openai_base_url": args.base_url,
         "openrouter_session_id": args.openrouter_session_id,
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
     }
     active = {key: value for key, value in fields.items() if value is not None}
     if not active:
@@ -130,4 +150,9 @@ def add_model_cli_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--openrouter-session-id",
         help="Stable OpenRouter prompt-cache session id (overrides OPENROUTER_SESSION_ID)",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["none", "low", "medium", "high", "xhigh", "max"],
+        help="OpenRouter reasoning effort (overrides REASONING_EFFORT)",
     )

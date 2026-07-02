@@ -33,6 +33,7 @@ AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 # ContextVars for subagent specific memory pockets to avoid collisions
 _subagent_model: ContextVar[Any | None] = ContextVar("subagent_model", default=None)
 _parent_thread_id: ContextVar[str | None] = ContextVar("parent_thread_id", default=None)
+_active_subagent_runs = 0
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,11 @@ def set_subagent_runtime(model: Any | None, parent_thread_id: str | None = None)
     _subagent_model.set(model)
     if parent_thread_id is not None:
         _parent_thread_id.set(parent_thread_id)
+
+
+def subagent_runs_active() -> int:
+    """Number of subagent graphs currently executing (nested CLI events should be hidden)."""
+    return _active_subagent_runs
 
 def _available_agent_names() -> frozenset[str]:
     if not AGENTS_DIR.is_dir():
@@ -354,27 +360,32 @@ async def _invoke_subagent(
     thread_id: str,
 ) -> str:
     """Main subagent invocation; uses the build_graph from agent.py"""
-    from agent import build_graph
+    global _active_subagent_runs
+    _active_subagent_runs += 1
+    try:
+        from agent import build_graph
 
-    app = build_graph(
-        model,
-        tools=prepared.tools, # read-only tools
-        thread_id=thread_id,
-        agent_mode="act", # subagents dont have plan mode
-    )
-    result = await app.ainvoke(
-        {
-            "messages": [HumanMessage(content=prepared.agent_prompt)],
-            "approval_declined": False,
-            "todos": [],
-            "agent_mode": "act",
-        },
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    messages = result.get("messages", [])
-    final = next((m.content for m in reversed(messages) if m.type in ("ai", "assistant")), "")
-    # return the final assistant message or a default message if no final message
-    return str(final or "Subagent completed without a final message")
+        app = build_graph(
+            model,
+            tools=prepared.tools, # read-only tools
+            thread_id=thread_id,
+            agent_mode="act", # subagents dont have plan mode
+        )
+        result = await app.ainvoke(
+            {
+                "messages": [HumanMessage(content=prepared.agent_prompt)],
+                "approval_declined": False,
+                "todos": [],
+                "agent_mode": "act",
+            },
+            config={"configurable": {"thread_id": thread_id}},
+        )
+        messages = result.get("messages", [])
+        final = next((m.content for m in reversed(messages) if m.type in ("ai", "assistant")), "")
+        # return the final assistant message or a default message if no final message
+        return str(final or "Subagent completed without a final message")
+    finally:
+        _active_subagent_runs -= 1
 
 
 def _load_agent(name: str) -> dict[str, Any] | str:
