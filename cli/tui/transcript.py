@@ -11,7 +11,7 @@ from cli.tool_display import (
     spawn_subagent_result_summary,
 )
 from cli.tui.formatting import USER_STYLE, user_message_lines
-from cli.tui.markdown_render import todos_transcript_lines
+from cli.tui.markdown_render import markdown_transcript_lines, todos_transcript_lines
 from cli.tui.models import TranscriptLine
 from cli.tui.stream import Thinking, TuiAssistantStream
 from cli.tui.utils import term_height, term_width
@@ -84,7 +84,10 @@ class TranscriptMixin:
         if not text.strip():
             return
         width = self._transcript_render_width or term_width()
+        # one blank (non-bg) line separates the gray user band from the next render,
+        # matching the muted spacer convention used by every other transcript block
         self._append_transcript(*user_message_lines(text, width=width))
+        self._append_transcript(TranscriptLine("class:transcript.muted", ""))
         self._layout_term_width = width
 
     def _on_transcript_render_width(self, width: int) -> None:
@@ -208,11 +211,14 @@ class TranscriptMixin:
     def append_assistant(self, text: str) -> None:
         if not text.strip():
             return
-        lines = [TranscriptLine("class:transcript.assistant", line) for line in text.strip().splitlines()]
+        width = self._transcript_render_width or term_width()
+        lines = markdown_transcript_lines(text, width=width)
         self._append_transcript(*lines, TranscriptLine("class:transcript.muted", ""))
 
     @staticmethod
     def _assistant_stream_lines(text: str) -> list[TranscriptLine]:
+        # Live-stream stays plain (cheap, smooth incremental paint); the finalized
+        # markdown styling is swapped in by finalize_assistant_stream on completion.
         if not text:
             return [TranscriptLine("class:transcript.assistant", "")]
         return [TranscriptLine("class:transcript.assistant", part) for part in text.split("\n")]
@@ -242,7 +248,8 @@ class TranscriptMixin:
         if not stripped:
             self.clear_assistant_stream(start, count)
             return
-        final_lines = [TranscriptLine("class:transcript.assistant", line) for line in stripped.splitlines()]
+        width = self._transcript_render_width or term_width()
+        final_lines = markdown_transcript_lines(stripped, width=width)
         self._transcript_store.replace(start, count, [*final_lines, TranscriptLine("class:transcript.muted", "")])
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
