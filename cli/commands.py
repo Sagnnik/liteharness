@@ -300,8 +300,25 @@ HANDLERS: dict[str, CommandHandler] = {
     "copy": cmd_copy,
 }
 
+# Slash commands safe to run while a task is streaming: read-only or file-write
+# side effects that do not touch the live graph or thread state.
+BUSY_SAFE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "help",
+        "status",
+        "threads",
+        "permissions",
+        "hooks",
+        "mcp",
+        "copy",
+        "memory",
+        "user",
+        "skill",
+    }
+)
 
-async def dispatch(app: "SessionApp", command_line: str) -> None:
+
+async def dispatch(app: "SessionApp", command_line: str, *, busy: bool = False) -> None:
     raw = command_line[1:].strip()
     if not raw:
         return
@@ -310,6 +327,9 @@ async def dispatch(app: "SessionApp", command_line: str) -> None:
 
     handler = HANDLERS.get(name)
     if handler is not None:
+        if busy and name not in BUSY_SAFE_COMMANDS:
+            render.render_warning(f"/{name} is not available while a task is running")
+            return
         await handler(app, args)
         return
 
@@ -318,6 +338,9 @@ async def dispatch(app: "SessionApp", command_line: str) -> None:
         app.queued_prompt = disk_command.replace("{{args}}", args)
         return
 
+    if busy:
+        render.render_warning(f"/{name} is not available while a task is running")
+        return
     render.render_error(f"Unknown command: /{name}  (try /help)")
 
 

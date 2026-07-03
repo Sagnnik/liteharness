@@ -52,6 +52,11 @@ class ChromeMixin:
             height=lambda: D.exact(1) if self._working_status_visible() else D.exact(0),
             style="class:screen",
         )
+        self._queue_window = Window(
+            content=FormattedTextControl(self._queue_fragments),
+            height=lambda: D.exact(1) if self._queue_line_visible() else D.exact(0),
+            style="class:screen",
+        )
         self._form_pad_window = Window(
             content=FormattedTextControl(lambda: []),
             height=D.exact(1),
@@ -102,6 +107,7 @@ class ChromeMixin:
                 Window(char="─", height=D.exact(1), style="class:chrome.rule"),
                 self._input_window,
                 Window(char="─", height=D.exact(1), style="class:chrome.rule"),
+                self._queue_window,
                 self._form_row,
                 self._form_hint_window,
                 self._menu_header_window,
@@ -117,6 +123,22 @@ class ChromeMixin:
 
     def _working_status_visible(self) -> bool:
         return self._working_active or bool(self._worked_label)
+
+    def _queue_line_visible(self) -> bool:
+        return bool(self.session.prompt_queue)
+
+    def _queue_fragments(self):
+        queue = self.session.prompt_queue
+        if not queue:
+            return []
+        width = term_width()
+        count = len(queue)
+        head = " ".join(queue[0].strip().split())[: width - 18]
+        return [
+            ("class:chrome.queue", f"queued ({count}) "),
+            ("class:chrome.queue.arrow", "» "),
+            ("class:chrome.queue.preview", head),
+        ]
 
     def _working_status_fragments(self):
         if self._working_active:

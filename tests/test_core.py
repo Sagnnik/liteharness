@@ -9,6 +9,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent import _with_working_state_tail, build_graph
+from context import load_instruction
 from compaction import (
     COMPACTION_HARD_RATIO,
     ContextPressure,
@@ -230,7 +231,8 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         first_seen = [m for m in model.seen_messages[0] if m.type == "human"]
         first_overlay = first_seen[-1].content
         self.assertIn("MODE SWITCH", first_overlay)
-        self.assertIn("approved", first_overlay)
+        self.assertIn("action: replace", first_overlay)
+        self.assertIn("do not blindly execute", first_overlay)
 
         # second turn on the same thread, no mode_switch in the payload
         await app.ainvoke(
@@ -247,6 +249,14 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         second_seen = [m for m in model.seen_messages[1] if m.type == "human"]
         second_overlay = second_seen[-1].content
         self.assertNotIn("MODE SWITCH", second_overlay)
+
+    def test_plan_mode_instructions_defer_todo_to_act_switch(self) -> None:
+        text = load_instruction("plan_mode")
+        # Plan mode no longer tells the agent to call `todo` — that's
+        # deferred to the first act turn after plan->act switch.
+        self.assertNotIn("Immediately call `todo`", text)
+        self.assertNotIn("action: replace", text)
+        self.assertIn("Do not include tool calls in this message", text)
 
     async def test_plan_mode_block_only_on_fresh_turn_not_tool_loop(self) -> None:
         model = FakeToolCallModel(
