@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -8,13 +9,34 @@ from tempfile import TemporaryDirectory
 from cli.tui.app import TuiApp
 
 
+class _FakeCancelToken:
+    """Minimal stand-in for ``cli.session_app.CancelToken`` used by FakeSession.
+
+    Mirrors the trigger/is_set/reset surface the TUI's cancel cascade depends
+    on without requiring a real ``SessionApp`` (which would pull in the LangGraph
+    app and model factory).
+    """
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+
+    def trigger(self) -> None:
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def reset(self) -> None:
+        self._event.clear()
+
+
 class FakeSession:
     def __init__(self) -> None:
         self.git_available = False
         self.thread_id = f"session-{uuid.uuid4().hex[:8]}"
         self.agent_mode = "act"
         self.should_exit = False
-        self.queued_prompt = ""
+        self.prompt_queue: list[str] = []
         self.pending_skills: list[str] = []
         self.assistant_history: list[str] = []
         self.last_usage: dict | None = None
@@ -26,6 +48,7 @@ class FakeSession:
         self.force_compact = False
         self.saved = False
         self.resumed_thread_id = ""
+        self.cancel_token = _FakeCancelToken()
 
     def toggle_mode(self) -> None:
         self.agent_mode = "plan" if self.agent_mode == "act" else "act"
@@ -59,6 +82,31 @@ class FakeSession:
 
     def request_compact(self) -> None:
         self.force_compact = True
+
+    def enqueue_prompt(self, text: str) -> None:
+        if text:
+            self.prompt_queue.append(text)
+
+    def dequeue_prompt(self) -> str | None:
+        if self.prompt_queue:
+            return self.prompt_queue.pop(0)
+        return None
+
+    def clear_prompt_queue(self) -> int:
+        count = len(self.prompt_queue)
+        self.prompt_queue.clear()
+        return count
+
+    @property
+    def queued_prompt(self) -> str:
+        return self.prompt_queue[-1] if self.prompt_queue else ""
+
+    @queued_prompt.setter
+    def queued_prompt(self, value: str) -> None:
+        if value:
+            self.prompt_queue = [value]
+        else:
+            self.prompt_queue.clear()
 
 
 Dispatcher = Callable[[FakeSession, str], Awaitable[None]]

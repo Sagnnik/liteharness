@@ -134,6 +134,10 @@ class SessionApp:
     def toggle_mode(self) -> None:
         if self.agent_mode == "act":
             self.agent_mode = "plan"
+            # An act checkpoint only makes sense entering act mode; dropping
+            # back to plan cancels any pending one so it can't strand a stale
+            # compaction prompt on a later plan->act switch.
+            self._pending_act_checkpoint = False
         else:
             self.agent_mode = "act"
             self._pending_act_checkpoint = True
@@ -173,29 +177,21 @@ class SessionApp:
         # immediately abort this one.
         self.cancel_token.reset()
         mode_switch = ""
-        if self._pending_act_checkpoint and self.agent_mode == "act":
-            await self._maybe_checkpoint_before_act()
+        # Consume the plan->act toggle BEFORE the (awaitable) checkpoint
+        # prompt so a Ctrl+C during that prompt doesn't strand the toggle
+        # for the next turn. The checkpoint ask itself runs inside the try
+        # below so a cancel there is finalised cleanly and ``mode_switch``
+        # is still emitted on this turn's payload.
+        pending_switch = self._pending_act_checkpoint and self.agent_mode == "act"
+        if pending_switch:
             self._pending_act_checkpoint = False
             mode_switch = "plan->act"
         self._ensure_graph()
 
-        user_message = self._build_user_message(user_text)
-        append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
-        self.turn_count += 1
-
+        # Hoisted before the try so the ``except CancelledError`` handler can
+        # finalise even if the cancel lands before the payload is built (e.g.
+        # during the plan->act checkpoint prompt).
         config = {"configurable": {"thread_id": self.thread_id}}
-        initial = self._bootstrap.pop(self.thread_id, [])
-        activate_skills = self.pending_skills
-        self.pending_skills = []
-        payload = {
-            "messages": [*initial, user_message],
-            "approval_declined": False,
-            "agent_mode": self.agent_mode,
-            "force_compact": self._consume_force_compact(),
-            "activate_skills": activate_skills,
-            "mode_switch": mode_switch,
-        }
-
         before = self._cost_snapshot()
         stream: render.AssistantStream | None = None
         streamed_any = False
@@ -204,6 +200,25 @@ class SessionApp:
         render.begin_turn()
 
         try:
+            if pending_switch:
+                await self._maybe_checkpoint_before_act()
+
+            user_message = self._build_user_message(user_text)
+            append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
+            self.turn_count += 1
+
+            initial = self._bootstrap.pop(self.thread_id, [])
+            activate_skills = self.pending_skills
+            self.pending_skills = []
+            payload = {
+                "messages": [*initial, user_message],
+                "approval_declined": False,
+                "agent_mode": self.agent_mode,
+                "force_compact": self._consume_force_compact(),
+                "activate_skills": activate_skills,
+                "mode_switch": mode_switch,
+            }
+
             async for event in self.app.astream_events(payload, config=config, version="v2"):
                 etype = event.get("event")
                 name = event.get("name", "")
@@ -252,6 +267,22 @@ class SessionApp:
                 render.render_todos(get_thread_todos(self.thread_id))
                 self._autosave_plan_turn()
                 await self.refresh_context_snapshot()
+        except asyncio.CancelledError:
+            # Hard-escalation path: the cooperative cancel token failed to
+            # break the stream loop within the backstop window, or a cancel
+            # landed during the plan->act checkpoint prompt. Best-effort
+            # finalisation before re-raising so the task is still properly
+            # cancelled and the checkpoint isn't left dirty. ``shield`` keeps
+            # the finalisation running even if a second Ctrl+C arrives.
+            try:
+                await asyncio.shield(
+                    self._finalize_cancelled_turn(stream, streamed_any, config)
+                )
+            except asyncio.CancelledError:
+                pass  # double-cancel; state may be dirty, nothing we can do
+            except Exception:
+                pass
+            raise
         finally:
             render.finish_turn()
 
@@ -261,25 +292,39 @@ class SessionApp:
         streamed_any: bool,
         config: dict,
     ) -> None:
-        """Flush partial state after a cooperative cancel.
+        """Flush partial state after a cooperative or hard cancel.
 
-        Mirrors how OpenCode/Codex settle an interrupted turn: persist the
-        partial assistant text annotated as interrupted and synthesise a
-        *failed* ``ToolMessage`` for every pending tool call so the checkpoint
-        stays consistent for the next turn. No user-role marker is injected;
-        the failed assistant + failed tools are themselves the signal to the
-        model, matching industry precedent.
+        Mirrors how OpenCode/Codex settle an interrupted turn:
+
+        - persist any partial assistant text annotated as interrupted,
+        - synthesise a *failed* ``ToolMessage`` for every pending tool call so
+          the checkpoint stays consistent, and
+        - when neither partial text nor pending tool calls exist (cancel landed
+          mid-LLM-call after all tools already returned, or before any
+          assistant token streamed this turn), inject an ``AIMessage``
+          interruption marker so the model does not silently resume the
+          abandoned request on the next turn.
+
+        The marker is an ``AIMessage`` (not ``HumanMessage``) to preserve
+        strict user/assistant alternation: the last checkpoint message may be
+        a ``HumanMessage`` (empty-stream turn) or a ``ToolMessage``
+        (just-completed tools), and an ``AIMessage`` cap is valid in both
+        cases, while a second ``HumanMessage`` risks back-to-back humans that
+        some providers reject.
         """
+        recorded_text = False
         if stream is not None:
             stream.stop()
             if streamed_any and stream.text.strip():
                 self._record_assistant(stream.text.strip() + " … [interrupted]")
+                recorded_text = True
 
-        synthetic: list[ToolMessage] = []
+        synthetic: list[BaseMessage] = []
         try:
             snapshot = await self.app.aget_state(config)
         except Exception:
             snapshot = None
+        has_pending = False
         if snapshot is not None:
             messages = list((snapshot.values or {}).get("messages", []))
             answered_ids = {
@@ -296,6 +341,7 @@ class SessionApp:
                     call_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                     if not call_id or str(call_id) in answered_ids:
                         continue
+                    has_pending = True
                     tool_name = (
                         tc.get("name")
                         if isinstance(tc, dict)
@@ -310,11 +356,28 @@ class SessionApp:
                     )
                 break
 
+        # No partial assistant text AND no pending tool calls -> the cancel
+        # landed during a pure LLM call with no observable output this turn.
+        # Without an explicit marker the model has no signal that the prior
+        # request was abandoned and will silently resume it. An ``AIMessage``
+        # cap keeps alternation valid regardless of what precedes it.
+        if not recorded_text and not has_pending:
+            synthetic.append(
+                AIMessage(
+                    content="… [turn interrupted by user; "
+                    "the previous request was abandoned — do not continue it.]"
+                )
+            )
+
         if synthetic:
             try:
                 await self.app.aupdate_state(config, {"messages": synthetic})
             except Exception as exc:
                 render.render_warning(f"Cancel state flush failed: {exc}")
+
+        # Persist any partial plan text so an interrupted plan turn isn't
+        # silently lost (the success path autosaves via _autosave_plan_turn).
+        self._autosave_plan_turn()
 
         render.render_notice("Turn interrupted by user.", title="cancel")
 
@@ -344,12 +407,18 @@ class SessionApp:
                 self._record_assistant(text)
 
     def _render_tool_results(self, event: dict) -> None:
+        todo_updated = False
         for msg in _messages_from_event(event):
             if getattr(msg, "type", None) != "tool":
                 continue
             if (getattr(msg, "additional_kwargs", None) or {}).get("hidden"):
                 continue
-            render.render_tool_result(getattr(msg, "name", "tool"), str(msg.content))
+            name = getattr(msg, "name", "tool")
+            if str(name or "") == "todo":
+                todo_updated = True
+            render.render_tool_result(name, str(msg.content))
+        if todo_updated:
+            render.render_todos(get_thread_todos(self.thread_id))
 
     # --- approval handler --------------------------------------------------
     async def _approval(self, name: str, args: dict) -> str:

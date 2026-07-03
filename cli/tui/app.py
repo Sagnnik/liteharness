@@ -110,6 +110,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._path_line_cache_key: tuple[Any, ...] | None = None
         self._path_line_cache: list[tuple[str, str]] = []
 
+        self._todos_block_start: int | None = None
+        self._todos_block_count = 0
         self._transcript_store = TranscriptStore(self._lines)
 
         self._buffer = Buffer(history=FileHistory(str(history_path)))
@@ -267,10 +269,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         except asyncio.CancelledError:
             # Hard-escalation path: the cooperative cancel token failed to
             # break the stream loop within the backstop window, so the TUI
-            # fell back to asyncio.Task.cancel(). Surface it as a notice
-            # consistent with the cooperative path's "Turn interrupted" banner
-            # rather than the older vague "Turn interrupted." warning.
-            self.append_notice("cancel", "Turn interrupted (hard cancel).")
+            # fell back to asyncio.Task.cancel(). ``run_turn``'s own
+            # ``except CancelledError`` handler already finalised the turn
+            # and rendered the "Turn interrupted by user." banner, so there's
+            # nothing to surface here — just let the cancellation propagate.
             raise
         except Exception as exc:
             self.append_error(f"{type(exc).__name__}: {exc}")
@@ -306,19 +308,27 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             self._cancel_backstop_handle = None
 
     def _schedule_hard_cancel_backstop(self) -> None:
-        """Arm a 2s safety net that falls back to ``asyncio.Task.cancel``.
+        """Arm a safety net that falls back to ``asyncio.Task.cancel``.
 
         The cooperative cancel_token path is preferred because it lets
         ``run_turn`` flush partial state cleanly. If the in-flight LLM call
         keeps the stream loop from reaching its ``is_set()`` check, the
         backstop escalates to the legacy hard cancel.
+
+        The window is intentionally generous (10s): a cold first LLM call
+        with no prefix cache or a slow OpenRouter RTT can easily exceed 2s,
+        which would trip a hard cancel on a turn the cooperative path could
+        have finalised cleanly given a little more time. ``run_turn``'s
+        ``except CancelledError`` handler now finalises on hard cancel too,
+        so the cost of a too-long window is only a slower UX response, not
+        a dirty checkpoint.
         """
         self._cancel_hard_cancel_backstop()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._cancel_backstop_handle = loop.call_later(2.0, self._hard_cancel)
+        self._cancel_backstop_handle = loop.call_later(10.0, self._hard_cancel)
 
     def _hard_cancel(self) -> None:
         if self._submit_task is not None and not self._submit_task.done():

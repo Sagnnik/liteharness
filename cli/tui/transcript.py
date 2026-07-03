@@ -368,9 +368,25 @@ class TranscriptMixin:
 
     def append_todos(self, todos: list[dict]) -> None:
         if not todos:
+            if self._todos_block_start is not None:
+                self._transcript_store.delete(self._todos_block_start, self._todos_block_count)
+                self._todos_block_start = None
+                self._todos_block_count = 0
+                self._transcript_revision = self._transcript_store.revision
+                self.invalidate()
             return
+
         width = self._transcript_render_width or term_width()
-        self._append_transcript(*todos_transcript_lines(todos, width=width), TranscriptLine("class:transcript.muted", ""))
+        lines = [*todos_transcript_lines(todos, width=width), TranscriptLine("class:transcript.muted", "")]
+        if self._todos_block_start is not None:
+            self._transcript_store.replace(self._todos_block_start, self._todos_block_count, lines)
+        else:
+            self._todos_block_start = len(self._transcript_store.lines)
+            self._transcript_store.append(lines)
+        self._todos_block_count = len(lines)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
 
     def append_diff(self, diff_text: str, *, title: str = "diff") -> None:
         self.append_panel(title, *str(diff_text).splitlines())

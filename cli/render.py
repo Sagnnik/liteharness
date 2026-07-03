@@ -138,8 +138,7 @@ def render_tool_result(name: str, content: str, *, exit_status: str | None = Non
 
 def render_todos(todos: Iterable[dict]) -> None:
     active = [todo for todo in (todos or []) if todo.get("status") != "completed"]
-    if active:
-        _sink().append_todos(active)
+    _sink().append_todos(active)
 
 
 def diff_renderable(diff_text: str) -> Text:
