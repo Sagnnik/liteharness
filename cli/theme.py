@@ -18,7 +18,12 @@ GREEN = "#3fb950"
 RED = "#f85149"
 PURPLE = "#a78bfa"
 YELLOW = "#d29922"
-
+MINT = "#87C095"
+LAVENDER = "#C6A0F6"
+# expanded accents so cyan is not the only hue (deep blue + yellow identity)
+BLUE = "#4aa3df"
+#CODE_BG = "#252531"
+CODE_BG = "#1A1B26"
 
 # --- rich theme -------------------------------------------------------------
 # Terminal fallback styles. The active TUI uses PTK_STYLE_RULES below.
@@ -31,13 +36,13 @@ RICH_THEME = Theme(
         "assistant.frame": NAVY_BRIGHT,
         "assistant.label": f"bold {CYAN}",
         # tools
-        "tool": f"bold {CYAN}",
+        "tool": f"bold {BLUE}",
         "tool.args": f"{GRAY_DIM}",
         "tool.result": f"{GRAY}",
         # status / notices
-        "notice": CYAN,
+        "notice": YELLOW,
         "notice.frame": NAVY,
-        "warning": CYAN,
+        "warning": YELLOW,
         "error": f"bold {RED}",
         "muted": GRAY_DIM,
         "accent": CYAN,
@@ -54,8 +59,24 @@ RICH_THEME = Theme(
         "usage": f"{GRAY_DIM}",
         "usage.value": GRAY,
         # tables
-        "table.header": f"bold {CYAN}",
+        "table.header": f"bold {BLUE}",
         "table.dim": GRAY_DIM,
+        # markdown (rendered by Rich into the TUI via the ANSI bridge in
+        # cli.tui.markdown_render; these keys brand Rich's Markdown element styles)
+        "markdown.h1": f"bold {LAVENDER}",
+        "markdown.h2": f"bold {LAVENDER}",
+        "markdown.h3": f"bold {LAVENDER}",
+        "markdown.h4": f"bold {LAVENDER}",
+        "markdown.h5": f"bold {LAVENDER}",
+        "markdown.h6": f"bold {LAVENDER}",
+        "markdown.code": f"bold {MINT}",
+        "markdown.block_quote": f"italic {GRAY}",
+        "markdown.item.bullet": BLUE,
+        "markdown.item.number": BLUE,
+        "markdown.link": f"underline {PURPLE}",
+        "markdown.hr": GRAY_DIM,
+        "markdown.strong": "bold",
+        "markdown.em": "italic",
     }
 )
 
@@ -72,13 +93,13 @@ PTK_STYLE_RULES: dict[str, str] = {
     "transcript.header": f"bold {CYAN}",
     "transcript.muted": GRAY_DIM,
     "transcript.user": f"bg:{USER_BOX_BG} {GRAY_BRIGHT}",
-    "transcript.notice": f"bold {CYAN}",
+    "transcript.notice": f"bold {YELLOW}",
     "transcript.panel": GRAY,
     "transcript.warning": YELLOW,
     "transcript.error": f"bold {RED}",
     "transcript.assistant": "default",
-    "transcript.todo.title": f"bold {CYAN}",
-    "transcript.tool": f"bold {CYAN}",
+    "transcript.todo.title": f"bold {BLUE}",
+    "transcript.tool": f"bold {BLUE}",
     "transcript.tool.args": GRAY,
     "transcript.tool.result": GRAY,
     "transcript.subagent.summary": GRAY_DIM,
@@ -87,15 +108,15 @@ PTK_STYLE_RULES: dict[str, str] = {
     "transcript.tag.mcp": f"bold {GREEN}",
     "transcript.tag.notice": f"bold {YELLOW}",
     "transcript.tag.skill": f"bold {PURPLE}",
-    "transcript.tag.init": f"bold {CYAN}",
+    "transcript.tag.init": f"bold {BLUE}",
     "transcript.tag.save": f"bold {GRAY_BRIGHT}",
     "transcript.tag.body": GRAY_BRIGHT,
     "chrome.rule": PURPLE,
-    "chrome.working.spinner": CYAN,
+    "chrome.working.spinner": PURPLE,
     "chrome.worked": GRAY,
     "chrome.stats.key": GRAY_DIM,
     "chrome.stats.value": GRAY,
-    "chrome.stats.accent": CYAN,
+    "chrome.stats.accent": BLUE,
     "chrome.path": GRAY,
     "chrome.menu.header": CYAN,
     "chrome.menu.hint": GRAY_DIM,
@@ -105,7 +126,7 @@ PTK_STYLE_RULES: dict[str, str] = {
     "chrome.menu.label.current": f"bg:{NAVY} bold {GRAY_BRIGHT}",
     "chrome.menu.desc.current": f"bg:{NAVY} {GRAY}",
     "chrome.menu.suffix": f"bg:{NAVY} {CYAN}",
-    "chrome.form.label": f"bold {CYAN}",
+    "chrome.form.label": f"bold {BLUE}",
     "chrome.form.hint": GRAY_DIM,
     "chrome.input.box": GRAY_DIM,
     "chrome.input.field": GRAY_BRIGHT,

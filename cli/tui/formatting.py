@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import textwrap
 
-from cli.theme import CYAN, CYAN_DIM, GRAY_BRIGHT, PURPLE
+from cli.theme import GRAY, GRAY_BRIGHT, GRAY_DIM
 from cli.tui.models import TranscriptLine
 from cli.tui.utils import term_width
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_WORKING_COLORS = (CYAN, CYAN_DIM, PURPLE, GRAY_BRIGHT)
+# Deep gray base with a light gray / near-white band that sweeps across the label.
+_WORKING_COLORS = (GRAY_DIM, GRAY_DIM, GRAY, GRAY_BRIGHT, "#f0f2f5", GRAY_BRIGHT, GRAY, GRAY_DIM)
 
 USER_STYLE = "class:transcript.user"
 _USER_STYLE = USER_STYLE

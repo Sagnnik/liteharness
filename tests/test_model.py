@@ -37,15 +37,53 @@ class ModelFactoryTests(unittest.TestCase):
 
     @mock.patch("model.ChatOpenRouter")
     def test_create_model_passes_reasoning_effort(self, chat_openrouter) -> None:
-        model.configure_model(model.ModelOverrides(reasoning_effort="high"))
+        model.configure_model(
+            model.ModelOverrides(
+                model_name="deepseek/deepseek-v4-flash",
+                reasoning_effort="high",
+            )
+        )
         model.create_model("thread-reasoning")
 
         kwargs = chat_openrouter.call_args.kwargs
         self.assertEqual(kwargs["reasoning"], {"effort": "high"})
 
+    @mock.patch("model.ChatOpenRouter")
+    def test_create_model_omits_reasoning_for_non_reasoning_model(self, chat_openrouter) -> None:
+        model.configure_model(
+            model.ModelOverrides(
+                model_name="openai/gpt-4o",
+                reasoning_effort="high",
+            )
+        )
+        model.create_model("thread-no-reasoning")
+
+        kwargs = chat_openrouter.call_args.kwargs
+        self.assertNotIn("reasoning", kwargs)
+
+    @mock.patch("model.ChatOpenRouter")
+    def test_create_model_omits_reasoning_when_effort_is_none(self, chat_openrouter) -> None:
+        model.configure_model(
+            model.ModelOverrides(
+                model_name="deepseek/deepseek-v4-flash",
+                reasoning_effort="none",
+            )
+        )
+        model.create_model("thread-reasoning-off")
+
+        kwargs = chat_openrouter.call_args.kwargs
+        self.assertNotIn("reasoning", kwargs)
+
     def test_set_active_reasoning_effort_rejects_unknown_value(self) -> None:
+        model.set_active_model("deepseek/deepseek-v4-flash")
         with self.assertRaises(ValueError):
-            model.set_active_reasoning_effort("extreme")
+            model.set_active_reasoning_effort("extreme")  # type: ignore[arg-type]
+
+    def test_set_active_model_coerces_invalid_effort(self) -> None:
+        model.configure_model(model.ModelOverrides(reasoning_effort="medium"))
+        coerced = model.set_active_model("deepseek/deepseek-v4-flash")
+        self.assertEqual(coerced, "high")
+        self.assertEqual(model.active_reasoning_effort(), "high")
 
     @mock.patch("model.ChatOpenRouter")
     def test_create_reflection_model_uses_reflection_name(self, chat_openrouter) -> None:
