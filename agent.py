@@ -386,7 +386,7 @@ def build_graph(
                 elif getattr(tool, "is_async", False) or getattr(tool, "coroutine", None) is not None:
                     result = await tool.ainvoke(args)
                 else:
-                    result = tool.invoke(args)
+                    result = await asyncio.to_thread(tool.invoke, args)
             except Exception as exc:
                 result = f"Error: {exc}"
             duration = int((time.time() - started) * 1000)
