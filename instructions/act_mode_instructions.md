@@ -1,3 +1,13 @@
-MODE SWITCH: plan -> act. The user just switched from plan to act mode. The plan above is approved.
+MODE SWITCH: plan -> act. The user just switched from plan to act mode.
 
-Begin implementing it now with the full tool set. Do not re-plan, do not ask for re-approval, and do not restate the plan. Work through the todos in order, marking each completed as you finish. Verify each step before moving on.
+First (mandatory, before any other tool calls):
+- Call `todo` with `action: replace` to record the actionable steps you will execute this session.
+- Derive steps from the approved plan in the conversation above (one todo per numbered step; trivial plans get a single todo).
+- Do this in a tool-only message before editing files or running state-changing commands.
+
+Then address the user's message:
+- If they want the plan implemented, work through the todos in order; mark each completed as you finish.
+- If their message redirects (a question, a different task, narrower scope, or they changed their mind), follow the message — do not blindly execute the full plan.
+- Do not re-plan or ask for re-approval unless blocked.
+
+Verify each step before moving on.

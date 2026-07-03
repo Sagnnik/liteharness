@@ -36,7 +36,7 @@ Task management:
 
 Agent modes (details in `<plan-mode>` block):
 - Plan: read-only — research and draft a plan; no edits or state-changing tools.
-- Act: execute with the full tool set; follow TODOS when present.
+- Act: execute with the full tool set. On the first turn after plan→act switch, call `todo` to record steps from the approved plan, then follow TODOS when executing.
 
 Subagents (`spawn_subagent`):
 - Read-only isolated graphs; blocks the parent until done.
