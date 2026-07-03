@@ -55,7 +55,7 @@ class SessionApp:
         self.thread_id = new_thread_id()
         self.agent_mode = "act"
         self.should_exit = False
-        self.queued_prompt = ""
+        self.prompt_queue: list[str] = []
         self.pending_skills: list[str] = []
         self.assistant_history: list[str] = []
         self.last_usage: dict[str, Any] | None = None
@@ -308,6 +308,32 @@ class SessionApp:
         if answer in {"y", "yes"}:
             self._force_compact = True
             append_event(self.thread_id, {"kind": "compact", "content": "pre-execution compaction requested"})
+
+    # --- prompt queue ------------------------------------------------------
+    def enqueue_prompt(self, text: str) -> None:
+        if text:
+            self.prompt_queue.append(text)
+
+    def dequeue_prompt(self) -> str | None:
+        if self.prompt_queue:
+            return self.prompt_queue.pop(0)
+        return None
+
+    def clear_prompt_queue(self) -> int:
+        count = len(self.prompt_queue)
+        self.prompt_queue.clear()
+        return count
+
+    @property
+    def queued_prompt(self) -> str:
+        return self.prompt_queue[-1] if self.prompt_queue else ""
+
+    @queued_prompt.setter
+    def queued_prompt(self, value: str) -> None:
+        if value:
+            self.prompt_queue = [value]
+        else:
+            self.prompt_queue.clear()
 
     # --- compaction / reflection helpers -----------------------------------
     def request_compact(self) -> None:

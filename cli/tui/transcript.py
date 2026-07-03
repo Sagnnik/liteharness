@@ -399,6 +399,8 @@ class TranscriptMixin:
         lines = 5
         if self._working_status_visible():
             lines += 1
+        if self._queue_line_visible():
+            lines += 1
         if self._form_visible():
             lines += 2
         if self._menu_header_fragments():

@@ -194,6 +194,11 @@ def build_key_bindings(ui) -> KeyBindings:
         if ui._cancel_active_task():
             event.app.invalidate()
             return
+        cleared = ui.session.clear_prompt_queue()
+        if cleared:
+            ui.append_notice("queue", f"cleared {cleared} queued prompt(s)")
+            event.app.invalidate()
+            return
         buff = event.current_buffer
         if buff is ui._buffer and buff.text:
             ui._reset_buffer()

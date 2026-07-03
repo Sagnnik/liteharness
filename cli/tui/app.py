@@ -154,8 +154,6 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         app.timeoutlen = KEY_BINDING_TIMEOUT
 
     def _main_buffer_read_only(self) -> bool:
-        if self._busy:
-            return True
         if self._menu_kind in PICKER_MODES:
             return True
         if self._form_kind is not None:
@@ -215,9 +213,31 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             self._transcript_control.clear_selection()
 
     def _schedule_submit(self, text: str) -> None:
-        if not text or self._busy:
+        if not text:
+            return
+        if self._busy:
+            if text.startswith("/"):
+                self._app.create_background_task(self._busy_dispatch(text))
+            else:
+                self.session.enqueue_prompt(text)
+                count = len(self.session.prompt_queue)
+                preview = text.strip().splitlines()[0][:48]
+                if len(text.strip().splitlines()[0]) > 48:
+                    preview += "..."
+                self.append_notice("queue", f"added prompt #{count}: {preview}")
+            self._reset_buffer()
+            self.invalidate()
             return
         self._submit_task = self._app.create_background_task(self._submit_async(text))
+
+    async def _busy_dispatch(self, text: str) -> None:
+        try:
+            await self._dispatch(self.session, text, busy=True)
+        except Exception as exc:
+            self.append_error(f"{type(exc).__name__}: {exc}")
+        finally:
+            self._reset_buffer()
+            self.invalidate()
 
     async def _submit_async(self, text: str) -> None:
         self._busy = True
@@ -227,12 +247,13 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             if not is_slash:
                 self.append_user(text)
             if is_slash:
-                await self._dispatch(self.session, text)
+                await self._dispatch(self.session, text, busy=False)
             else:
                 await self.session.run_turn(text)
-            while self.session.queued_prompt and not self.session.should_exit:
-                queued = self.session.queued_prompt
-                self.session.queued_prompt = ""
+            while not self.session.should_exit:
+                queued = self.session.dequeue_prompt()
+                if queued is None:
+                    break
                 self.append_user(queued)
                 await self.session.run_turn(queued)
             if self.session.should_exit:
@@ -251,7 +272,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
     def _cancel_active_task(self) -> bool:
         if self._submit_task is not None and not self._submit_task.done():
+            cleared = self.session.clear_prompt_queue()
             self._submit_task.cancel()
+            if cleared:
+                self.append_notice("queue", f"cleared {cleared} queued prompt(s)")
             return True
         return False
 
