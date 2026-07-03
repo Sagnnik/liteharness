@@ -191,6 +191,13 @@ def build_key_bindings(ui) -> KeyBindings:
 
     @kb.add("c-c", filter=~has_selection & ~ui._transcript_selection_active)
     def _clear_or_cancel(event) -> None:
+        # Priority: (1) dismiss any open approval/question/line prompt so its
+        # asyncio.Future is resolved instead of stranded, (2) cancel the
+        # active turn cooperatively (with a 2s hard-escalation backstop),
+        # (3) clear the prompt queue, (4) clear the input buffer.
+        if ui._cancel_open_prompt():
+            event.app.invalidate()
+            return
         if ui._cancel_active_task():
             event.app.invalidate()
             return

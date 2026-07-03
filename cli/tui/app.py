@@ -68,6 +68,12 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         self._busy = False
         self._submit_task: asyncio.Task | None = None
+        # Hard-escalation backstop handle: when the cooperative cancel token
+        # fails to break the stream loop within 2s (e.g. a long blocked LLM
+        # call), a call_later fires _hard_cancel to fall back to the legacy
+        # asyncio.Task.cancel() behaviour. Stored so the cooperative path can
+        # cancel it on clean exit and avoid firing on a finished task.
+        self._cancel_backstop_handle: asyncio.TimerHandle | None = None
         self._config_future: asyncio.Future[ConfigResult] | None = None
         self._config_result: ConfigResult | None = None
         self._prompt_future: asyncio.Future[Any] | None = None
@@ -259,21 +265,74 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             if self.session.should_exit:
                 self._app.exit()
         except asyncio.CancelledError:
-            self.append_warning("Turn interrupted.")
+            # Hard-escalation path: the cooperative cancel token failed to
+            # break the stream loop within the backstop window, so the TUI
+            # fell back to asyncio.Task.cancel(). Surface it as a notice
+            # consistent with the cooperative path's "Turn interrupted" banner
+            # rather than the older vague "Turn interrupted." warning.
+            self.append_notice("cancel", "Turn interrupted (hard cancel).")
             raise
         except Exception as exc:
             self.append_error(f"{type(exc).__name__}: {exc}")
         finally:
+            self._cancel_hard_cancel_backstop()
             self._busy = False
             self._close_menu()
             self._reset_buffer()
             self._focus_command_input()
             self.invalidate()
 
+    def _cancel_open_prompt(self) -> bool:
+        """Resolve any open approval/question/line prompt future via the cancel path.
+
+        Runs before turn-cancel/queue-clear so Ctrl+C during a permission or
+        clarification prompt dismisses the prompt instead of stranding its
+        ``asyncio.Future``. Mirrors the existing Esc/_cancel_menu behaviour
+        but resolves question prompts to option 0 (the recommended default)
+        instead of ``None`` so ``_ask_question`` doesn't crash on indexing.
+        """
+        if self._prompt_future is not None and not self._prompt_future.done():
+            if self._prompt_kind == "question":
+                self._prompt_future.set_result({"index": 0, "note": ""})
+            else:
+                self._prompt_future.set_result("")
+            self._clear_prompt()
+            return True
+        return False
+
+    def _cancel_hard_cancel_backstop(self) -> None:
+        if self._cancel_backstop_handle is not None:
+            self._cancel_backstop_handle.cancel()
+            self._cancel_backstop_handle = None
+
+    def _schedule_hard_cancel_backstop(self) -> None:
+        """Arm a 2s safety net that falls back to ``asyncio.Task.cancel``.
+
+        The cooperative cancel_token path is preferred because it lets
+        ``run_turn`` flush partial state cleanly. If the in-flight LLM call
+        keeps the stream loop from reaching its ``is_set()`` check, the
+        backstop escalates to the legacy hard cancel.
+        """
+        self._cancel_hard_cancel_backstop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._cancel_backstop_handle = loop.call_later(2.0, self._hard_cancel)
+
+    def _hard_cancel(self) -> None:
+        if self._submit_task is not None and not self._submit_task.done():
+            self._submit_task.cancel()
+        self._cancel_backstop_handle = None
+
     def _cancel_active_task(self) -> bool:
         if self._submit_task is not None and not self._submit_task.done():
             cleared = self.session.clear_prompt_queue()
-            self._submit_task.cancel()
+            # Cooperative cancel preferred: lets run_turn break out at the next
+            # event boundary and flush partial state. A 2s call_later backstop
+            # is scheduled so a stuck call still gets hard-cancelled.
+            self.session.cancel_token.trigger()
+            self._schedule_hard_cancel_backstop()
             if cleared:
                 self.append_notice("queue", f"cleared {cleared} queued prompt(s)")
             return True

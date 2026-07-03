@@ -7,6 +7,7 @@ compaction checkpoint, and full-transcript resume / reset / save.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import mimetypes
 import re
@@ -40,6 +41,34 @@ def new_thread_id() -> str:
     return f"session-{uuid.uuid4().hex[:8]}"
 
 
+class CancelToken:
+    """Cooperative cancellation flag for the active turn's stream loop.
+
+    A thin wrapper over ``asyncio.Event`` so the TUI keybinding layer can
+    request a clean break-out of the ``astream_events`` loop instead of
+    raising ``CancelledError`` mid-flight. The loop polls ``is_set()`` after
+    each event and performs partial-state cleanup before returning normally;
+    a ``call_later`` hard-escalation backstop (``asyncio.Task.cancel()``) is
+    scheduled by the TUI in case the cooperative path is stuck on a long
+    blocked LLM call.
+    """
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+
+    def trigger(self) -> None:
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def reset(self) -> None:
+        self._event.clear()
+
+    async def wait(self) -> None:
+        await self._event.wait()
+
+
 def graph_rebuild_needed(current_thread: str, built_thread: str) -> bool:
     """A graph rebuild is needed only when the thread id changed.
 
@@ -68,6 +97,11 @@ class SessionApp:
         self._bootstrap: dict[str, list[BaseMessage]] = {}
         self._seen: dict[str, int] = {}
         self._plan_turn_texts: list[str] = []
+
+        # Cooperative cancellation flag for the active turn. Reset at the
+        # start of each run_turn so a stale trigger from a prior turn cannot
+        # bleed into the next one.
+        self.cancel_token = CancelToken()
 
         self.checkpointer = MemorySaver()
 
@@ -135,6 +169,9 @@ class SessionApp:
 
     # --- the turn ----------------------------------------------------------
     async def run_turn(self, user_text: str) -> None:
+        # Fresh token per turn; a stale trigger from the prior turn must not
+        # immediately abort this one.
+        self.cancel_token.reset()
         mode_switch = ""
         if self._pending_act_checkpoint and self.agent_mode == "act":
             await self._maybe_checkpoint_before_act()
@@ -199,14 +236,87 @@ class SessionApp:
                 elif etype == "on_chain_end" and name == "tools":
                     self._render_tool_results(event)
 
-            after = self._cost_snapshot()
-            self.last_usage = self._usage_delta(before, after)
-            render.render_usage_footer(self.last_usage)
-            render.render_todos(get_thread_todos(self.thread_id))
-            self._autosave_plan_turn()
-            await self.refresh_context_snapshot()
+                # Cooperative cancellation: break out between events so the
+                # post-loop cleanup can flush partial state cleanly. The hard
+                # backstop (asyncio.Task.cancel) is the TUI's fallback if a
+                # long blocked call keeps the loop from reaching this check.
+                if self.cancel_token.is_set():
+                    break
+
+            if self.cancel_token.is_set():
+                await self._finalize_cancelled_turn(stream, streamed_any, config)
+            else:
+                after = self._cost_snapshot()
+                self.last_usage = self._usage_delta(before, after)
+                render.render_usage_footer(self.last_usage)
+                render.render_todos(get_thread_todos(self.thread_id))
+                self._autosave_plan_turn()
+                await self.refresh_context_snapshot()
         finally:
             render.finish_turn()
+
+    async def _finalize_cancelled_turn(
+        self,
+        stream: render.AssistantStream | None,
+        streamed_any: bool,
+        config: dict,
+    ) -> None:
+        """Flush partial state after a cooperative cancel.
+
+        Mirrors how OpenCode/Codex settle an interrupted turn: persist the
+        partial assistant text annotated as interrupted and synthesise a
+        *failed* ``ToolMessage`` for every pending tool call so the checkpoint
+        stays consistent for the next turn. No user-role marker is injected;
+        the failed assistant + failed tools are themselves the signal to the
+        model, matching industry precedent.
+        """
+        if stream is not None:
+            stream.stop()
+            if streamed_any and stream.text.strip():
+                self._record_assistant(stream.text.strip() + " … [interrupted]")
+
+        synthetic: list[ToolMessage] = []
+        try:
+            snapshot = await self.app.aget_state(config)
+        except Exception:
+            snapshot = None
+        if snapshot is not None:
+            messages = list((snapshot.values or {}).get("messages", []))
+            answered_ids = {
+                getattr(m, "tool_call_id", None)
+                for m in messages
+                if isinstance(m, ToolMessage)
+            }
+            # Find the most recent AIMessage and synthesise failure responses
+            # for any tool_call on it that has no matching ToolMessage yet.
+            for msg in reversed(messages):
+                if not isinstance(msg, AIMessage):
+                    continue
+                for tc in (msg.tool_calls or []):
+                    call_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if not call_id or str(call_id) in answered_ids:
+                        continue
+                    tool_name = (
+                        tc.get("name")
+                        if isinstance(tc, dict)
+                        else getattr(tc, "name", "tool")
+                    )
+                    synthetic.append(
+                        ToolMessage(
+                            tool_call_id=str(call_id),
+                            name=str(tool_name or "tool"),
+                            content="Tool execution interrupted",
+                        )
+                    )
+                break
+
+        if synthetic:
+            try:
+                await self.app.aupdate_state(config, {"messages": synthetic})
+            except Exception as exc:
+                render.render_warning(f"Cancel state flush failed: {exc}")
+
+        render.render_notice("Turn interrupted by user.", title="cancel")
 
     def _record_assistant(self, text: str) -> None:
         cleaned = text.strip()
