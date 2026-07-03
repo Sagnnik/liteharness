@@ -212,6 +212,141 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<system-reminder>", seen)
         self.assertIn("</system-reminder>", seen)
 
+    async def test_mode_switch_note_one_shot_on_first_act_turn(self) -> None:
+        model = EchoModel()
+        app = build_graph(model, tools=[], thread_id="mode-switch", agent_mode="act")
+
+        await app.ainvoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "approval_declined": False,
+                "todos": [],
+                "agent_mode": "act",
+                "mode_switch": "plan->act",
+            },
+            config={"configurable": {"thread_id": "mode-switch"}},
+        )
+
+        first_seen = [m for m in model.seen_messages[0] if m.type == "human"]
+        first_overlay = first_seen[-1].content
+        self.assertIn("MODE SWITCH", first_overlay)
+        self.assertIn("approved", first_overlay)
+
+        # second turn on the same thread, no mode_switch in the payload
+        await app.ainvoke(
+            {
+                "messages": [HumanMessage(content="next step")],
+                "approval_declined": False,
+                "todos": [],
+                "agent_mode": "act",
+                "mode_switch": "",
+            },
+            config={"configurable": {"thread_id": "mode-switch"}},
+        )
+
+        second_seen = [m for m in model.seen_messages[1] if m.type == "human"]
+        second_overlay = second_seen[-1].content
+        self.assertNotIn("MODE SWITCH", second_overlay)
+
+    async def test_plan_mode_block_only_on_fresh_turn_not_tool_loop(self) -> None:
+        model = FakeToolCallModel(
+            {"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}
+        )
+        app = build_graph(
+            model,
+            tools=get_tools_for_names(["read_file"]),
+            thread_id="plan-delta",
+            agent_mode="plan",
+            git_available=False,
+        )
+        await app.ainvoke(
+            {
+                "messages": [HumanMessage(content="plan something")],
+                "approval_declined": False,
+                "todos": [],
+                "agent_mode": "plan",
+            },
+            config={"configurable": {"thread_id": "plan-delta"}},
+        )
+
+        # fresh turn: full overlay on the user message, includes <plan-mode>
+        fresh_user = [m for m in model.seen_messages[0] if m.type == "human"][0]
+        self.assertIn("<plan-mode", fresh_user.content)
+
+        # tool loop: read_file doesn't change any section -> empty delta -> no overlay tail
+        tool_loop_msgs = model.seen_messages[1]
+        overlay_tails = [
+            m for m in tool_loop_msgs
+            if m.type == "human" and "<system-reminder>" in (m.content or "")
+        ]
+        self.assertEqual(len(overlay_tails), 0)
+
+    async def test_tool_loop_no_tail_when_nothing_changed(self) -> None:
+        model = FakeToolCallModel(
+            {"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}
+        )
+        app = build_graph(
+            model,
+            tools=get_tools_for_names(["read_file"]),
+            thread_id="no-delta",
+            agent_mode="act",
+            git_available=False,
+        )
+        await app.ainvoke(
+            {
+                "messages": [HumanMessage(content="read it")],
+                "approval_declined": False,
+                "todos": [],
+                "agent_mode": "act",
+            },
+            config={"configurable": {"thread_id": "no-delta"}},
+        )
+
+        # tool loop: nothing changed -> empty delta -> no tail HumanMessage
+        tool_loop_msgs = model.seen_messages[1]
+        last = tool_loop_msgs[-1]
+        self.assertNotEqual(last.type, "human")  # last is the ToolMessage
+
+    async def test_tool_loop_delta_only_changed_todos(self) -> None:
+        model = FakeToolCallModel(
+            {
+                "name": "todo",
+                "args": {
+                    "action": "insert",
+                    "index": 1,
+                    "content": "New task",
+                    "status": "pending",
+                },
+                "id": "call-1",
+            }
+        )
+        app = build_graph(
+            model,
+            tools=get_tools_for_names(["todo"]),
+            thread_id="todos-delta",
+            agent_mode="plan",
+            git_available=False,
+        )
+        await app.ainvoke(
+            {
+                "messages": [HumanMessage(content="plan this")],
+                "approval_declined": False,
+                "todos": [{"id": "1", "content": "Existing", "status": "pending"}],
+                "agent_mode": "plan",
+            },
+            config={"configurable": {"thread_id": "todos-delta"}},
+        )
+
+        # tool loop: todos changed -> delta tail with TODOS, but no <plan-mode>, no GIT
+        tool_loop_msgs = model.seen_messages[1]
+        tail = tool_loop_msgs[-1]
+        self.assertEqual(tail.type, "human")  # delta tail HumanMessage
+        self.assertIn("<system-reminder>", tail.content)
+        self.assertIn("TODOS", tail.content)
+        self.assertIn("New task", tail.content)
+        self.assertNotIn("<plan-mode", tail.content)
+        self.assertNotIn("GIT", tail.content)
+
     def test_cost_tracker_accounts_for_cache_and_provider_costs(self) -> None:
         tracker = CostTracker()
         estimated = tracker.add(

@@ -158,7 +158,7 @@ class TodoGraphTests(unittest.IsolatedAsyncioTestCase):
                                     "action": "insert",
                                     "index": 1,
                                     "content": "Inserted first",
-                                    "status": "completed",
+                                    "status": "pending",
                                 },
                                 "id": "call-1",
                             }
@@ -181,14 +181,15 @@ class TodoGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["todos"],
             [
-                {"id": "2", "content": "Inserted first", "status": "completed"},
+                {"id": "2", "content": "Inserted first", "status": "pending"},
                 {"id": "1", "content": "Existing", "status": "pending"},
             ],
         )
+        # tool loop: rendered todos changed (new pending todo) -> delta includes TODOS
         working_state_tail = model.seen_messages[1][-1]
         self.assertEqual(working_state_tail.type, "human")
         self.assertIn("<system-reminder>", working_state_tail.content)
-        self.assertNotIn("- [completed] 2: Inserted first", working_state_tail.content)
+        self.assertIn("- [pending] 2: Inserted first", working_state_tail.content)
         self.assertIn("- [pending] 1: Existing", working_state_tail.content)
         self.assertNotIn("TODOS\nNo todos", working_state_tail.content)
 
