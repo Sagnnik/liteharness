@@ -49,21 +49,38 @@ CREATE TABLE IF NOT EXISTS subagents (
     output TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS checkpoints (
+    thread_id TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
+    user_seq INTEGER NOT NULL,
+    git_hash TEXT,
+    modified_paths TEXT NOT NULL DEFAULT '',
+    mem_snapshot TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (thread_id, user_seq)
+);
+
 CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_thread ON checkpoints(thread_id, user_seq ASC);
 """
 
 _write_lock = threading.Lock()
 
 
-def append_event(thread_id: str, event: dict[str, Any]) -> None:
+def append_event(thread_id: str, event: dict[str, Any]) -> int | None:
+    """Append an event to the durable log. Returns the assigned seq, or None when skipped.
+
+    Skipped when autosave is off or when the target is a subagent thread (those
+    only roll up usage). Returning the seq lets callers (e.g. the rollback
+    checkpoint hook) key side tables off the exact user-message event.
+    """
     if not settings.auto_save_threads:
-        return
+        return None
 
     if thread_id.startswith(SUBAGENT_THREAD_PREFIX):
         if event.get("kind") == "usage":
             _rollup_subagent_usage(thread_id, event)
-        return
+        return None
 
     payload = dict(event)
     payload.setdefault("t", _now())
@@ -91,6 +108,7 @@ def append_event(thread_id: str, event: dict[str, Any]) -> None:
             )
             _apply_event_to_thread(conn, thread_id, payload, now)
             conn.commit()
+            return seq
 
 
 def list_threads(n: int = 10) -> list[dict[str, Any]]:
@@ -314,6 +332,198 @@ def _rollup_subagent_usage(subagent_thread_id: str, event: dict[str, Any]) -> No
             if row is None:
                 return
             _apply_event_to_thread(conn, row[0], event, _now())
+            conn.commit()
+
+
+# --- rollback checkpoints -----------------------------------------------
+# Per-turn snapshot row keyed by the user message's seq. Rolls back by deleting
+# events with seq >= user_seq (truncating the conversation tail) and restoring
+# files / session memory from the snapshot.
+
+_FULL_TREE_SENTINEL = "*"
+
+
+def save_checkpoint(
+    thread_id: str,
+    user_seq: int,
+    git_hash: str | None,
+    mem_snapshot: str = "",
+) -> None:
+    """Persist a per-user-turn rollback checkpoint row.
+
+    Called right after the user message is appended (so ``user_seq`` is known).
+    Overwrites any existing row for the same (thread_id, user_seq) so a re-run
+    of the same turn replaces the stale snapshot instead of stranding two.
+    """
+    if not settings.auto_save_threads:
+        return
+
+    with _write_lock:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO checkpoints (thread_id, user_seq, git_hash, modified_paths, mem_snapshot, created_at)
+                VALUES (?, ?, ?, '', ?, ?)
+                ON CONFLICT(thread_id, user_seq) DO UPDATE SET
+                    git_hash = excluded.git_hash,
+                    mem_snapshot = excluded.mem_snapshot,
+                    modified_paths = '',
+                    created_at = excluded.created_at
+                """,
+                (thread_id, user_seq, git_hash, mem_snapshot, _now()),
+            )
+            conn.commit()
+
+
+def add_modified_path(thread_id: str, user_seq: int, path: str) -> None:
+    """Record a filesystem path the agent mutated during one user turn.
+
+    Called from the tools node for destructive fs/shell/git calls. Empty path or
+    the ``"*"`` sentinel marks the turn as full-tree restore (used for shell
+    and git commits where mutated paths cannot be enumerated). The set is
+    expanded idempotently; once ``*`` is set, per-path entries are dropped.
+    """
+    if not settings.auto_save_threads:
+        return
+    if not path:
+        return
+
+    with _write_lock:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            row = conn.execute(
+                "SELECT modified_paths FROM checkpoints WHERE thread_id = ? AND user_seq = ?",
+                (thread_id, user_seq),
+            ).fetchone()
+            if row is None:
+                return
+            raw = row[0] or ""
+            paths: set[str] = set()
+            if raw:
+                try:
+                    paths = set(json.loads(raw))
+                except ValueError:
+                    paths = set()
+            # Once the "*" full-tree sentinel is set, no further per-path
+            # recording can refine it; adding "*" again is also a no-op.
+            if _FULL_TREE_SENTINEL in paths:
+                return
+            if path == _FULL_TREE_SENTINEL:
+                paths = {_FULL_TREE_SENTINEL}
+            else:
+                paths.add(path)
+            conn.execute(
+                "UPDATE checkpoints SET modified_paths = ? WHERE thread_id = ? AND user_seq = ?",
+                (json.dumps(sorted(paths)), thread_id, user_seq),
+            )
+            conn.commit()
+
+
+def get_checkpoint(thread_id: str, user_seq: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        _ensure_schema(conn)
+        row = conn.execute(
+            """
+            SELECT thread_id, user_seq, git_hash, modified_paths, mem_snapshot, created_at
+            FROM checkpoints WHERE thread_id = ? AND user_seq = ?
+            """,
+            (thread_id, user_seq),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "thread_id": row[0],
+        "user_seq": int(row[1]),
+        "git_hash": row[2],
+        "modified_paths": row[3] or "",
+        "mem_snapshot": row[4] or "",
+        "created_at": row[5],
+    }
+
+
+def list_user_turns(thread_id: str) -> list[dict[str, Any]]:
+    """Return every persisted user-message event for a thread, oldest-first.
+
+    Used to populate the /rollback picker. ``seq`` is the event seq (the
+    /rollback target); ``content`` is the (possibly truncated) user text.
+    """
+    if not THREADS_DB.exists():
+        return []
+    with _connect() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT seq, payload FROM events
+            WHERE thread_id = ? AND json_extract(payload, '$.kind') = 'user'
+            ORDER BY seq ASC
+            """,
+            (thread_id,),
+        ).fetchall()
+    turns: list[dict[str, Any]] = []
+    for row in rows:
+        payload = json.loads(row[1])
+        content = payload.get("content")
+        text = content if isinstance(content, str) else str(content)
+        turns.append({"seq": int(row[0]), "content": text})
+    return turns
+
+
+def truncate_after(thread_id: str, user_seq: int) -> None:
+    """Delete events with seq >= user_seq and re-derive thread rollup columns.
+
+    Also drops checkpoint rows at/after user_seq (those snapshots describe the
+    abandoned tail). Hard truncate per design decision: no undo of the undo.
+    """
+    if not settings.auto_save_threads:
+        return
+
+    with _write_lock:
+        with _connect() as conn:
+            _ensure_schema(conn)
+            # Delete the abandoned conversation tail and its checkpoints.
+            conn.execute(
+                "DELETE FROM events WHERE thread_id = ? AND seq >= ?",
+                (thread_id, user_seq),
+            )
+            conn.execute(
+                "DELETE FROM checkpoints WHERE thread_id = ? AND user_seq >= ?",
+                (thread_id, user_seq),
+            )
+            # Re-derive threads rollup from the remaining events so /status
+            # matches the new (shorter) conversation. Cost tracker stays
+            # process-global per product decision.
+            remaining = conn.execute(
+                "SELECT payload FROM events WHERE thread_id = ? ORDER BY seq",
+                (thread_id,),
+            ).fetchall()
+            turn_count = 0
+            total_cost = 0.0
+            input_tokens = 0
+            cached_tokens = 0
+            output_tokens = 0
+            for item in remaining:
+                event = json.loads(item[0])
+                if event.get("kind") == "user":
+                    turn_count += 1
+                elif event.get("kind") == "usage":
+                    total_cost += float(event.get("cost_usd") or 0.0)
+                    input_tokens += int(event.get("input_tokens") or 0)
+                    cached_tokens += int(event.get("cached_input_tokens") or 0)
+                    output_tokens += int(event.get("output_tokens") or 0)
+            conn.execute(
+                """
+                UPDATE threads SET
+                    updated_at = ?,
+                    turn_count = ?,
+                    total_cost_usd = ?,
+                    input_tokens = ?,
+                    cached_input_tokens = ?,
+                    output_tokens = ?
+                WHERE thread_id = ?
+                """,
+                (_now(), turn_count, total_cost, input_tokens, cached_tokens, output_tokens, thread_id),
+            )
             conn.commit()
 
 

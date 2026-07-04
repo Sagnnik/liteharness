@@ -30,6 +30,7 @@ COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("save", "Archive the current thread", "Session", "/save"),
     CommandSpec("reset", "Archive and start a fresh thread", "Session", "/reset"),
     CommandSpec("compact", "Force compaction on the next turn", "Session", "/compact"),
+    CommandSpec("rollback", "Roll the thread back to a prior user turn", "Session", "/rollback [<seq>]"),
     CommandSpec("init", "Generate .ness/NESS.md", "Context", "/init [force]"),
     CommandSpec("permissions", "View or edit permission rules", "Tools", "/permissions"),
     CommandSpec("hooks", "List configured hooks", "Tools", "/hooks"),

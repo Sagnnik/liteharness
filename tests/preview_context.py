@@ -41,7 +41,7 @@ from context import (
     build_l0,
     build_l1,
     build_project_context_block,
-    build_working_state_overlay,
+    build_working_state_sections,
     render_todos,
 )
 from memory import load_ness_memory, load_repo_context, load_user_memory
@@ -145,12 +145,14 @@ def _build_mode_parts(
         )
 
     todos = _sample_todos(mode)
-    l3 = build_working_state_overlay(
-        mode,
-        todos=render_todos(todos),
-        session_memory="(loaded from mem_<thread_id>.md at runtime)",
-        git_snapshot=git_snapshot,
-        compaction_note=compaction_note,
+    l3 = "\n\n".join(
+        build_working_state_sections(
+            mode,
+            todos=render_todos(todos),
+            session_memory="(loaded from mem_<thread_id>.md at runtime)",
+            git_snapshot=git_snapshot,
+            compaction_note=compaction_note,
+        ).values()
     )
     working_state_tail = _working_state_tail(l3)
     tools_metadata = _render_tools_metadata(tools)
@@ -280,7 +282,7 @@ def _print_mode_preview(
     console.print()
     console.print(_panel("L1 + L2 combined (what _stable_prefix caches)", system_message, style="white"))
     console.print()
-    console.print(_panel("L3 — build_working_state_overlay() → system-reminder content", l3, style=mode_style))
+    console.print(_panel("L3 — build_working_state_sections() → system-reminder content", l3, style=mode_style))
     console.print()
     console.print(_panel("Original HumanMessage (sent unmodified)", query, style="green"))
     console.print()

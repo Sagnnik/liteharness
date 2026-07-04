@@ -103,6 +103,7 @@ class MenuMixin:
             "slash": self._slash_menu_items,
             "approval": lambda: self._prompt_items,
             "question": lambda: self._prompt_items,
+            "rollback": lambda: self._prompt_items,
         }
         builder = builders.get(self._menu_kind or "")
         return builder() if builder else []
@@ -148,6 +149,7 @@ class MenuMixin:
             "config_action": "/config - What would you like to change:",
             "approval": self._prompt_title,
             "question": self._prompt_title,
+            "rollback": self._prompt_title,
         }
         title = headers.get(self._menu_kind or "")
         if not title:
@@ -277,3 +279,6 @@ class MenuMixin:
             self._apply_approval_selection(item.key)
         elif self._menu_kind == "question":
             self._submit_question()
+        elif self._menu_kind == "rollback":
+            if self._prompt_future is not None and not self._prompt_future.done():
+                self._prompt_future.set_result(item.key)

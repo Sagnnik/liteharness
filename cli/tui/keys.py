@@ -157,6 +157,11 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
+        if ui._menu_kind == "rollback" and ui._visible_menu_items():
+            ui._apply_picker_selection()
+            event.app.invalidate()
+            return
+
         if ui._menu_kind == "slash" and ui._visible_menu_items():
             command = ui._selected_slash_command()
             ui._close_menu()
