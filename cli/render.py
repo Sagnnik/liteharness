@@ -350,15 +350,11 @@ class _TerminalSink:
         console.print(line)
 
     def append_tool_result(self, name: str, content: str, *, exit_status: str | None = None) -> None:
-        from cli.tool_display import should_show_tool_result, spawn_subagent_result_summary
+        from cli.tool_display import format_tool_result_preview, should_show_tool_result
 
-        if not should_show_tool_result(name):
+        if not should_show_tool_result(name, content, exit_status=exit_status):
             return
-        if name == "spawn_subagent":
-            preview = spawn_subagent_result_summary(content)
-        else:
-            preview = " ".join(str(content).split())
-            preview = preview[:_TOOL_RESULT_PREVIEW] + ("..." if len(preview) > _TOOL_RESULT_PREVIEW else "")
+        preview = format_tool_result_preview(name, content, limit=_TOOL_RESULT_PREVIEW)
         line = Text()
         line.append("  \\_ ", style="muted")
         if exit_status and exit_status != "ok":

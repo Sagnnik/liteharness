@@ -207,7 +207,9 @@ class SessionApp:
         # Hoisted before the try so the ``except CancelledError`` handler can
         # finalise even if the cancel lands before the payload is built (e.g.
         # during the plan->act checkpoint prompt).
-        config = {"configurable": {"thread_id": self.thread_id}}
+        # recursion_limit caps the number of supersteps per turn. LangGraph's
+        # default of 25 is too tight for long-running agentic turns. 75 gives real work headroom
+        config = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 75}
         before = self._cost_snapshot()
         stream: render.AssistantStream | None = None
         streamed_any = False

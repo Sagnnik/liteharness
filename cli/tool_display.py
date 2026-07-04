@@ -2,30 +2,74 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
-# Tool results omitted from the transcript (output still goes to the model).
+# Consecutive read/grep/glob/todo calls are merged onto one line.
 SILENT_RESULT_TOOLS = frozenset(
     {
-        "read_file",
+        "read",
         "grep",
-        "glob_files",
-        "list_files",
-        "check_syntax",
+        "glob",
         "todo",
     }
 )
-
-# Consecutive calls with the same name are merged onto one line.
 BATCHABLE_TOOL_CALLS = frozenset(SILENT_RESULT_TOOLS)
+
+_ERROR_STATUSES = frozenset({"error", "failed", "timeout", "denied", "mode_gated"})
 
 _PROMPT_PREVIEW = 160
 _DEFAULT_ARG_PREVIEW = 120
+_DEFAULT_RESULT_PREVIEW = 320
+_READ_DEFAULT_LIMIT = 400  # mirrors tools/fs.py READ_FILE_DEFAULT_LIMIT
+_SHELL_DEFAULT_TIMEOUT = 30
+_SHELL_DEFAULT_OUTPUT_CHARS = 12_000
+_WEB_SEARCH_DEFAULT_MAX_RESULTS = 5
+_WEBFETCH_DEFAULT_MAX_CHARACTERS = 12_000
+_SEARCH_TOOLS_DEFAULT_LIMIT = 5
 
 
-def should_show_tool_result(name: str) -> bool:
-    return name not in SILENT_RESULT_TOOLS
+def parse_result_status(content: str) -> str | None:
+    """Return the status= header value from structured tool output, if present."""
+    for line in str(content or "").splitlines()[:8]:
+        if line.startswith("status="):
+            status = line.removeprefix("status=").strip()
+            return status or None
+    return None
+
+
+def is_tool_result_error(content: str) -> bool:
+    """True when tool output represents a failure (shown on the CLI transcript)."""
+    text = str(content or "").lstrip()
+    if not text:
+        return False
+    if text.startswith("Error:") or text.startswith("Hook veto:"):
+        return True
+    status = parse_result_status(text)
+    if status in _ERROR_STATUSES:
+        return True
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        if isinstance(payload, dict) and payload.get("error"):
+            return True
+    return False
+
+
+def should_show_tool_result(
+    name: str,
+    content: str,
+    *,
+    exit_status: str | None = None,
+) -> bool:
+    """Show tool results on the CLI only when the run failed."""
+    _ = name
+    if is_tool_result_error(content):
+        return True
+    return exit_status is not None and exit_status not in ("ok",)
 
 
 def should_show_tool_call(name: str) -> bool:
@@ -39,6 +83,14 @@ def _truncate(text: str, limit: int) -> str:
     return cleaned[: max(0, limit - 1)] + "…"
 
 
+def _truncate_arg(text: str, limit: int) -> str:
+    """Truncate tool-call arg previews; suffix with '...' when clipped."""
+    cleaned = " ".join(str(text).split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)] + "..."
+
+
 def _short_path(path: str) -> str:
     raw = str(path or "").strip()
     if not raw:
@@ -50,32 +102,177 @@ def _short_path(path: str) -> str:
         return raw
 
 
-def _read_file_token(args: dict[str, Any]) -> str:
-    path = _short_path(str(args.get("path", "")))
+def _join_parts(*parts: str) -> str:
+    return " | ".join(part for part in parts if part)
+
+
+def _read_token(args: dict[str, Any]) -> str:
+    parts: list[str] = []
     offset = int(args.get("offset", 1) or 1)
-    if offset > 1:
-        return f"{offset}| {path}"
-    return path
+    if offset != 1:
+        parts.append(str(offset))
+    parts.append(_short_path(str(args.get("path", ""))))
+    limit = args.get("limit")
+    if limit is not None and int(limit) != _READ_DEFAULT_LIMIT:
+        parts.append(str(int(limit)))
+    return _join_parts(*parts)
 
 
 def _grep_token(args: dict[str, Any]) -> str:
-    pattern = _truncate(str(args.get("pattern", "")), 40)
+    parts = [_truncate_arg(str(args.get("pattern", "")), 40)]
+    include = str(args.get("include") or "").strip()
+    if include:
+        parts.append(include)
     path = _short_path(str(args.get("path", ".")))
     if path and path != ".":
-        return f"{pattern}  {path}"
-    return pattern
+        parts.append(path)
+    return _join_parts(*parts)
 
 
 def _glob_token(args: dict[str, Any]) -> str:
-    pattern = str(args.get("pattern", "") or args.get("glob", "") or "?")
-    path = _short_path(str(args.get("path", ".")))
-    if path and path != ".":
-        return f"{pattern}  {path}"
-    return pattern
+    return str(args.get("pattern", "") or args.get("glob", "") or "?")
 
 
-def _list_files_token(args: dict[str, Any]) -> str:
-    return _short_path(str(args.get("path", ".")))
+def _path_token(args: dict[str, Any]) -> str:
+    return _short_path(str(args.get("path", "")))
+
+
+def _edit_token(args: dict[str, Any]) -> str:
+    path = _short_path(str(args.get("path", "")))
+    edits = args.get("edits")
+    count = len(edits) if isinstance(edits, list) else 0
+    label = f"{count} edit" if count == 1 else f"{count} edits"
+    return _join_parts(path, label)
+
+
+def _shell_token(args: dict[str, Any]) -> str:
+    action = str(args.get("action") or "").strip().lower()
+    if action == "run":
+        parts = ["run", _truncate_arg(str(args.get("command", "")), _DEFAULT_ARG_PREVIEW)]
+        timeout = int(args.get("timeout", _SHELL_DEFAULT_TIMEOUT) or _SHELL_DEFAULT_TIMEOUT)
+        if timeout != _SHELL_DEFAULT_TIMEOUT:
+            parts.append(str(timeout))
+        return _join_parts(*parts)
+    if action == "start":
+        parts = ["start"]
+        name = str(args.get("name") or "").strip()
+        if name:
+            parts.append(name)
+        parts.append(_truncate_arg(str(args.get("command", "")), _DEFAULT_ARG_PREVIEW))
+        return _join_parts(*parts)
+    if action == "jobs":
+        if args.get("include_finished", True) is False:
+            return "jobs | active"
+        return "jobs"
+    if action == "read":
+        parts = ["read", str(args.get("job_id", ""))]
+        tail = int(args.get("tail_chars", _SHELL_DEFAULT_OUTPUT_CHARS) or _SHELL_DEFAULT_OUTPUT_CHARS)
+        if tail != _SHELL_DEFAULT_OUTPUT_CHARS:
+            parts.append(str(tail))
+        return _join_parts(*parts)
+    if action == "kill":
+        parts = ["kill", str(args.get("job_id", ""))]
+        if args.get("force"):
+            parts.append("force")
+        return _join_parts(*parts)
+    return _join_parts(action, _truncate_arg(str(args.get("command", "")), _DEFAULT_ARG_PREVIEW))
+
+
+def _web_search_token(args: dict[str, Any]) -> str:
+    parts = [_truncate_arg(str(args.get("query", "")), 80)]
+    max_results = int(args.get("max_results", _WEB_SEARCH_DEFAULT_MAX_RESULTS) or _WEB_SEARCH_DEFAULT_MAX_RESULTS)
+    if max_results != _WEB_SEARCH_DEFAULT_MAX_RESULTS:
+        parts.append(str(max_results))
+    search_type = str(args.get("search_type") or "auto")
+    if search_type != "auto":
+        parts.append(search_type)
+    domains = args.get("include_domains")
+    if isinstance(domains, list) and domains:
+        parts.append(_truncate_arg(", ".join(str(domain) for domain in domains), 60))
+    return _join_parts(*parts)
+
+
+def _webfetch_token(args: dict[str, Any]) -> str:
+    parts = [_truncate_arg(str(args.get("url", "")), 80)]
+    max_characters = int(
+        args.get("max_characters", _WEBFETCH_DEFAULT_MAX_CHARACTERS) or _WEBFETCH_DEFAULT_MAX_CHARACTERS
+    )
+    if max_characters != _WEBFETCH_DEFAULT_MAX_CHARACTERS:
+        parts.append(str(max_characters))
+    return _join_parts(*parts)
+
+
+def _search_tools_token(args: dict[str, Any]) -> str:
+    parts = [_truncate_arg(str(args.get("query", "")), 80)]
+    limit = int(args.get("limit", _SEARCH_TOOLS_DEFAULT_LIMIT) or _SEARCH_TOOLS_DEFAULT_LIMIT)
+    if limit != _SEARCH_TOOLS_DEFAULT_LIMIT:
+        parts.append(str(limit))
+    return _join_parts(*parts)
+
+
+def _add_tools_token(args: dict[str, Any]) -> str:
+    names = args.get("names") or []
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, list) or not names:
+        return ""
+    if len(names) == 1:
+        return _truncate_arg(str(names[0]), 80)
+    if len(names) <= 3:
+        return _truncate_arg(", ".join(str(name) for name in names), 120)
+    return _truncate_arg(f"{names[0]} +{len(names) - 1}", 80)
+
+
+def _question_token(args: dict[str, Any]) -> str:
+    questions = args.get("questions") or []
+    if not isinstance(questions, list) or not questions:
+        return ""
+    first = questions[0]
+    prompt = _truncate_arg(str(first.get("prompt", "") if isinstance(first, dict) else ""), 80)
+    if len(questions) == 1:
+        return prompt
+    return _join_parts(prompt, f"+{len(questions) - 1}")
+
+
+def _mcp_arg_names(full_name: str) -> list[str]:
+    from tools import mcp_catalog
+
+    for info in mcp_catalog().values():
+        for entry in info.get("tools", []):
+            if str(entry.get("name") or "") == full_name:
+                raw = entry.get("arg_names", [])
+                return [str(name) for name in raw] if isinstance(raw, list) else []
+    return []
+
+
+def _mcp_short_label(full_name: str) -> str:
+    rest = full_name.removeprefix("mcp__")
+    server, _, tool = rest.partition("__")
+    return f"{server}/{tool}" if tool else rest
+
+
+def _mcp_token(full_name: str, args: dict[str, Any]) -> str:
+    label = _mcp_short_label(full_name)
+    arg_names = _mcp_arg_names(full_name)
+    keys = arg_names or [str(key) for key in args]
+    shown: list[str] = []
+    for key in keys:
+        if key not in args:
+            continue
+        value = args[key]
+        if value in (None, "", [], {}):
+            continue
+        shown.append(f"{key}={_truncate_arg(value, 48)}")
+        if len(shown) >= 2:
+            break
+    if not shown and not arg_names:
+        for key, value in args.items():
+            if value in (None, "", [], {}):
+                continue
+            shown.append(f"{key}={_truncate_arg(value, 48)}")
+            if len(shown) >= 2:
+                break
+    return _join_parts(label, *shown) if shown else label
 
 
 def spawn_subagent_task_rows(args: dict[str, Any]) -> list[tuple[str, str]]:
@@ -92,13 +289,13 @@ def _spawn_subagent_lines(args: dict[str, Any]) -> list[tuple[str, str]]:
             if not isinstance(task, dict):
                 continue
             agent = str(task.get("name", "?"))
-            prompt = _truncate(str(task.get("prompt", "")), _PROMPT_PREVIEW)
+            prompt = _truncate_arg(str(task.get("prompt", "")), _PROMPT_PREVIEW)
             rows.append((agent, prompt))
         if rows:
             return rows
 
     agent = str(args.get("name", "?"))
-    prompt = _truncate(str(args.get("prompt", "")), _PROMPT_PREVIEW)
+    prompt = _truncate_arg(str(args.get("prompt", "")), _PROMPT_PREVIEW)
     return [(agent, prompt)]
 
 
@@ -109,41 +306,49 @@ def _generic_args_text(args: Any) -> str:
     for key, value in args.items():
         if value in (None, "", [], {}):
             continue
-        parts.append(f"{key}={_truncate(value, 48)}")
-    return _truncate("  ".join(parts), _DEFAULT_ARG_PREVIEW)
+        parts.append(f"{key}={_truncate_arg(value, 48)}")
+    return _truncate_arg("  ".join(parts), _DEFAULT_ARG_PREVIEW)
 
 
 def format_tool_args(name: str, args: Any) -> str:
     """Single-line args summary for unknown / generic tools."""
     if not isinstance(args, dict):
-        return _truncate(str(args), _DEFAULT_ARG_PREVIEW)
+        return _truncate_arg(str(args), _DEFAULT_ARG_PREVIEW)
 
-    if name == "read_file":
-        return _read_file_token(args)
+    if name == "read":
+        return _read_token(args)
     if name == "grep":
         return _grep_token(args)
-    if name == "glob_files":
+    if name == "glob":
         return _glob_token(args)
-    if name == "list_files":
-        return _list_files_token(args)
     if name == "spawn_subagent":
         rows = _spawn_subagent_lines(args)
         if len(rows) == 1:
             agent, prompt = rows[0]
-            return f"{agent}  {prompt}".strip() if prompt else agent
-        return "\n".join(f"{agent}  {prompt}".strip() for agent, prompt in rows)
+            return _join_parts(agent, prompt) if prompt else agent
+        return "\n".join(_join_parts(agent, prompt) if prompt else agent for agent, prompt in rows)
     if name == "todo":
         return ""
     if name == "shell":
-        cmd = _truncate(str(args.get("command", "")), _DEFAULT_ARG_PREVIEW)
-        return cmd
-    if name in {"write_file", "edit", "delete_file"}:
-        path = _short_path(str(args.get("path", "")))
-        return path
+        return _shell_token(args)
+    if name == "write":
+        return _path_token(args)
+    if name == "edit":
+        return _edit_token(args)
+    if name == "delete_file":
+        return _path_token(args)
     if name == "web_search":
-        return _truncate(str(args.get("query", "")), _DEFAULT_ARG_PREVIEW)
-    if name == "fetch_url":
-        return _truncate(str(args.get("url", "")), _DEFAULT_ARG_PREVIEW)
+        return _web_search_token(args)
+    if name == "webfetch":
+        return _webfetch_token(args)
+    if name == "search_tools":
+        return _search_tools_token(args)
+    if name == "add_tools":
+        return _add_tools_token(args)
+    if name == "question":
+        return _question_token(args)
+    if name.startswith("mcp__"):
+        return _mcp_token(name, args)
     return _generic_args_text(args)
 
 
@@ -154,29 +359,71 @@ def format_batched_tool_args(name: str, calls: list[dict[str, Any]]) -> str:
         args = call.get("args") or {}
         if not isinstance(args, dict):
             continue
-        if name == "read_file":
-            tokens.append(_read_file_token(args))
+        if name == "read":
+            tokens.append(_read_token(args))
         elif name == "grep":
             tokens.append(_grep_token(args))
-        elif name == "glob_files":
+        elif name == "glob":
             tokens.append(_glob_token(args))
-        elif name == "list_files":
-            tokens.append(_list_files_token(args))
         else:
             tokens.append(format_tool_args(name, args))
     return "  ".join(token for token in tokens if token)
 
 
-def spawn_subagent_result_summary(content: str) -> str:
-    """One-line summary for a spawn_subagent tool result."""
+def _extract_output_section(content: str) -> str:
+    lines = str(content or "").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == "output:":
+            body = "\n".join(lines[index + 1 :]).strip()
+            if body:
+                return body
+    return str(content or "").strip()
+
+
+def _json_error_message(content: str) -> str | None:
+    text = str(content or "").lstrip()
+    if not text.startswith("{"):
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and payload.get("error"):
+        return str(payload["error"])
+    return None
+
+
+def _spawn_subagent_error_preview(content: str) -> str:
+    text = str(content or "").strip()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("error="):
+            return stripped.removeprefix("error=").strip()
+        if stripped.startswith("Error:"):
+            return stripped
+    return text
+
+
+def format_tool_result_preview(name: str, content: str, *, limit: int = _DEFAULT_RESULT_PREVIEW) -> str:
+    """One-line preview for an error tool result."""
     text = str(content or "").strip()
     if not text:
-        return "subagent finished"
-    first = text.splitlines()[0]
-    if first.startswith("status="):
-        status = first.split("=", 1)[-1]
-        return f"subagent batch {status}"
-    if text.startswith("Error:") or "Error:" in text[:80]:
-        return _truncate(text.replace("\n", " "), 100)
-    return "subagent finished"
+        return ""
+
+    json_error = _json_error_message(text)
+    if json_error is not None:
+        return _truncate(json_error, limit)
+
+    if name == "shell" and parse_result_status(text) in _ERROR_STATUSES:
+        return _truncate(_extract_output_section(text), limit)
+
+    if name == "spawn_subagent":
+        return _truncate(_spawn_subagent_error_preview(text), limit)
+
+    if parse_result_status(text) in _ERROR_STATUSES:
+        body = _extract_output_section(text)
+        if body != text:
+            return _truncate(body, limit)
+
+    return _truncate(text.replace("\n", " "), limit)
 

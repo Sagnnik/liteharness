@@ -20,8 +20,8 @@ def set_question_runtime(handler: QuestionHandler | None) -> None:
 
 
 @tool
-async def ask_user(questions: list[dict] | None = None) -> str:
-    """Ask the user multiple-choice clarification questions and wait for answers.
+async def question(questions: list[dict] | None = None) -> str:
+    """Ask the user for input.
 
     Use this when requirements are ambiguous or several valid approaches exist,
     before committing to a plan or implementation. Each question is a dict:
@@ -58,7 +58,7 @@ async def ask_user(questions: list[dict] | None = None) -> str:
 
 def _normalize_questions(questions: list[dict] | None) -> list[dict[str, Any]] | str:
     if not questions or not isinstance(questions, list):
-        return "ask_user requires a non-empty list of questions"
+        return "question requires a non-empty list of questions"
 
     normalized: list[dict[str, Any]] = []
     for idx, raw in enumerate(questions, 1):

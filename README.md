@@ -30,7 +30,7 @@ Useful environment variables:
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
-- `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
+- `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `webfetch` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
 CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`. Use `/config` in-session to switch model, reasoning effort, keys, approval, autosave, and session-end reflection (persisted to `.env`).
 
@@ -57,7 +57,7 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 - `compaction.py`: progressive context compaction by context pressure.
 - `reflection.py`: background session-memory reflection with structured output (semantic distillation).
 - `memory.py`: NESS.md, USER.md, and per-thread session memory helpers.
-- `tools/`: local tools for files, search, web (`web_search`, `fetch_url` via Exa or DuckDuckGo fallback), shell, git, todos, user clarification (`ask_user`), and subagents.
+- `tools/`: local tools for files, search, web (`web_search`, `webfetch` via Exa or DuckDuckGo fallback), shell, todos, user clarification (`question`), and subagents.
 - `permissions.py`: `.ness/permissions.json` allow/deny/ask matching.
 - `hooks.py`: `.ness/hooks.json` pre/post/user/session command hooks.
 - `mcp_client.py`: stdio MCP startup and namespaced MCP tool wrappers.
@@ -81,21 +81,20 @@ The L1 skill catalog lists every available skill with its path; full skill bodie
 
 LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). **Plan** mode instructions live in the ephemeral L3 `<plan-mode>` overlay; **act** mode has no mode block (like OpenCode build — L0 + tools + dynamic L3 state only).
 
-- **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. The `git` tool appears only inside a git repo. On the first act turn after a plan→act toggle, L3 prepends a one-shot `MODE SWITCH` note (inside the existing `<system-reminder>`) telling the model to call `todo` first, then address the user's message; it is cleared from state after that single model call so it never repeats.
-- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `ask_user` (before any plan prose), then delivers exactly one final plan. Only the terminal plan message is auto-saved under `.ness/plans/`. Shift+Tab back to act mode to execute.
+- **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. On the first act turn after a plan→act toggle, L3 prepends a one-shot `MODE SWITCH` note (inside the existing `<system-reminder>`) telling the model to call `todo` first, then address the user's message; it is cleared from state after that single model call so it never repeats.
+- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `question` (before any plan prose), then delivers exactly one final plan. Only the terminal plan message is auto-saved under `.ness/plans/`. Shift+Tab back to act mode to execute.
 
 Plan-mode workflow:
 
-1. **Clarify** — if a decision materially changes the plan, call `ask_user` with MCQ options before drafting (mark the recommended choice; never ask in prose).
+1. **Clarify** — if a decision materially changes the plan, call `question` with MCQ options before drafting (mark the recommended choice; never ask in prose).
 2. **Research** — read-only tools first; use `spawn_subagent` only when a few targeted reads are insufficient (see L0 subagents rule).
 3. **Plan** — one final message: numbered steps with file paths, verification, and risks; no tool calls in that message.
 4. **Act** — Shift+Tab to act/build mode; on the first act turn the agent records todos from the plan via `todo`, then executes (or follows the user's message if they redirect); do not re-plan unless blocked or the user redirects.
 
 Session tool tiers (same set bound in both modes):
 
-- Small always-on: `todo`, `ask_user`
-- L1 core: file (`read_file`, `write_file`, `delete_file`, `edit`), search, syntax checks (`check_syntax`), web (`web_search`, `fetch_url`), and shell
-- Git: a single action-based `git` tool (read actions need no approval; write actions do). Present only inside a git repo.
+- Small always-on: `todo`, `question`
+- L1 core: file (`read`, `write`, `delete_file`, `edit`), search, web (`web_search`, `webfetch`), and shell
 - Tool discovery: `search_tools`, `add_tools` for loading deferred MCP tools on demand
 - L3 advanced: `spawn_subagent`
 - Loaded MCP tools: any `mcp__*` tool activated this session (deferred by default; load via `search_tools`/`add_tools` or `/mcp <server> [tool]`)
@@ -179,9 +178,9 @@ references: [examples/Button.tsx]
 Skill instructions go here.
 ```
 
-Small reference files (≤ 20 lines) are inlined into the prompt. Larger references are listed for on-demand `read_file` fetch.
+Small reference files (≤ 20 lines) are inlined into the prompt. Larger references are listed for on-demand `read` fetch.
 
-Skill loading is two-stage. A one-line catalog of every available skill (`name: description`, plus path) is always present in L1. Full `SKILL.md` bodies load into L2 when a frontmatter trigger matches the user's message, or when the user runs `/skill <name>`. Otherwise the agent can `read_file` the path from the catalog; that content stays in the conversation via tool messages. Once a skill is sticky in L2 it remains for the rest of the session.
+Skill loading is two-stage. A one-line catalog of every available skill (`name: description`, plus path) is always present in L1. Full `SKILL.md` bodies load into L2 when a frontmatter trigger matches the user's message, or when the user runs `/skill <name>`. Otherwise the agent can `read` the path from the catalog; that content stays in the conversation via tool messages. Once a skill is sticky in L2 it remains for the rest of the session.
 
 ## Permissions
 
@@ -189,7 +188,7 @@ Skill loading is two-stage. A one-line catalog of every available skill (`name: 
 
 ```json
 {
-  "allow": ["read_file:*", "grep:*", "shell:run:git status*"],
+  "allow": ["read:*", "grep:*", "shell:run:git status*"],
   "deny": ["shell:run:rm -rf*", "shell:run:sudo*"],
   "ask": ["*"]
 }
@@ -197,11 +196,11 @@ Skill loading is two-stage. A one-line catalog of every available skill (`name: 
 
 Deny rules win over allow rules. Rules are evaluated in order: persistent deny, session deny, persistent allow, session allow, then ask. Shell command allow/deny rules reject commands with unquoted shell operators (`;`, `&&`, `|`, `>`, `<`, newlines, etc.) so chained or redirect commands fall through to ask instead of matching a prefix rule.
 
-`web_search:*` is allowed by default. `fetch_url` asks for approval per normalized URL; approving one URL does not approve a different path or query, and changing `max_characters` does not require a new approval.
+`web_search:*` is allowed by default. `webfetch` asks for approval per normalized URL; approving one URL does not approve a different path or query, and changing `max_characters` does not require a new approval.
 
 ### Web search providers
 
-`web_search` and `fetch_url` pick a provider automatically:
+`web_search` and `webfetch` pick a provider automatically:
 
 | Provider | When used | Notes |
 |----------|-----------|-------|
@@ -253,11 +252,11 @@ Tools are exposed as `mcp__<server>__<tool>`. On boot the CLI prints a one-line 
 }
 ```
 
-**Subagents:** subagents are read-only. MCP tools, write tools, shell execution, the `git` tool, nested subagents, and `todo` are rejected even if listed in frontmatter.
+**Subagents:** subagents are read-only. MCP tools, write tools, shell execution, nested subagents, and `todo` are rejected even if listed in frontmatter.
 
 ```markdown
 ---
-tools: [read_file, grep, glob_files, list_files]
+tools: [read, grep, glob, web_search, webfetch]
 ---
 ```
 
@@ -269,7 +268,7 @@ Subagents live in `.ness/agents/<name>.md`:
 
 ```markdown
 ---
-tools: [read_file, grep, glob_files, list_files]
+tools: [read, grep, glob, web_search, webfetch]
 ---
 You are a read-only explorer. Return concise findings with file references.
 ```
@@ -330,7 +329,7 @@ Event kinds stored in `events.payload` (session threads only):
 ```json
 {"kind": "user", "content": "...", "t": "..."}
 {"kind": "assistant", "content": "...", "tool_calls": [], "t": "..."}
-{"kind": "tool", "tool": "read_file", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
+{"kind": "tool", "tool": "read", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
 {"kind": "approval", "tool": "edit", "decision": "yes", "t": "..."}
 {"kind": "usage", "model": "deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}

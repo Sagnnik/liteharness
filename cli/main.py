@@ -136,7 +136,7 @@ def _check_prompt_budget(git_available: bool) -> str | None:
     from skill_loader import load_skills, render_skill_catalog
     from tools import select_tools_for_session
 
-    tools = select_tools_for_session(git_available)
+    tools = select_tools_for_session()
     catalog = render_skill_catalog(load_skills())
     prefix = "\n\n".join(
         [
