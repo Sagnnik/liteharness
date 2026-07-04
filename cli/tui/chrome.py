@@ -10,7 +10,7 @@ from prompt_toolkit.layout.processors import AfterInput, BeforeInput
 
 from cli.tui.constants import FORM_FIELD_WIDTH
 from cli.tui.formatting import worked_fragments, working_fragments
-from cli.tui.utils import context_bar, model_footer_name, term_width
+from cli.tui.utils import context_bar, display_cwd, model_footer_name, term_width
 from cli.tui.widgets import TranscriptViewportControl
 from config import cost_tracker
 from model import active_model_name, active_reasoning_effort
@@ -283,6 +283,14 @@ class ChromeMixin:
         self._stats_line_cache_key = cache_key
         self._stats_line_cache = fragments
         return fragments
+
+    def _refresh_cwd_line_if_changed(self) -> bool:
+        current = display_cwd()
+        if current == self._cwd_line:
+            return False
+        self._cwd_line = current
+        self._path_line_cache_key = None
+        return True
 
     def _path_line(self):
         width = term_width()

@@ -220,4 +220,13 @@ def build_key_bindings(ui) -> KeyBindings:
     def _quit(event) -> None:
         event.app.exit()
 
+    @kb.add(
+        "c-t",
+        filter=~ui._menu_open & ~ui._form_open & ~ui._line_prompt_open & ~ui._question_prompt_open,
+        eager=True,
+    )
+    def _toggle_reasoning(event) -> None:
+        ui.toggle_reasoning()
+        event.app.invalidate()
+
     return kb

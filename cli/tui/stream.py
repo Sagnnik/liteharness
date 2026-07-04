@@ -21,6 +21,17 @@ class TuiAssistantStream:
         self._flushed_chars = 0
         self.flush_count = 0
 
+    def shift_start(self, delta: int) -> None:
+        """Shift the reserved transcript slot by ``delta`` lines.
+
+        Called when a reasoning block is inserted above this stream's slot
+        (the "thinking block above assistant" UX convention). Bumps
+        ``_line_start`` so the final ``finalize_assistant_stream`` writes
+        the assistant markdown into the right place.
+        """
+        if self._line_start is not None:
+            self._line_start += delta
+
     def feed(self, chunk: str) -> None:
         if not chunk:
             return

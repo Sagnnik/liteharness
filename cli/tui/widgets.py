@@ -68,6 +68,23 @@ class TranscriptStore:
         self._rebuild_offsets_from(start)
         self._mark_changed()
 
+    def insert(self, start: int, lines: list[TranscriptLine]) -> None:
+        """Insert ``lines`` before index ``start``.
+
+        Symmetric to ``delete``: lets a caller reserve a slot above an
+        already-tracked region (e.g. a reasoning block above a live
+        assistant stream) and have row offsets rebuilt from the touched
+        index onward. Callers tracking indices into ``self.lines`` must
+        shift anything at or above ``start + len(lines)`` themselves.
+        """
+        if not lines:
+            return
+        start = max(0, min(start, len(self.lines)))
+        self.lines[start:start] = lines
+        self._row_counts[start:start] = [self._row_count(line) for line in lines]
+        self._rebuild_offsets_from(start)
+        self._mark_changed(lines)
+
     def reset(self, lines: list[TranscriptLine] | None = None) -> None:
         if lines is not None:
             self.lines[:] = lines

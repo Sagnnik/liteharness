@@ -63,6 +63,51 @@ def _tagged_lines(title: str, *lines: str) -> list[TranscriptLine]:
     return out
 
 
+_REASONING_COLLAPSED_STYLE = "class:transcript.reasoning.collapsed"
+_REASONING_BODY_STYLE = "class:transcript.reasoning"
+
+
+def _format_reasoning_elapsed(elapsed: float) -> str:
+    if elapsed < 60:
+        return f"{elapsed:.1f}s"
+    minutes = int(elapsed // 60)
+    seconds = elapsed % 60
+    return f"{minutes}m {seconds:.1f}s"
+
+
+def _reasoning_header_line(text: str, *, expanded: bool) -> TranscriptLine:
+    glyph = "-" if expanded else "+"
+    label = f"{glyph} Thinking: {text}"
+    return TranscriptLine(
+        style=_REASONING_COLLAPSED_STYLE,
+        text=label,
+        fragments=[(_REASONING_COLLAPSED_STYLE, label)],
+    )
+
+
+def _reasoning_block_lines(text: str, *, elapsed: float, expanded: bool, width: int) -> list[TranscriptLine]:
+    header = _reasoning_header_line(_format_reasoning_elapsed(elapsed), expanded=expanded)
+    if not expanded:
+        return [header]
+    body = (text or "").strip()
+    if not body:
+        return [header]
+    body_lines = markdown_transcript_lines(body, width=width)
+    # Re-style body lines as reasoning (subdued) so they read as subordinate
+    # to the assistant markdown that follows. markdown_transcript_lines pins
+    # each line's style to "class:transcript.assistant" via its fallback, but
+    # emits per-fragment styles from Rich; we override the bare-style case by
+    # passing the style through manually below.
+    styled: list[TranscriptLine] = [header]
+    for line in body_lines:
+        if line.fragments:
+            styled.append(TranscriptLine(_REASONING_BODY_STYLE, line.text, fragments=line.fragments))
+        else:
+            styled.append(TranscriptLine(_REASONING_BODY_STYLE, line.text))
+    styled.append(TranscriptLine("class:transcript.muted", ""))
+    return styled
+
+
 class TranscriptMixin:
     """Transcript buffer, render-sink methods, and scroll behavior."""
 
@@ -214,6 +259,102 @@ class TranscriptMixin:
         width = self._transcript_render_width or term_width()
         lines = markdown_transcript_lines(text, width=width)
         self._append_transcript(*lines, TranscriptLine("class:transcript.muted", ""))
+
+    def _reasoning_block_for_span(self, span: dict, *, expanded: bool | None = None) -> list[TranscriptLine]:
+        width = self._transcript_render_width or term_width()
+        if expanded is None:
+            expanded = self._show_reasoning
+        return _reasoning_block_lines(
+            span.get("text", ""),
+            elapsed=float(span.get("elapsed", 0.0)),
+            expanded=expanded,
+            width=width,
+        )
+
+    def reserve_reasoning_slot(self, before_stream: TuiAssistantStream | None = None) -> dict:
+        """Insert a ``Thinking…`` placeholder above the live assistant stream.
+
+        Called from ``SessionApp.run_turn`` on the first reasoning chunk of
+        an LLM call. The placeholder sits before ``before_stream._line_start``
+        (if the assistant stream already reserved its slot) or at the current
+        end of the transcript otherwise; ``before_stream._line_start`` is
+        shifted so the assistant finalize later targets the same lines.
+        """
+        anchor = len(self._transcript_store.lines)
+        if before_stream is not None and before_stream._line_start is not None:
+            anchor = before_stream._line_start
+        placeholder = TranscriptLine(
+            _REASONING_COLLAPSED_STYLE,
+            " Thinking…",
+            fragments=[(_REASONING_COLLAPSED_STYLE, " Thinking…")],
+        )
+        self._transcript_store.insert(anchor, [placeholder])
+        if before_stream is not None and before_stream._line_start is not None:
+            before_stream.shift_start(1)
+        span = {"start": anchor, "count": 1, "text": "", "elapsed": 0.0}
+        self._reasoning_spans.append(span)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
+        return span
+
+    def finalize_reasoning_slot(self, span: dict, text: str, *, elapsed: float) -> None:
+        span["text"] = text
+        span["elapsed"] = float(elapsed)
+        new_lines = self._reasoning_block_for_span(span)
+        self._transcript_store.replace(span["start"], span["count"], new_lines)
+        span["count"] = len(new_lines)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
+
+    def toggle_reasoning(self) -> None:
+        """Flip ``_show_reasoning`` and re-emit every reasoning span.
+
+        Walks spans in ascending ``start`` order so the in-place ``replace``
+        on an earlier span can shift every later span's lines. A running
+        ``delta`` adjusts the later spans' ``start`` by the cumulative line
+        count change of all already-processed earlier spans; ``replace``
+        itself reassigns only the current span's ``self.lines`` slice, so the
+        line objects of un-processed later spans keep their identities but
+        move to higher indices when an earlier span grows. Without the delta
+        accumulator those later spans would read stale ``start`` indices and
+        either replace the wrong region or leave gaps.
+        """
+        self._show_reasoning = not self._show_reasoning
+        spans = sorted(self._reasoning_spans, key=lambda s: s["start"])
+        if not spans:
+            self.invalidate()
+            return
+        delta = 0
+        for span in spans:
+            start = span["start"] + delta
+            new_lines = self._reasoning_block_for_span(span)
+            self._transcript_store.replace(start, span["count"], new_lines)
+            delta += len(new_lines) - span["count"]
+            span["start"] = start
+            span["count"] = len(new_lines)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
+
+    def append_reasoning(self, text: str, *, elapsed: float) -> None:
+        """Append a finalized reasoning block at the end of the transcript.
+
+        Used on the cancel-finalize path where there is no live assistant
+        stream to interleave above; the block simply appends.
+        """
+        if not text.strip():
+            return
+        span = {"start": len(self._transcript_store.lines), "count": 0, "text": text, "elapsed": float(elapsed)}
+        new_lines = self._reasoning_block_for_span(span)
+        self._transcript_store.append(new_lines)
+        span["start"] = len(self._transcript_store.lines) - len(new_lines)
+        span["count"] = len(new_lines)
+        self._reasoning_spans.append(span)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
 
     @staticmethod
     def _assistant_stream_lines(text: str) -> list[TranscriptLine]:

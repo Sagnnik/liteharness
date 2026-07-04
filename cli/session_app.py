@@ -29,7 +29,13 @@ from compaction import (
 )
 from config import cost_tracker, settings
 from memory import NESS_DIR
-from model import active_model_name, create_model, create_reflection_model
+from model import (
+    active_model_name,
+    active_reasoning_effort,
+    create_model,
+    create_reflection_model,
+    model_supports_reasoning,
+)
 from reflection import finalize_session_reflection
 from rollback import (
     create_file_checkpoint,
@@ -213,6 +219,15 @@ class SessionApp:
         before = self._cost_snapshot()
         stream: render.AssistantStream | None = None
         streamed_any = False
+        # ``reasoning_enabled`` is a fast-path guard only — it short-circuits
+        # the ``additional_kwargs`` dict thunk on the streaming hot path for
+        # non-reasoning models and when the user has explicitly set
+        # effort="none". The actual gate for whether to emit a block is the
+        # buffer-emptiness check inside ``AssistantStream.finalize_reasoning``;
+        # some providers (Anthropic via OpenRouter) emit reasoning_content
+        # even at minimal effort, so we trust the observed data and only
+        # fast-path-skip the obvious no-op case.
+        reasoning_enabled = model_supports_reasoning(active_model_name()) and active_reasoning_effort() != "none"
         self._plan_turn_texts = []
 
         render.begin_turn()
@@ -265,6 +280,19 @@ class SessionApp:
                     streamed_any = False
                 elif etype == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
+                    # Reasoning capture (OpenRouter): the model's chain-of-thought
+                    # arrives on ``chunk.additional_kwargs["reasoning_content"]``
+                    # as a stream of string fragments (``content`` may be empty
+                    # for pure-reasoning chunks). The facade reserves a slot
+                    # above the assistant stream's reserved markdown slot
+                    # (Anthropic/OpenCode convention) on the first fragment;
+                    # finalize at ``on_chat_model_end`` re-emits the collapsed
+                    # ``+ Thinking: n sec`` line.
+                    if reasoning_enabled:
+                        ak = getattr(chunk, "additional_kwargs", None) or {}
+                        rtext = ak.get("reasoning_content") if isinstance(ak, dict) else None
+                        if isinstance(rtext, str) and rtext and stream is not None:
+                            stream.feed_reasoning(rtext)
                     text = getattr(chunk, "content", "")
                     if isinstance(text, str) and text and stream is not None:
                         stream.feed(text)
@@ -274,6 +302,7 @@ class SessionApp:
                         stream.stop()
                         if streamed_any and stream.text.strip():
                             self._record_assistant(stream.text)
+                        stream.finalize_reasoning()
                         stream = None
                 # on_chain_end -> each langgraph node end, name -> node name
                 elif etype == "on_chain_end" and name == "agent":
@@ -343,11 +372,24 @@ class SessionApp:
         some providers reject.
         """
         recorded_text = False
+        partial_reasoning: tuple[str | None, float] = (None, 0.0)
         if stream is not None:
+            # Capture partial reasoning before ``stop()`` discards any
+            # in-flight reasoning state held by the facade.
+            partial_reasoning = stream.reasoning_state()
             stream.stop()
             if streamed_any and stream.text.strip():
                 self._record_assistant(stream.text.strip() + " … [interrupted]")
                 recorded_text = True
+
+        # Flush any partial reasoning captured before the cancel so the
+        # interruption marker follows after the CoT block, not above an empty
+        # region. The ``… [interrupted]`` suffix mirrors the assistant-text
+        # convention; ``partial_reasoning[0] is None`` means the cancel landed
+        # before reasoning started (or the model was non-reasoning) so nothing
+        # is emitted.
+        if partial_reasoning[0]:
+            render.render_reasoning(partial_reasoning[0] + " … [interrupted]", elapsed=partial_reasoning[1])
 
         synthetic: list[BaseMessage] = []
         try:

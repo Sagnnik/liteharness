@@ -112,6 +112,13 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         self._todos_block_start: int | None = None
         self._todos_block_count = 0
+        # Reasoning (CoT) blocks: one per LLM call that emitted reasoning_content.
+        # Each span: {"start": int, "count": int, "text": str, "elapsed": float}.
+        # Collapsed by default; Ctrl+T flips ``_show_reasoning`` and re-emits
+        # every span bottom-to-top so later spans' index shifts don't disturb
+        # the not-yet-processed earlier ones.
+        self._show_reasoning = False
+        self._reasoning_spans: list[dict] = []
         self._transcript_store = TranscriptStore(self._lines)
 
         self._buffer = Buffer(history=FileHistory(str(history_path)))
@@ -282,6 +289,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             self._close_menu()
             self._reset_buffer()
             self._focus_command_input()
+            self._refresh_cwd_line_if_changed()
             self.invalidate()
 
     def _cancel_open_prompt(self) -> bool:

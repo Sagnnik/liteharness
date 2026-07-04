@@ -98,6 +98,8 @@ PTK_STYLE_RULES: dict[str, str] = {
     "transcript.warning": YELLOW,
     "transcript.error": f"bold {RED}",
     "transcript.assistant": "default",
+    "transcript.reasoning.collapsed": f"bold {CYAN_DIM}",
+    "transcript.reasoning": GRAY_DIM,
     "transcript.todo.title": f"bold {BLUE}",
     "transcript.tool": f"bold {BLUE}",
     "transcript.tool.args": GRAY,
