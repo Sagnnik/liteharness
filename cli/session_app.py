@@ -28,9 +28,25 @@ from compaction import (
     resolve_usable_context_budget,
 )
 from config import cost_tracker, settings
+from memory import NESS_DIR
 from model import active_model_name, create_model, create_reflection_model
 from reflection import finalize_session_reflection
-from session import append_event, archive_thread, list_subagents, load_thread_events
+from rollback import (
+    create_file_checkpoint,
+    read_mem_file,
+    restore_mem_file,
+    restore_paths,
+)
+from session import (
+    append_event,
+    archive_thread,
+    get_checkpoint,
+    list_subagents,
+    list_user_turns,
+    load_thread_events,
+    save_checkpoint,
+    truncate_after,
+)
 from tools.subagents import subagent_runs_active
 from tools.todo import get_thread_todos
 
@@ -204,7 +220,18 @@ class SessionApp:
                 await self._maybe_checkpoint_before_act()
 
             user_message = self._build_user_message(user_text)
-            append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
+
+            # Per-turn rollback checkpoint: snapshot files (git stash create) +
+            # the per-thread session memory file BEFORE the agent acts, then
+            # key the row by the soon-to-be-appended user event seq. The stash
+            # commits leave the user's index/branch/working tree untouched,
+            # so this is safe to run unconditionally on every turn even when
+            # git is unavailable (create_file_checkpoint returns None then).
+            git_hash = await asyncio.to_thread(create_file_checkpoint)
+            mem_snapshot = await asyncio.to_thread(read_mem_file, NESS_DIR, self.thread_id)
+            user_seq = append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
+            if user_seq is not None:
+                save_checkpoint(self.thread_id, user_seq, git_hash, mem_snapshot)
             self.turn_count += 1
 
             initial = self._bootstrap.pop(self.thread_id, [])
@@ -217,6 +244,7 @@ class SessionApp:
                 "force_compact": self._consume_force_compact(),
                 "activate_skills": activate_skills,
                 "mode_switch": mode_switch,
+                "current_user_seq": user_seq or 0,
             }
 
             async for event in self.app.astream_events(payload, config=config, version="v2"):
@@ -555,9 +583,23 @@ class SessionApp:
             await self.finalize_reflection()
             archive_thread(self.thread_id)
 
+        await self._bootstrap_from_events(thread_id, replay_cost=True)
+        render.render_notice(f"Resumed thread {thread_id}.", title="resume")
+
+    async def _bootstrap_from_events(self, thread_id: str, *, replay_cost: bool) -> None:
+        """Rebuild the live graph from persisted events for ``thread_id``.
+
+        Shared by /resume (cost replay enabled) and /rollback (cost replay
+        skipped — the in-process cost_tracker intentionally retains abandoned
+        turns' usage). Reads events -> messages, sets per-thread aux state, and
+        rebuilds the bound model/graph so the next turn replays from the
+        truncated history.
+        """
+        events = load_thread_events(thread_id)
         subagents = list_subagents(thread_id)
         messages = _events_to_messages_full(events, subagents)
-        _restore_cost_from_events(events)
+        if replay_cost:
+            _restore_cost_from_events(events)
 
         self.thread_id = thread_id
         self._bootstrap[thread_id] = messages
@@ -568,7 +610,67 @@ class SessionApp:
         self.turn_count = sum(1 for m in messages if getattr(m, "type", None) == "human")
         self.rebuild_graph()
         await self.refresh_context_snapshot()
-        render.render_notice(f"Resumed thread {thread_id} ({len(messages)} messages restored).", title="resume")
+
+    async def rollback_to(self, user_seq: int) -> None:
+        """Restore the thread to the state captured at checkpoint ``user_seq``.
+
+        Three things happen, in order:
+
+        1. Files: surgically restore the paths the agent's tools mutated at or
+           after this turn from the shadow git stash. Falls back to conversation-
+           only restore when git is unavailable or no paths were recorded.
+        2. Session memory: overwrite ``sessions/mem_<thread_id>.md`` from the
+           checkpoint snapshot so reflection bullets written by abandoned turns
+           are discarded.
+        3. Conversation: hard-truncate the events tail at ``user_seq`` (deleting
+           the abandoned user message and everything after it) and rebuild the
+           live graph from the remaining events. The in-process cost_tracker is
+           intentionally left untouched — its tally is process-global billing.
+        """
+        if user_seq < 0:
+            render.render_error("Invalid rollback target.")
+            return
+
+        checkpoint = get_checkpoint(self.thread_id, user_seq)
+        if checkpoint is None:
+            render.render_error(f"No checkpoint for seq {user_seq} in this thread.")
+            return
+
+        # 1. Files (surgical restore; full tree when no paths recorded).
+        git_hash = checkpoint.get("git_hash")
+        if git_hash:
+            import json as _json
+
+            raw = checkpoint.get("modified_paths") or ""
+            paths: list[str] = []
+            if raw:
+                try:
+                    paths = list(_json.loads(raw))
+                except ValueError:
+                    paths = []
+            try:
+                output = await asyncio.to_thread(restore_paths, git_hash, paths)
+                if output and not output.startswith("("):
+                    render.render_warning(f"File restore note: {output}")
+            except Exception as exc:
+                render.render_warning(f"File restore failed: {exc}")
+        else:
+            render.render_notice("No git snapshot for this checkpoint; files not reverted.", title="rollback")
+
+        # 2. Session memory (mem_<thread_id>.md) from the snapshot.
+        try:
+            await asyncio.to_thread(restore_mem_file, NESS_DIR, self.thread_id, checkpoint.get("mem_snapshot") or "")
+        except Exception as exc:
+            render.render_warning(f"Session memory restore failed: {exc}")
+
+        # 3. Truncate the durable conversation tail and rebuild the live graph
+        #    from the surviving events. cost_tracker is intentionally preserved.
+        truncate_after(self.thread_id, user_seq)
+        await self._bootstrap_from_events(self.thread_id, replay_cost=False)
+        render.render_notice(
+            f"Rolled back to turn @ seq {user_seq}. Files, memory, and conversation restored.",
+            title="rollback",
+        )
 
     # --- message building --------------------------------------------------
     def _build_user_message(self, text: str) -> HumanMessage:

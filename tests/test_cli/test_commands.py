@@ -59,3 +59,16 @@ def test_config_action_can_update_persisted_setting():
         assert app._menu_kind is None
     finally:
         settings.enable_approval = previous
+
+
+def test_rollback_command_with_numeric_arg_calls_rollback_to():
+    app = make_app()
+    asyncio.run(_dispatch_with_sink(app, "/rollback 5"))
+    assert app.session.rolled_back_seq == 5
+
+
+def test_rollback_command_no_turns_warns():
+    app = make_app()
+    with patch("cli.commands.list_user_turns", return_value=[]):
+        asyncio.run(_dispatch_with_sink(app, "/rollback"))
+    assert app.session.rolled_back_seq is None

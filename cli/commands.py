@@ -28,7 +28,7 @@ from memory import (
 )
 from model import active_model_name, active_reasoning_effort, effective_openrouter_session_id
 from permissions import list_rules, persist_rule, remove_rule
-from session import list_threads
+from session import list_threads, list_user_turns
 from skill_loader import load_skill_errors, load_skills
 from utils import get_project_context
 
@@ -279,6 +279,44 @@ async def cmd_copy(app: "SessionApp", args: str) -> None:
         render.render_panel_text(text, title="clipboard unavailable", style="usage.value")
 
 
+async def cmd_rollback(app: "SessionApp", args: str) -> None:
+    """Roll the current thread back to a prior user turn.
+
+    Usage:
+      /rollback                open a picker of every user message in this thread
+      /rollback <seq>          roll back directly to the user message at seq N
+                               (use /status or the picker to find the seq)
+
+    Restores agent-modified files (git stash create snapshot), the per-thread
+    session memory file, and truncates the durable events tail at the chosen
+    user message. The in-process cost_tracker is intentionally preserved.
+    """
+    arg = args.strip()
+    if arg.isdigit():
+        await app.rollback_to(int(arg))
+        return
+
+    sink = render.get_sink()
+    if sink is None:
+        render.render_error("/rollback picker requires the interactive TUI; use /rollback <seq>.")
+        return
+
+    turns = list_user_turns(app.thread_id)
+    if not turns:
+        render.render_notice("No user turns in this thread to roll back to.")
+        return
+
+    seq_str = await sink.request_rollback_picker(turns)
+    if not seq_str:
+        return  # user cancelled the picker
+    try:
+        seq = int(seq_str)
+    except ValueError:
+        render.render_error(f"Invalid rollback seq: {seq_str!r}")
+        return
+    await app.rollback_to(seq)
+
+
 HANDLERS: dict[str, CommandHandler] = {
     "exit": cmd_exit,
     "quit": cmd_exit,
@@ -298,6 +336,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "reset": cmd_reset,
     "compact": cmd_compact,
     "copy": cmd_copy,
+    "rollback": cmd_rollback,
 }
 
 # Slash commands safe to run while a task is streaming: read-only or file-write

@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from agent import build_graph
 from tools import get_tools_for_names
-from context import build_working_state_overlay, render_todos
+from context import build_working_state_sections, render_todos
 from tools.todo import get_thread_todos, set_current_thread, set_thread_todos, todo
 
 
@@ -211,14 +211,16 @@ class RenderTodosTests(unittest.TestCase):
         self.assertEqual(render_todos(None), "")
 
     def test_working_state_overlay_omits_todos_section_when_empty(self):
-        overlay = build_working_state_overlay("act", todos=render_todos([]))
+        sections = build_working_state_sections("act", todos=render_todos([]))
+        overlay = "\n\n".join(sections.values())
         self.assertNotIn("TODOS", overlay)
 
     def test_working_state_overlay_includes_active_todos(self):
-        overlay = build_working_state_overlay(
+        sections = build_working_state_sections(
             "act",
             todos=render_todos([{"id": "1", "content": "Ship it", "status": "pending"}]),
         )
+        overlay = "\n\n".join(sections.values())
         self.assertIn("TODOS\n- [pending] 1: Ship it", overlay)
 
 

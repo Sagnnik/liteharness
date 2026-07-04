@@ -12,11 +12,6 @@ DEFAULT_PERSONA_ID = "default"
 DEFAULT_PERSONA = "You are an expert software engineer working inside the user's repository."
 
 
-def normalize_agent_mode(mode: str | None) -> str:
-    m = (mode or "act").lower()
-    return "act" if m == "normal" else m
-
-
 @lru_cache(maxsize=None)
 def load_instruction(stem: str) -> str:
     path = INSTRUCTIONS_DIR / f"{stem}_instructions.md"
@@ -183,7 +178,7 @@ def build_working_state_sections(
     - todos (only when there are non-completed items)
     - session_memory (distilled episodic bullets for this thread)
     """
-    mode = normalize_agent_mode(agent_mode)
+    mode = (agent_mode or "act").lower()
     sections: dict[str, str] = {}
 
     if mode_switch.strip():
@@ -235,32 +230,6 @@ def render_overlay_delta(
         if text.strip() and text != previous.get(name, ""):
             parts.append(text)
     return "\n\n".join(parts)
-
-
-def build_working_state_overlay(
-    agent_mode: str,
-    todos: str = "",
-    session_memory: str = "",
-    git_snapshot: str = "",
-    compaction_note: str = "",
-    mode_switch: str = "",
-) -> str:
-    """
-    Build the full L3 working state overlay as a single string.
-
-    This is a backward-compat wrapper around ``build_working_state_sections``;
-    new callers that need per-section delta tracking should call the sections
-    builder and ``render_overlay_delta`` directly.
-    """
-    sections = build_working_state_sections(
-        agent_mode,
-        todos=todos,
-        session_memory=session_memory,
-        git_snapshot=git_snapshot,
-        compaction_note=compaction_note,
-        mode_switch=mode_switch,
-    )
-    return "\n\n".join(sections.values())
 
 
 def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:

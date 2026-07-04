@@ -109,6 +109,34 @@ class PromptMixin:
         self._clear_prompt()
         return str(result or "")
 
+    async def request_rollback_picker(self, turns: list[dict]) -> str:
+        """Open the /rollback picker over user turns; return the chosen seq or "" on cancel.
+
+        ``turns`` is the list from ``session.list_user_turns``: each item has
+        ``seq`` (int) and ``content`` (str). Selected item's key resolves the
+        prompt future with the seq as a string; Esc/Ctrl+C resolves it with "".
+        """
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "rollback"
+        self._prompt_title = "rollback to user message"
+        self._prompt_hint = "↑/↓ select · Enter rollback · Esc cancel"
+        self._prompt_items = [
+            MenuItem(
+                str(turn["seq"]),
+                "[user] " + str(turn.get("content", "")).strip().splitlines()[0][:80]
+                if str(turn.get("content", "")).strip()
+                else "[user] (empty)",
+            )
+            for turn in turns
+        ]
+        self._prompt_detail_lines = []
+        # Open near the bottom (most recent turn) — that's what users typically
+        # want to roll back to.
+        self._open_picker("rollback", "", index=max(0, len(turns) - 1))
+        result = await self._prompt_future
+        self._clear_prompt()
+        return str(result or "")
+
     def _clear_prompt(self) -> None:
         self._prompt_kind = None
         self._prompt_title = ""

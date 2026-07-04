@@ -30,9 +30,7 @@ from context import (
     build_l0,
     build_l1,
     build_project_context_block,
-    build_working_state_overlay,
     build_working_state_sections,
-    normalize_agent_mode,
     render_overlay_delta,
     render_todos,
 )
@@ -41,7 +39,7 @@ from reflection import (
     is_reflection_running,
     run_reflection_gate,
 )
-from session import append_event
+from session import add_modified_path, append_event
 from skill_loader import load_skills, render_skill_catalog, select_sticky_skills
 from tools import (
     ALL_TOOLS,
@@ -74,6 +72,7 @@ class AgentState(TypedDict, total=False):
     force_compact: bool
     last_input_tokens: int
     mode_switch: str
+    current_user_seq: int
 
 # 2. Build the Graph
 # Approval handler: given (tool_name, args) returns a normalized decision in
@@ -92,7 +91,7 @@ def build_graph(
     question_handler: QuestionHandler | None = None,
 ) -> Runnable:
     # define the mode
-    resolved_mode = normalize_agent_mode(agent_mode)
+    resolved_mode = (agent_mode or "act").lower()
     repo_has_git = is_git_repo() if git_available is None else git_available
 
     # Runtime tool holder. The bound tool set can grow mid-session when MCP tools
@@ -199,7 +198,7 @@ def build_graph(
             had_stored_compaction=bool(state.get("compacted_messages")),
         )
 
-        current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
+        current_mode = (state.get("agent_mode") or resolved_mode).lower()
         mode_switch = state.get("mode_switch") or ""
         # offload blocking IO/subprocess to a thread so the TUI spinner keeps animating
         git_snapshot = await asyncio.to_thread(git_worktree_summary) if repo_has_git else ""
@@ -342,7 +341,8 @@ def build_graph(
 
         # store tool results in a list of ToolMessage objects
         results: list[ToolMessage] = []
-        current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
+        current_mode = (state.get("agent_mode") or resolved_mode).lower()
+        current_user_seq = int(state.get("current_user_seq") or 0)
         for name, args, call_id in calls:
             if current_mode == "plan" and not is_read_only_tool_call(name, args):
                 content = "Unavailable in plan mode. Switch to act mode (Shift+Tab) to execute."
@@ -402,6 +402,12 @@ def build_graph(
             # append the ToolMessage to the results list and append the event to the event log
             results.append(ToolMessage(tool_call_id=call_id, name=name, content=content))
             append_event(thread_id, _tool_event(name, args, content, duration, call_id=call_id))
+            # Record mutated paths for rollback (surgical file restore).
+            # Only run on a non-error result so we don't pollute the checkpoint
+            # with paths the tool never touched. current_user_seq==0 means we
+            # are inside a subagent (no live user turn in state) -> skip.
+            if current_user_seq and not str(content).startswith("Error:"):
+                _record_modified_path(thread_id, current_user_seq, name, args)
 
         todos_after = get_thread_todos(thread_id)
         return {"messages": results, "todos": todos_after}
@@ -412,7 +418,7 @@ def build_graph(
         calls = extract_tool_calls(last)
         if not calls:
             return END
-        current_mode = normalize_agent_mode(state.get("agent_mode") or resolved_mode)
+        current_mode = (state.get("agent_mode") or resolved_mode).lower()
         if current_mode == "plan" and any(not is_read_only_tool_call(name, args) for name, args, _ in calls):
             return "tools"
         if any(_needs_approval(name, args) for name, args, _ in calls):
@@ -651,3 +657,39 @@ def _result_status(result: str) -> str | None:
             status = line.removeprefix("status=").strip()
             return status or None
     return None
+
+
+# Tools whose file mutations we can enumerate from the call args (surgical
+# restore). Anything else destructive (shell, git commit/checkout/stash) falls
+# back to the "*" full-tree sentinel because the changed path set is unknowable
+# from the args alone.
+_FS_WRITE_TOOLS = frozenset({"write_file", "edit", "delete_file"})
+
+
+def _record_modified_path(thread_id: str, user_seq: int, tool_name: str, args: dict) -> None:
+    """Tell the checkpoint row which paths this turn mutated, for surgical rollback.
+
+    fs write/edit/delete: the ``path`` arg (validated by the tool itself).
+    git commit/checkout/stash/branch(non-list): mutating index/worktree -> "*".
+    shell run/start: arbitrary FS effects -> "*".
+    Anything else (read-only tools, plan-gated rejections) doesn't reach here.
+    """
+    if tool_name in _FS_WRITE_TOOLS:
+        path = str(args.get("path") or "")
+        if path:
+            add_modified_path(thread_id, user_seq, path)
+        else:
+            add_modified_path(thread_id, user_seq, "*")
+        return
+
+    if tool_name == "git":
+        action = str(args.get("action") or "").strip().lower()
+        if action in {"commit", "checkout", "stash"}:
+            add_modified_path(thread_id, user_seq, "*")
+        return
+
+    if tool_name == "shell":
+        action = str(args.get("action") or "run").strip().lower()
+        if action in {"run", "start"}:
+            add_modified_path(thread_id, user_seq, "*")
+        return

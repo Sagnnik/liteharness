@@ -48,6 +48,7 @@ class FakeSession:
         self.force_compact = False
         self.saved = False
         self.resumed_thread_id = ""
+        self.rolled_back_seq: int | None = None
         self.cancel_token = _FakeCancelToken()
 
     def toggle_mode(self) -> None:
@@ -79,6 +80,9 @@ class FakeSession:
     async def resume_thread(self, thread_id: str) -> None:
         self.resumed_thread_id = thread_id
         self.thread_id = thread_id
+
+    async def rollback_to(self, user_seq: int) -> None:
+        self.rolled_back_seq = user_seq
 
     def request_compact(self) -> None:
         self.force_compact = True
