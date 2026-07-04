@@ -265,7 +265,7 @@ def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:
     - Workflow: <numbered steps>
     - Body in markdown format
     - Inline references: small files pasted in
-    - Deferred references: <fetch on demand with read_file>
+    - Deferred references: <fetch on demand with read>
     """
     blocks = []
 
@@ -307,7 +307,7 @@ def render_active_skills(skills: Iterable[Mapping[str, Any]]) -> str:
         deferred_refs = skill.get("deferred_references", []) or []
         if deferred_refs:
             parts.append(
-                "Available references, fetch on demand with read_file:\n"
+                "Available references, fetch on demand with read:\n"
                 + "\n".join(f"- {ref}" for ref in deferred_refs)
             )
         blocks.append("\n".join(parts))

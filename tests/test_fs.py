@@ -17,9 +17,9 @@ from tools.fs import (
     EditItem,
     delete_file,
     edit,
-    glob_files,
-    read_file,
-    write_file,
+    glob,
+    read,
+    write,
 )
 
 
@@ -108,7 +108,7 @@ class ReadFileTests(unittest.TestCase):
     def test_default_limit_truncates_large_files(self) -> None:
         target = self.root / "large.txt"
         target.write_text("\n".join(f"line {idx}" for idx in range(1, 451)), encoding="utf-8")
-        result = read_file.invoke({"path": "large.txt"})
+        result = read.invoke({"path": "large.txt"})
         self.assertIn(" 400| line 400", result)
         self.assertNotIn(" 401| line 401", result)
         self.assertIn("truncated", result)
@@ -116,7 +116,7 @@ class ReadFileTests(unittest.TestCase):
     def test_requested_limit_is_capped(self) -> None:
         target = self.root / "huge.txt"
         target.write_text("\n".join(f"line {idx}" for idx in range(1, 2501)), encoding="utf-8")
-        result = read_file.invoke({"path": "huge.txt", "limit": 999999})
+        result = read.invoke({"path": "huge.txt", "limit": 999999})
         self.assertIn("2000| line 2000", result)
         self.assertNotIn("2001| line 2001", result)
         self.assertIn("truncated", result)
@@ -134,14 +134,14 @@ class WriteFileTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_writes_normal_file(self) -> None:
-        result = write_file.invoke({"path": "module.py", "content": "x = 1\n"})
+        result = write.invoke({"path": "module.py", "content": "x = 1\n"})
         self.assertIn("Wrote 6 chars to module.py", result)
         self.assertEqual((self.root / "module.py").read_text(encoding="utf-8"), "x = 1\n")
 
     def test_refuses_protected_paths(self) -> None:
         for rel in (".git/config", ".ness/NESS.md"):
             with self.subTest(path=rel):
-                result = write_file.invoke({"path": rel, "content": "blocked\n"})
+                result = write.invoke({"path": rel, "content": "blocked\n"})
                 self.assertIn("protected", result)
                 self.assertFalse((self.root / rel).exists())
 
@@ -200,7 +200,7 @@ class EditTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertIn("No match for edit 2", result)
+        self.assertIn("Error: no match for edit 2", result)
         self.assertEqual(target.read_text(encoding="utf-8"), "alpha\nbeta\n")
 
     def test_schema_requires_edit_keys(self) -> None:
@@ -224,6 +224,57 @@ class EditTests(unittest.TestCase):
                 self.assertIn("protected", result)
                 self.assertEqual(target.read_text(encoding="utf-8"), "alpha\n")
 
+    def test_fuzzy_match_below_threshold_leaves_file_unchanged(self) -> None:
+        target = self.root / "module.py"
+        # 0.85-ish similarity — well below the 0.95 threshold
+        target.write_text("def handle_request(request, response):\n    return response\n", encoding="utf-8")
+        result = edit.invoke(
+            {
+                "path": "module.py",
+                "edits": [
+                    {
+                        "old_string": "def handle_request(req, resp):\n    return resp\n",
+                        "new_string": "def handle_request(request, response):\n    return response\n",
+                    }
+                ],
+            }
+        )
+        self.assertIn("Error: no match for edit 1", result)
+        self.assertEqual(
+            target.read_text(encoding="utf-8"),
+            "def handle_request(request, response):\n    return response\n",
+        )
+
+    def test_fuzzy_match_above_threshold_emits_loud_warning(self) -> None:
+        target = self.root / "module.py"
+        # One-token difference: very high similarity, should trigger fuzzy match
+        original = "def process_payment(amount, currency, customer):\n    pass\n"
+        target.write_text(original, encoding="utf-8")
+        result = edit.invoke(
+            {
+                "path": "module.py",
+                "edits": [
+                    {
+                        "old_string": "def process_payment(amount, currency, custemer):\n    pass\n",
+                        "new_string": "def process_payment(amount, currency, customer):\n    return amount\n",
+                    }
+                ],
+            }
+        )
+        self.assertIn("WARNING: FUZZY MATCH", result)
+        self.assertIn("verify the result before continuing", result)
+        self.assertIn("Applied 1 edit", result)
+        self.assertIn("return amount", target.read_text(encoding="utf-8"))
+
+    def test_exact_match_does_not_warn_about_fuzzy(self) -> None:
+        target = self.root / "module.py"
+        target.write_text("alpha\n", encoding="utf-8")
+        result = edit.invoke(
+            {"path": "module.py", "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+        )
+        self.assertNotIn("FUZZY", result)
+        self.assertIn("Applied 1 edit", result)
+
 
 class GlobFilesTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -240,7 +291,7 @@ class GlobFilesTests(unittest.TestCase):
         (self.root / "src").mkdir()
         (self.root / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
         (self.root / "notes.txt").write_text("draft\n", encoding="utf-8")
-        result = glob_files.invoke({"pattern": "**/*.py"})
+        result = glob.invoke({"pattern": "**/*.py"})
         self.assertIn("src/app.py", result)
         self.assertNotIn("notes.txt", result)
 
@@ -248,7 +299,7 @@ class GlobFilesTests(unittest.TestCase):
         subprocess.run(["git", "init"], cwd=self.root, capture_output=True, check=True)
         target = self.root / "scratch.py"
         target.write_text("x = 1\n", encoding="utf-8")
-        result = glob_files.invoke({"pattern": "scratch.py"})
+        result = glob.invoke({"pattern": "scratch.py"})
         self.assertIn("scratch.py", result)
 
 

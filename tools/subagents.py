@@ -20,7 +20,7 @@ from session import complete_subagent, register_subagent
 # gets the subagent instructions
 AGENTS_DIR = Path(settings.ness_dir) / "agents"
 
-DEFAULT_AGENT_TOOLS = ("read_file", "grep", "glob_files", "list_files")
+DEFAULT_AGENT_TOOLS = ("read", "grep", "glob", "web_search", "webfetch")
 MAX_BATCH_TASKS = 8
 DEFAULT_MAX_CONCURRENCY = 3 # max concurrent subagents to run
 MAX_CONCURRENCY = 8
@@ -34,6 +34,20 @@ AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _subagent_model: ContextVar[Any | None] = ContextVar("subagent_model", default=None)
 _parent_thread_id: ContextVar[str | None] = ContextVar("parent_thread_id", default=None)
 _active_subagent_runs = 0
+
+# Cross-call concurrency cap shared by every spawn_subagent invocation in this
+# process. A single spawn_subagent call already bounds in-call concurrency via an
+# asyncio.Semaphore, but without this global gate the main agent could fire
+# multiple spawn_subagent calls in one turn and exceed MAX_CONCURRENCY. Lazily
+# created on first use so we bind to the running event loop.
+_global_concurrency_semaphore: asyncio.Semaphore | None = None
+
+
+def _global_semaphore() -> asyncio.Semaphore:
+    global _global_concurrency_semaphore
+    if _global_concurrency_semaphore is None:
+        _global_concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+    return _global_concurrency_semaphore
 
 
 @dataclass(frozen=True)
@@ -107,7 +121,7 @@ async def spawn_subagent(
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
-    """Run one or more read-only LiteHarness subagents and wait for all results."""
+    """Run one or more isolated sub-agents for parallel investigation and wait for results."""
     started = time.time()
     batch_invocation = tasks is not None
     # check the runtime context
@@ -132,13 +146,15 @@ async def spawn_subagent(
     if isinstance(timeout_seconds, str):
         return _call_error(timeout_seconds, batch_invocation, started, len(validated))
 
-    # semaphore to limit the number of concurrent subagents
-    semaphore = asyncio.Semaphore(min(concurrency, len(validated)))
+    # In-call semaphore bounds concurrent tasks inside this invocation; the
+    # global semaphore bounds total subagents across concurrent spawn_subagent
+    # calls in the same process.
+    in_call_semaphore = asyncio.Semaphore(min(concurrency, len(validated)))
 
     # run one subagent
     async def run_one(index: int, task: SubagentTask) -> SubagentRunResult:
-        # wait for the semaphore to be available
-        async with semaphore:
+        # in-call slot first so a failed prep doesn't waste the global slot
+        async with in_call_semaphore:
             prepared = _prepare_task(task)
             if isinstance(prepared, str):
                 return SubagentRunResult(
@@ -150,13 +166,14 @@ async def spawn_subagent(
                     thread_id=f"subagent-{task.name}-prep-failed",
                     output=prepared,
                 )
-            # run the subagent with a timeout
-            return await _run_prepared_with_timeout(
-                index=index,
-                prepared=prepared,
-                model=model,
-                timeout_seconds=timeout_seconds,
-            )
+            # global slot can be released as soon as the subagent finishes
+            async with _global_semaphore():
+                return await _run_prepared_with_timeout(
+                    index=index,
+                    prepared=prepared,
+                    model=model,
+                    timeout_seconds=timeout_seconds,
+                )
 
     # run all the subagents
     # we can await all the subagents at once here; subagents should block main agent run
@@ -381,9 +398,20 @@ async def _invoke_subagent(
             config={"configurable": {"thread_id": thread_id}},
         )
         messages = result.get("messages", [])
-        final = next((m.content for m in reversed(messages) if m.type in ("ai", "assistant")), "")
-        # return the final assistant message or a default message if no final message
-        return str(final or "Subagent completed without a final message")
+        # Only the truly final message is the answer. Returning an earlier AI
+        # message when the run ended on a tool/human message would silently
+        # surface stale output (e.g. after an interrupt or tool error).
+        if not messages:
+            return "Subagent completed without producing any messages"
+        last = messages[-1]
+        if getattr(last, "type", "") in ("ai", "assistant"):
+            final = last.content
+        else:
+            return (
+                "Subagent did not finish with an assistant message "
+                f"(last message type: {getattr(last, 'type', 'unknown')})"
+            )
+        return str(final or "Subagent completed with an empty final message")
     finally:
         _active_subagent_runs -= 1
 

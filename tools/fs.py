@@ -14,15 +14,14 @@ from pydantic import BaseModel, Field
 import permissions
 from config import settings
 from permissions import relative_to_root, validate_path
-from utils import is_ignored_dir
 
 READ_FILE_DEFAULT_LIMIT = 400
 READ_FILE_MAX_LIMIT = 2000
 PROTECTED_WRITE_DIRS = frozenset({".git", ".ness"})
 
 @tool
-def read_file(path: str, offset: int = 1, limit: int | None = None) -> str:
-    """Read a UTF-8 text file with 1-based line numbers and optional offset/limit."""
+def read(path: str, offset: int = 1, limit: int | None = None) -> str:
+    """Read a file from the local filesystem."""
     try:
         abs_path = validate_path(path)
         lines = Path(abs_path).read_text(encoding="utf-8").splitlines()
@@ -60,7 +59,7 @@ def _reject_protected_write(rel_path: str, action: str) -> str | None:
 
 @tool
 def delete_file(path: str) -> str:
-    """Delete a single file inside the project. Prefer this over shell rm commands."""
+    """Delete a file from the filesystem."""
     try:
         abs_path = validate_path(path)
         rel = relative_to_root(abs_path)
@@ -78,8 +77,8 @@ def delete_file(path: str) -> str:
 
 
 @tool
-def write_file(path: str, content: str) -> str:
-    """Write a complete UTF-8 file atomically, creating parent directories."""
+def write(path: str, content: str) -> str:
+    """Write a file to the local filesystem."""
     try:
         abs_path = validate_path(path)
         rel = relative_to_root(abs_path)
@@ -102,11 +101,16 @@ class EditItem(BaseModel):
 
 @tool
 def edit(path: str, edits: list[EditItem]) -> str:
-    """Apply one or more exact-text replacements to a single file atomically.
+    """Edit a file using string replacements.
 
     Each edit uses exact match first with a conservative fuzzy fallback. All edits
     are applied in order; if any edit finds no match, the file is left unchanged.
     A single replacement is just a one-item edits list.
+
+    WARNING: When an exact match fails, a near-match (>= 0.95 similarity) may be
+    rewritten in your place. Treat any 'FUZZY MATCH' result as suspicious and
+    verify the change before relying on it; re-issue the edit with a more
+    specific old_string if the wrong region was matched.
     """
     try:
         abs_path = validate_path(path)
@@ -118,50 +122,44 @@ def edit(path: str, edits: list[EditItem]) -> str:
         p = Path(abs_path)
         content = p.read_text(encoding="utf-8")
         total = 0
-        fuzzy_any = False
+        fuzzy_edits: list[int] = []
         for idx, item in enumerate(edits, 1):
             content, count, fuzzy = _replace_content(
                 content, item.old_string, item.new_string, item.replace_all
             )
             if count == 0:
-                return f"No match for edit {idx} in {rel}; file was not changed"
+                return f"Error: no match for edit {idx} in {rel}; file was not changed"
             total += count
-            fuzzy_any = fuzzy_any or fuzzy
+            if fuzzy:
+                fuzzy_edits.append(idx)
         _atomic_write(p, content)
         auto_format(abs_path)
-        suffix = " using fuzzy match" if fuzzy_any else ""
+        if fuzzy_edits:
+            which = ", ".join(str(n) for n in fuzzy_edits)
+            return (
+                f"WARNING: FUZZY MATCH applied to edit(s) {which} in {rel} — "
+                f"verify the result before continuing. "
+                f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
+                f"({total} replacement{'s' if total != 1 else ''})."
+            )
         return (
             f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
-            f"({total} replacement{'s' if total != 1 else ''}) to {rel}{suffix}"
+            f"({total} replacement{'s' if total != 1 else ''}) to {rel}"
         )
     except Exception as exc:
         return f"Error: {exc}"
 
 
 @tool
-def glob_files(pattern: str) -> str:
-    """Find files matching a glob pattern under the project root."""
+def glob(pattern: str) -> str:
+    """Find files matching a glob pattern."""
     try:
+        if not pattern:
+            return "Error: pattern is empty. Provide a glob pattern to match files."
         matches = _git_glob(pattern) if is_git_repo(str(permissions.PROJECT_ROOT)) else []
         if not matches:
             matches = _filesystem_glob(pattern)
         return "\n".join(sorted(matches)[:300]) or "No matches"
-    except Exception as exc:
-        return f"Error: {exc}"
-
-
-@tool
-def list_files(path: str = ".") -> str:
-    """List a directory inside the project root."""
-    try:
-        abs_path = validate_path(path)
-        entries = []
-        with os.scandir(abs_path) as it:
-            for entry in it:
-                if is_ignored_dir(entry.name):
-                    continue
-                entries.append(entry.name + ("/" if entry.is_dir() else ""))
-        return "\n".join(sorted(entries)[:300]) or "(empty directory)"
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -173,13 +171,13 @@ def _replace_content(content: str, old: str, new: str, replace_all: bool) -> tup
         count = content.count(old) if replace_all else 1
         return content.replace(old, new, -1 if replace_all else 1), count, False
 
-    # fuzzy match:
-    # 1. split file and old into line
+    # fuzzy match (conservative — high threshold to avoid false positives):
+    # 1. split file and old into lines
     # 2. Slide a window of len(old_lines) through the file
     # 3. At each position, join those lines into a block and compare to old using SequenceMatcher
     # 4. Keep the block with the highest similarity ratio
-    # 5. Replace the block with the new lines if score >= 0.90
-    # 6. Otherwise fail (count = 0)
+    # 5. Replace the block with the new lines only if score >= 0.95
+    # 6. Otherwise fail (count = 0) — caller must re-issue with a precise old_string
     lines = content.splitlines()
     old_lines = old.splitlines()
     if replace_all or not old_lines or len(old_lines) > len(lines):
@@ -194,7 +192,7 @@ def _replace_content(content: str, old: str, new: str, replace_all: bool) -> tup
             best_ratio = ratio
             best_idx = idx
 
-    if best_ratio < 0.90:
+    if best_ratio < 0.95:
         return content, 0, False
 
     replacement_lines = new.splitlines()
@@ -242,14 +240,17 @@ def auto_format(path: str) -> None:
     suffix = p.suffix.lower()
     path_str = str(p)
 
-    formatters: dict[str, list[str]] = {
+    prettier = _local_bin("prettier")
+    prettier_cmd = [prettier, "--write", path_str] if prettier else None
+
+    formatters: dict[str, list[str] | None] = {
         ".py": ["python", "-m", "black", "--quiet", "--", path_str],
-        ".ts": ["npx", "--", "prettier", "--write", path_str],
-        ".tsx": ["npx", "--", "prettier", "--write", path_str],
-        ".js": ["npx", "--", "prettier", "--write", path_str],
-        ".jsx": ["npx", "--", "prettier", "--write", path_str],
-        ".json": ["npx", "--", "prettier", "--write", path_str],
-        ".md": ["npx", "--", "prettier", "--write", path_str],
+        ".ts": prettier_cmd,
+        ".tsx": prettier_cmd,
+        ".js": prettier_cmd,
+        ".jsx": prettier_cmd,
+        ".json": prettier_cmd,
+        ".md": prettier_cmd,
         ".rs": ["rustfmt", path_str],
         ".go": ["gofmt", "-w", path_str],
         ".c": ["clang-format", "-i", path_str],
@@ -263,6 +264,14 @@ def auto_format(path: str) -> None:
     cmd = formatters.get(suffix)
     if cmd:
         _run_formatter(cmd)
+
+
+def _local_bin(name: str) -> str | None:
+    """Return a project-local binary path if present, else fall back to PATH."""
+    local = permissions.PROJECT_ROOT / "node_modules" / ".bin" / name
+    if local.exists():
+        return str(local)
+    return shutil.which(name)
 
 
 def is_git_repo(path: str = ".") -> bool:

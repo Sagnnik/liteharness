@@ -700,8 +700,8 @@ def web_search(
 
 
 @tool
-def fetch_url(url: str, max_characters: int = 12000) -> str:
-    """Fetch content from a URL as clean text/markdown.
+def webfetch(url: str, max_characters: int = 12000) -> str:
+    """Fetch content from a URL.
 
     Use after web_search when you need full page content beyond search snippets.
     After receiving content, synthesize relevant information for the user.

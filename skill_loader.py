@@ -95,7 +95,7 @@ def select_sticky_skills(
 ) -> list[dict[str, Any]]:
     """Load full skill bodies into L2 on trigger match or `/skill <name>`.
 
-    the agent can read `.ness/skills/<name>/SKILL.md` via read_file and keep it in conversation.
+    the agent can read `.ness/skills/<name>/SKILL.md` via read and keep it in conversation.
     Once a skill is sticky it stays loaded for the session."""
     for skill in select_skills(user_input, skills):
         sticky_names.add(str(skill.get("name", "")))

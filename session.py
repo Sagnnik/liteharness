@@ -379,9 +379,9 @@ def save_checkpoint(
 def add_modified_path(thread_id: str, user_seq: int, path: str) -> None:
     """Record a filesystem path the agent mutated during one user turn.
 
-    Called from the tools node for destructive fs/shell/git calls. Empty path or
+    Called from the tools node for destructive fs/shell calls. Empty path or
     the ``"*"`` sentinel marks the turn as full-tree restore (used for shell
-    and git commits where mutated paths cannot be enumerated). The set is
+    commands where mutated paths cannot be enumerated). The set is
     expanded idempotently; once ``*`` is set, per-path entries are dropped.
     """
     if not settings.auto_save_threads:

@@ -77,39 +77,33 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_native_tool_args_keep_dicts(self) -> None:
         msg = AIMessage(
             content="",
-            tool_calls=[{"name": "read_file", "args": {"path": "agent.py"}, "id": "1"}],
+            tool_calls=[{"name": "read", "args": {"path": "agent.py"}, "id": "1"}],
         )
-        self.assertEqual(extract_tool_calls(msg), [("read_file", {"path": "agent.py"}, "1")])
+        self.assertEqual(extract_tool_calls(msg), [("read", {"path": "agent.py"}, "1")])
 
-    def test_session_tools_include_deployment_surface_and_git_gate(self) -> None:
-        with_git = {tool.name for tool in select_tools_for_session(git_repo=True)}
+    def test_session_tools_include_deployment_surface(self) -> None:
+        names = {tool.name for tool in select_tools_for_session()}
         for name in (
-            "read_file",
-            "write_file",
+            "read",
+            "write",
             "delete_file",
             "edit",
-            "check_syntax",
             "web_search",
-            "fetch_url",
+            "webfetch",
             "shell",
-            "git",
             "todo",
             "search_tools",
             "add_tools",
             "spawn_subagent",
-            "ask_user",
+            "question",
         ):
-            self.assertIn(name, with_git)
-
-        without_git = {tool.name for tool in select_tools_for_session(git_repo=False)}
-        self.assertNotIn("git", without_git)
-        self.assertIn("write_file", without_git)
+            self.assertIn(name, names)
 
     async def test_graph_executes_native_tool_call(self) -> None:
         model = FakeToolCallModel(
-            {"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}
+            {"name": "read", "args": {"path": "README.md"}, "id": "call-1"}
         )
-        app = build_graph(model, tools=get_tools_for_names(["read_file"]), thread_id="unit")
+        app = build_graph(model, tools=get_tools_for_names(["read"]), thread_id="unit")
         result = await app.ainvoke(
             {
                 "messages": [HumanMessage(content="read README.md")],
@@ -131,20 +125,20 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         plan_names = sorted(tool.name for tool in plan_model.bound_tools)
         act_names = sorted(tool.name for tool in act_model.bound_tools)
         self.assertEqual(plan_names, act_names)
-        for name in ("read_file", "write_file", "git", "shell", "ask_user"):
+        for name in ("read", "write", "shell", "question"):
             self.assertIn(name, plan_names)
 
     async def test_plan_mode_blocks_write_tools_before_permissions(self) -> None:
         model = FakeToolCallModel(
             {
-                "name": "write_file",
+                "name": "write",
                 "args": {"path": "blocked.txt", "content": "nope"},
                 "id": "call-1",
             }
         )
         app = build_graph(
             model,
-            tools=get_tools_for_names(["write_file"]),
+            tools=get_tools_for_names(["write"]),
             thread_id="plan-gate",
             agent_mode="plan",
         )
@@ -260,11 +254,11 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plan_mode_block_only_on_fresh_turn_not_tool_loop(self) -> None:
         model = FakeToolCallModel(
-            {"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}
+            {"name": "read", "args": {"path": "README.md"}, "id": "call-1"}
         )
         app = build_graph(
             model,
-            tools=get_tools_for_names(["read_file"]),
+            tools=get_tools_for_names(["read"]),
             thread_id="plan-delta",
             agent_mode="plan",
             git_available=False,
@@ -283,7 +277,7 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         fresh_user = [m for m in model.seen_messages[0] if m.type == "human"][0]
         self.assertIn("<plan-mode", fresh_user.content)
 
-        # tool loop: read_file doesn't change any section -> empty delta -> no overlay tail
+        # tool loop: read doesn't change any section -> empty delta -> no overlay tail
         tool_loop_msgs = model.seen_messages[1]
         overlay_tails = [
             m for m in tool_loop_msgs
@@ -293,11 +287,11 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_loop_no_tail_when_nothing_changed(self) -> None:
         model = FakeToolCallModel(
-            {"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}
+            {"name": "read", "args": {"path": "README.md"}, "id": "call-1"}
         )
         app = build_graph(
             model,
-            tools=get_tools_for_names(["read_file"]),
+            tools=get_tools_for_names(["read"]),
             thread_id="no-delta",
             agent_mode="act",
             git_available=False,
@@ -392,7 +386,7 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             async def ainvoke(self, _messages):
                 return reflection.ReflectionStructuredOutput(
-                    new_bullet_points=["Added retry wrapper to fetch_url"],
+                    new_bullet_points=["Added retry wrapper to webfetch"],
                 )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -445,7 +439,7 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/skill <name>", catalog)
         self.assertIn("- alpha: Do alpha things", catalog)
         self.assertIn("- beta: Do beta things", catalog)
-        self.assertNotIn("read_file", catalog)
+        self.assertNotIn("read", catalog)
         self.assertEqual(selected, {"alpha"})
         self.assertEqual(
             {skill["name"] for skill in select_sticky_skills("later turn", skills, sticky)},
@@ -539,7 +533,7 @@ class WorkingStateTailTests(unittest.TestCase):
         messages = [
             HumanMessage(content="hi"),
             AIMessage(content="ok"),
-            ToolMessage(tool_call_id="call-1", name="read_file", content="file contents"),
+            ToolMessage(tool_call_id="call-1", name="read", content="file contents"),
         ]
         result = _with_working_state_tail(messages, "TODOS\n- [pending] 1: Example")
 

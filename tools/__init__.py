@@ -3,43 +3,37 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from tools.ask import ask_user
-from tools.check_syntax import check_syntax
+from tools.ask import question
 from tools.discover import add_tools, search_tools
 from tools.fs import (
     delete_file,
     edit,
-    glob_files,
+    glob,
     is_git_repo,
-    list_files,
-    read_file,
-    write_file,
+    read,
+    write,
 )
-from tools.git import git
 from tools.search import grep
 from tools.shell import shell as shell_tool
 from tools.subagents import spawn_subagent
 from tools.todo import todo
-from tools.web import fetch_url, web_search
+from tools.web import webfetch, web_search
 
 LOCAL_TOOLS = [
-    read_file,
-    write_file,
+    read,
+    write,
     delete_file,
     edit,
-    glob_files,
-    list_files,
+    glob,
     grep,
-    check_syntax,
     web_search,
-    fetch_url,
+    webfetch,
     shell_tool,
-    git,
     todo,
     search_tools,
     add_tools,
     spawn_subagent,
-    ask_user,
+    question,
 ]
 
 ALL_TOOLS = list(LOCAL_TOOLS)
@@ -48,25 +42,19 @@ TOOL_NAMES = list(TOOL_MAP)
 
 SMALL_ALWAYS_ON = {
     "todo",
-    "ask_user",
+    "question",
 }
 
 TIER_L1 = {
-    "read_file",
-    "write_file",
+    "read",
+    "write",
     "delete_file",
     "edit",
     "grep",
-    "check_syntax",
     "web_search",
-    "fetch_url",
-    "glob_files",
-    "list_files",
+    "webfetch",
+    "glob",
     "shell",
-}
-
-TIER_GIT = {
-    "git",
 }
 
 TIER_DISCOVERY = {
@@ -78,32 +66,27 @@ TIER_L3_ADVANCED = {
     "spawn_subagent",
 }
 
-GIT_TOOLS = set(TIER_GIT)
-
 READ_ONLY_TOOLS = {
-    "read_file",
+    "read",
     "grep",
-    "check_syntax",
     "web_search",
-    "fetch_url",
-    "glob_files",
-    "list_files",
+    "webfetch",
+    "glob",
     "todo",
     "search_tools",
     "add_tools",
     "spawn_subagent",
-    "ask_user",
+    "question",
 }
 
 EDIT_TOOLS = frozenset({
-    "write_file",
+    "write",
     "delete_file",
     "edit",
 })
 
 DESTRUCTIVE_TOOLS = set(EDIT_TOOLS) | {
     "shell",
-    "git",
 }
 
 # All registered MCP tool names (known catalog). Loaded lazily into the bound set.
@@ -124,7 +107,6 @@ _TOOLS_GENERATION = 0
 TOOL_CATALOG_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("Small always-on", frozenset(SMALL_ALWAYS_ON)),
     ("L1 core", frozenset(TIER_L1)),
-    ("Git", frozenset(TIER_GIT)),
     ("Tool discovery", frozenset(TIER_DISCOVERY)),
     ("L3 advanced", frozenset(TIER_L3_ADVANCED)),
 )
@@ -193,13 +175,12 @@ def get_tools_for_names(names: Iterable[str]) -> list[Any]:
     return [tool for tool in ALL_TOOLS if tool.name in wanted]
 
 
-def tool_names_for_session(git_repo: bool | None = None) -> list[str]:
+def tool_names_for_session() -> list[str]:
     """Return the currently bound tool set for the current session shape.
 
     Only MCP tools that have been activated (ACTIVE_MCP_TOOLS) are included, so
     adding MCP servers does not bloat the bound tool set until tools are loaded.
     """
-    git_available = is_git_repo() if git_repo is None else git_repo
     names = (
         set(SMALL_ALWAYS_ON)
         | set(TIER_L1)
@@ -207,20 +188,15 @@ def tool_names_for_session(git_repo: bool | None = None) -> list[str]:
         | set(TIER_L3_ADVANCED)
         | set(ACTIVE_MCP_TOOLS)
     )
-    if git_available:
-        names |= set(GIT_TOOLS)
-    else:
-        names -= set(GIT_TOOLS)
     return [name for name in TOOL_NAMES if name in names]
 
 
 def select_tools_for_session(
-    git_repo: bool | None = None,
     tools: Iterable[Any] | None = None,
 ) -> list[Any]:
     """Select the full stable tool set for a main session."""
     available = list(tools or ALL_TOOLS)
-    session_names = set(tool_names_for_session(git_repo))
+    session_names = set(tool_names_for_session())
     return _dedupe_tools(tool for tool in available if tool.name in session_names)
 
 
@@ -231,35 +207,17 @@ def is_destructive_tool(name: str) -> bool:
 def is_read_only_tool_call(name: str, args: dict[str, Any]) -> bool:
     if name == "shell":
         return _shell_action(args) in {"jobs", "read"}
-    if name == "git":
-        return _git_is_read_only(args)
     return name in READ_ONLY_TOOLS
 
 
 def is_destructive_tool_call(name: str, args: dict[str, Any]) -> bool:
     if name == "shell":
         return _shell_action(args) in {"run", "start", "kill"}
-    if name == "git":
-        return not _git_is_read_only(args)
     return is_destructive_tool(name)
 
 
 def _shell_action(args: dict[str, Any]) -> str:
     return str(args.get("action") or "").strip().lower()
-
-
-def _git_is_read_only(args: dict[str, Any]) -> bool:
-    """git read actions (status/diff/log/show) plus inspection-only branch/stash."""
-    from tools.git import GIT_READ_ACTIONS
-
-    action = str(args.get("action") or "").strip().lower()
-    if action in GIT_READ_ACTIONS:
-        return True
-    if action == "branch":
-        return not str(args.get("name") or "").strip()
-    if action == "stash":
-        return str(args.get("stash_action") or "list").strip().lower() == "list"
-    return False
 
 
 def _dedupe_tools(tools: Iterable[Any]) -> list[Any]:

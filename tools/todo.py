@@ -31,7 +31,7 @@ def todo(
     id: str | None = None,
     index: int | None = None,
 ) -> str:
-    """Manage the current thread TODO list (CLI + working state).
+    """Manage a task list.
 
     Actions: replace (full list), insert, update, delete, clear.
     Todo shape: {id, content, status} — status is pending, in_progress, or completed.

@@ -162,63 +162,57 @@ class DefaultRuleForTests(unittest.TestCase):
         self.assertEqual(decision, "allow")
         self.assertEqual(rule, "web_search:*")
 
-    def test_fetch_url_asks_by_default(self) -> None:
+    def test_webfetch_asks_by_default(self) -> None:
         with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
-            decision, rule = permissions.check_with_rule("fetch_url", {"url": "https://example.com/a"})
+            decision, rule = permissions.check_with_rule("webfetch", {"url": "https://example.com/a"})
         self.assertEqual(decision, "ask")
         self.assertEqual(rule, "*")
 
-    def test_fetch_url_default_rule_uses_normalized_url_only(self) -> None:
+    def test_webfetch_default_rule_uses_normalized_url_only(self) -> None:
         rule = permissions.default_rule_for(
-            "fetch_url",
+            "webfetch",
             {"url": "https://Example.com:443/a?x=1#frag", "max_characters": 500},
         )
-        self.assertEqual(rule, "fetch_url:url=https://example.com/a?x=1")
+        self.assertEqual(rule, "webfetch:url=https://example.com/a?x=1")
 
-    def test_fetch_url_approval_ignores_max_characters(self) -> None:
+    def test_webfetch_approval_ignores_max_characters(self) -> None:
         rules = {
-            "allow": ["fetch_url:url=https://example.com/a?x=1"],
+            "allow": ["webfetch:url=https://example.com/a?x=1"],
             "deny": [],
             "ask": ["*"],
         }
         with mock.patch.object(permissions, "_load", return_value=rules):
             decision, rule = permissions.check_with_rule(
-                "fetch_url",
+                "webfetch",
                 {"url": "https://example.com/a?x=1", "max_characters": 5000},
             )
         self.assertEqual(decision, "allow")
-        self.assertEqual(rule, "fetch_url:url=https://example.com/a?x=1")
+        self.assertEqual(rule, "webfetch:url=https://example.com/a?x=1")
 
-    def test_fetch_url_different_query_still_asks(self) -> None:
+    def test_webfetch_different_query_still_asks(self) -> None:
         rules = {
-            "allow": ["fetch_url:url=https://example.com/a?x=1"],
+            "allow": ["webfetch:url=https://example.com/a?x=1"],
             "deny": [],
             "ask": ["*"],
         }
         with mock.patch.object(permissions, "_load", return_value=rules):
             decision, rule = permissions.check_with_rule(
-                "fetch_url",
+                "webfetch",
                 {"url": "https://example.com/a?x=2"},
             )
         self.assertEqual(decision, "ask")
         self.assertEqual(rule, "*")
 
-    def test_fetch_url_wildcard_rule_does_not_bypass_per_url_approval(self) -> None:
+    def test_webfetch_wildcard_rule_does_not_bypass_per_url_approval(self) -> None:
         rules = {
-            "allow": ["fetch_url:*"],
+            "allow": ["webfetch:*"],
             "deny": [],
             "ask": ["*"],
         }
         with mock.patch.object(permissions, "_load", return_value=rules):
-            decision, rule = permissions.check_with_rule("fetch_url", {"url": "https://example.com/a"})
+            decision, rule = permissions.check_with_rule("webfetch", {"url": "https://example.com/a"})
         self.assertEqual(decision, "ask")
         self.assertEqual(rule, "*")
-
-    def test_check_syntax_allowed_by_default(self) -> None:
-        with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
-            decision, rule = permissions.check_with_rule("check_syntax", {"path": "agent.py"})
-        self.assertEqual(decision, "allow")
-        self.assertEqual(rule, "check_syntax:*")
 
     def test_shell_read_allowed_by_default(self) -> None:
         with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
@@ -235,8 +229,8 @@ class DefaultRuleForTests(unittest.TestCase):
     def test_non_shell_uses_exact_pattern_key(self) -> None:
         args = {"path": "foo.py", "content": "print('hi')"}
         self.assertEqual(
-            permissions.default_rule_for("write_file", args),
-            permissions.pattern_key("write_file", args),
+            permissions.default_rule_for("write", args),
+            permissions.pattern_key("write", args),
         )
 
 
