@@ -32,14 +32,14 @@ class SessionStorageTests(unittest.TestCase):
             {
                 "kind": "assistant",
                 "content": "",
-                "tool_calls": [{"name": "read_file", "args": {"path": "a"}, "id": "call-1"}],
+                "tool_calls": [{"name": "read", "args": {"path": "a"}, "id": "call-1"}],
             },
         )
         session.append_event(
             "session-abc",
             {
                 "kind": "tool",
-                "tool": "read_file",
+                "tool": "read",
                 "args": {"path": "a"},
                 "result": "file contents",
                 "call_id": "call-1",
@@ -193,12 +193,12 @@ class ResumeReplayTests(unittest.TestCase):
                 "kind": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"name": "read_file", "args": {"path": "a"}, "id": "call-1", "type": "tool_call"}
+                    {"name": "read", "args": {"path": "a"}, "id": "call-1", "type": "tool_call"}
                 ],
             },
             {
                 "kind": "tool",
-                "tool": "read_file",
+                "tool": "read",
                 "args": {"path": "a"},
                 "result": "contents",
                 "call_id": "call-1",

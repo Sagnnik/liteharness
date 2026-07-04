@@ -50,7 +50,7 @@ from tools import (
     tools_generation,
 )
 from tools.ask import QuestionHandler, set_question_runtime
-from tools.git import git_worktree_summary
+from git_context import git_worktree_summary
 from tools.subagents import set_subagent_runtime
 from tools.todo import get_thread_todos, set_current_thread, set_thread_todos
 from compaction import (
@@ -110,7 +110,7 @@ def build_graph(
             if runtime.get("generation") == tools_generation():
                 return
         candidate_tools = ALL_TOOLS if tools is None else tools
-        active = select_tools_for_session(repo_has_git, candidate_tools)
+        active = select_tools_for_session(candidate_tools)
         runtime["active_tools"] = active
         runtime["tool_map"] = {t.name: t for t in active}
         runtime["tool_names"] = list(runtime["tool_map"])
@@ -149,7 +149,7 @@ def build_graph(
         
         previous_skill_key = tuple(sorted(sticky_skill_names))
         # Full skill bodies load into L2 on trigger match or /skill; otherwise the
-        # agent can read_file the path from the L1 catalog.
+        # agent can read the path from the L1 catalog.
         active_skills = select_sticky_skills(
             user_input,
             all_skills,
@@ -660,17 +660,15 @@ def _result_status(result: str) -> str | None:
 
 
 # Tools whose file mutations we can enumerate from the call args (surgical
-# restore). Anything else destructive (shell, git commit/checkout/stash) falls
-# back to the "*" full-tree sentinel because the changed path set is unknowable
-# from the args alone.
-_FS_WRITE_TOOLS = frozenset({"write_file", "edit", "delete_file"})
+# restore). Shell run/start falls back to the "*" full-tree sentinel because
+# the changed path set is unknowable from the args alone.
+_FS_WRITE_TOOLS = frozenset({"write", "edit", "delete_file"})
 
 
 def _record_modified_path(thread_id: str, user_seq: int, tool_name: str, args: dict) -> None:
     """Tell the checkpoint row which paths this turn mutated, for surgical rollback.
 
     fs write/edit/delete: the ``path`` arg (validated by the tool itself).
-    git commit/checkout/stash/branch(non-list): mutating index/worktree -> "*".
     shell run/start: arbitrary FS effects -> "*".
     Anything else (read-only tools, plan-gated rejections) doesn't reach here.
     """
@@ -679,12 +677,6 @@ def _record_modified_path(thread_id: str, user_seq: int, tool_name: str, args: d
         if path:
             add_modified_path(thread_id, user_seq, path)
         else:
-            add_modified_path(thread_id, user_seq, "*")
-        return
-
-    if tool_name == "git":
-        action = str(args.get("action") or "").strip().lower()
-        if action in {"commit", "checkout", "stash"}:
             add_modified_path(thread_id, user_seq, "*")
         return
 

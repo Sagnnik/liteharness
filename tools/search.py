@@ -18,14 +18,20 @@ GREP_MAX_OUTPUT_CHARS = 12000
 
 
 @tool
-def grep(pattern: str, path: str = ".", glob: str | None = None) -> str:
-    """Search project files with ripgrep, falling back to a Python regex walk."""
+def grep(pattern: str, include: str | None = None, path: str = ".") -> str:
+    """Search file contents using regular expressions."""
     try:
+        if not pattern:
+            return "Error: pattern is empty. Provide a regex to search for."
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return f"Error: invalid regex {pattern!r}: {exc}. Fix the pattern and retry."
         abs_path = validate_path(path)
         if shutil.which("rg"):
             cmd = ["rg", "-n", "--no-heading"]
-            if glob:
-                cmd.extend(["-g", glob])
+            if include:
+                cmd.extend(["-g", include])
             cmd.extend(["--", pattern, abs_path])
             result = subprocess.run(
                 cmd,
@@ -38,12 +44,12 @@ def grep(pattern: str, path: str = ".", glob: str | None = None) -> str:
                 return f"Error: {result.stderr or result.stdout}"
             return _cap_output(result.stdout.strip() or "No matches found")
 
-        return _python_grep(pattern, abs_path, glob)
+        return _python_grep(pattern, abs_path, include)
     except Exception as exc:
         return f"Error: {exc}"
 
 
-def _python_grep(pattern: str, path: str, glob: str | None) -> str:
+def _python_grep(pattern: str, path: str, include: str | None) -> str:
     rx = re.compile(pattern)
     matches = []
     for root, dirs, files in os.walk(path):
@@ -51,7 +57,7 @@ def _python_grep(pattern: str, path: str, glob: str | None) -> str:
         for filename in files:
             fp = os.path.join(root, filename)
             rel = os.path.relpath(fp, permissions.PROJECT_ROOT)
-            if glob and not _matches_glob(rel, glob):
+            if include and not _matches_glob(rel, include):
                 continue
             try:
                 with open(fp, "r", encoding="utf-8") as handle:

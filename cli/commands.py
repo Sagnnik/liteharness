@@ -202,7 +202,7 @@ async def cmd_mcp(app: "SessionApp", args: str) -> None:
     if unknown:
         render.render_warning(f"Skipped unknown: {', '.join(sorted(set(unknown)))}")
 
-    total = len(tool_names_for_session(app.git_available))
+    total = len(tool_names_for_session())
     if total > TOOL_COUNT_WARN_THRESHOLD:
         render.render_warning(
             f"{total} tools now loaded (> {TOOL_COUNT_WARN_THRESHOLD}); "

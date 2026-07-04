@@ -107,7 +107,7 @@ class DiscoverToolTests(unittest.TestCase):
         self.assertIn("mcp__weather__get_forecast", registry.ACTIVE_MCP_TOOLS)
         self.assertGreater(tools_generation(), before)
         # now part of the bound session set
-        self.assertIn("mcp__weather__get_forecast", tool_names_for_session(git_repo=False))
+        self.assertIn("mcp__weather__get_forecast", tool_names_for_session())
 
     def test_add_tools_unknown_name(self) -> None:
         result = add_tools.invoke({"names": ["mcp__nope__missing"]})
@@ -119,32 +119,6 @@ class DiscoverToolTests(unittest.TestCase):
         result = add_tools.invoke({"names": ["mcp__github__create_issue"]})
         self.assertIn("Already loaded", result)
         self.assertEqual(tools_generation(), gen)
-
-
-class GitGatingTests(unittest.TestCase):
-    def test_read_actions_are_read_only(self) -> None:
-        for action in ("status", "diff", "log", "show"):
-            with self.subTest(action=action):
-                self.assertTrue(is_read_only_tool_call("git", {"action": action}))
-                self.assertFalse(is_destructive_tool_call("git", {"action": action}))
-
-    def test_write_actions_are_destructive(self) -> None:
-        for args in (
-            {"action": "commit", "message": "x"},
-            {"action": "checkout", "branch": "main"},
-            {"action": "stash", "stash_action": "push", "message": "x"},
-        ):
-            with self.subTest(args=args):
-                self.assertFalse(is_read_only_tool_call("git", args))
-                self.assertTrue(is_destructive_tool_call("git", args))
-
-    def test_branch_listing_is_read_only_but_create_is_not(self) -> None:
-        self.assertTrue(is_read_only_tool_call("git", {"action": "branch"}))
-        self.assertFalse(is_read_only_tool_call("git", {"action": "branch", "name": "feat"}))
-
-    def test_stash_list_is_read_only_but_pop_is_not(self) -> None:
-        self.assertTrue(is_read_only_tool_call("git", {"action": "stash", "stash_action": "list"}))
-        self.assertFalse(is_read_only_tool_call("git", {"action": "stash", "stash_action": "pop"}))
 
 
 if __name__ == "__main__":

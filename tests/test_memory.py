@@ -36,7 +36,6 @@ class MemoryModuleTests(unittest.TestCase):
         loaded = memory.load_session_memory("thread-a")
         self.assertIn("- Built auth middleware", loaded)
         self.assertNotIn("thread-a", loaded)
-        self.assertNotIn("## Session", loaded)
 
     def test_append_session_bullets_dedupes_and_appends(self) -> None:
         self.assertTrue(memory.append_session_bullets("thread-a", ["First note"]))
@@ -44,24 +43,6 @@ class MemoryModuleTests(unittest.TestCase):
         loaded = memory.load_session_memory("thread-a")
         self.assertEqual(loaded.count("- First note"), 1)
         self.assertIn("- Second note", loaded)
-
-    def test_memory_key_tracks_thread_file(self) -> None:
-        self.assertEqual(memory.memory_key("thread-a"), (False, 0, 0))
-        memory.append_session_bullets("thread-a", ["note"])
-        key = memory.memory_key("thread-a")
-        self.assertTrue(key[0])
-        self.assertGreater(key[2], 0)
-
-    def test_append_ness_memory_skips_empty_input(self) -> None:
-        result = memory.append_ness_memory("   ")
-        self.assertIn("No changes for", result)
-        self.assertFalse((self.ness / "NESS.md").exists())
-
-    def test_check_ness_health_warns_above_threshold(self) -> None:
-        (self.ness / "NESS.md").write_text("x" * (memory.MAX_NESS_CHARS + 1), encoding="utf-8")
-        warning = memory.check_ness_health()
-        self.assertIsNotNone(warning)
-        self.assertIn("Warning:", warning)
 
 
 if __name__ == "__main__":

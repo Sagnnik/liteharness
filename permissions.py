@@ -12,7 +12,7 @@ from config import settings
 Decision = Literal["allow", "deny", "ask"]
 SHELL_TOOL = "shell"
 SHELL_COMMAND_ACTIONS = {"run", "start"}
-FETCH_URL_TOOL = "fetch_url"
+WEBFETCH_TOOL = "webfetch"
 
 PROJECT_ROOT = Path(os.getcwd()).resolve()
 
@@ -42,15 +42,9 @@ _session_rules: dict[str, list[str]] = {"allow": [], "deny": []}
 
 DEFAULT_RULES = {
     "allow": [
-        "read_file:*",
-        "list_files:*",
+        "read:*",
         "grep:*",
-        "glob_files:*",
-        "check_syntax:*",
-        "git:action=status*",
-        "git:action=diff*",
-        "git:action=log*",
-        "git:action=show*",
+        "glob:*",
         "web_search:*",
         "shell:jobs:*",
         "shell:read:*",
@@ -109,8 +103,8 @@ def pattern_key(tool: str, args: dict) -> str:
         parts = [f"{key}={args[key]}" for key in sorted(args) if key != "action"]
         detail = ",".join(parts) if parts else "*"
         return f"{SHELL_TOOL}:{action}:{detail}"
-    if tool == FETCH_URL_TOOL:
-        return f"{FETCH_URL_TOOL}:url={_normalize_permission_url(str(args.get('url') or ''))}"
+    if tool == WEBFETCH_TOOL:
+        return f"{WEBFETCH_TOOL}:url={_normalize_permission_url(str(args.get('url') or ''))}"
     if not args:
         return tool
     parts = [f"{key}={args[key]}" for key in sorted(args)]
@@ -118,7 +112,7 @@ def pattern_key(tool: str, args: dict) -> str:
 
 
 def default_rule_for(tool: str, args: dict) -> str:
-    if tool == FETCH_URL_TOOL:
+    if tool == WEBFETCH_TOOL:
         return pattern_key(tool, args)
     if tool != SHELL_TOOL:
         return pattern_key(tool, args)
@@ -287,6 +281,6 @@ def _matches(rule: str, key: str, tool: str) -> bool:
         if key_action in SHELL_COMMAND_ACTIONS:
             return _shell_command_matches(rule_detail, key_detail)
         return fnmatch.fnmatch(key_detail, rule_detail)
-    if rule_tool == FETCH_URL_TOOL:
+    if rule_tool == WEBFETCH_TOOL:
         return key_args == rule_args
     return fnmatch.fnmatch(key_args, rule_args)

@@ -99,7 +99,7 @@ def preview_diff(tool: str, args: dict) -> str:
     except _READ_ERRORS as exc:
         return f"Cannot read {path}: {exc}"
 
-    if tool == "write_file":
+    if tool == "write":
         new = str(args.get("content", ""))
     elif tool == "edit":
         new = old

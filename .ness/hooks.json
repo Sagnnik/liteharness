@@ -1,7 +1,7 @@
 {
     "postToolUse": [
       {
-        "matcher": "write_file|edit",
+        "matcher": "write|edit",
         "command": "python -c \"import sys; print('formatted')\"",
         "blocking": false
       }

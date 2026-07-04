@@ -60,7 +60,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_spawn_subagent_runs_tasks_concurrently(self):
-        self.write_agent("explore", ["read_file", "grep", "glob_files", "list_files"])
+        self.write_agent("explore", ["read", "grep", "glob"])
         model = ConcurrentEchoModel(delay=0.15)
         set_subagent_runtime(model)
 
@@ -85,15 +85,15 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(subagent_runs_active(), 0)
 
     async def test_subagent_runs_active_is_zero_outside_execution(self):
-        self.write_agent("explore", ["read_file"])
+        self.write_agent("explore", ["read"])
         set_subagent_runtime(ConcurrentEchoModel())
         self.assertEqual(subagent_runs_active(), 0)
         await spawn_subagent.ainvoke({"name": "explore", "prompt": "inspect"})
         self.assertEqual(subagent_runs_active(), 0)
 
     async def test_spawn_subagent_rejects_write_capable_batch_before_running(self):
-        self.write_agent("explore", ["read_file"])
-        self.write_agent("exec", ["read_file", "write_file"])
+        self.write_agent("explore", ["read"])
+        self.write_agent("exec", ["read", "write"])
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
@@ -109,7 +109,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("status=partial", result)
         self.assertIn("tasks_ok=1", result)
         self.assertIn("tasks_failed=1", result)
-        self.assertIn("unsafe tools for subagent exec: write_file", result)
+        self.assertIn("unsafe tools for subagent exec: write", result)
         self.assertEqual(model.calls, 1)
 
     async def test_spawn_subagent_rejects_unknown_tool_names(self):
@@ -126,17 +126,17 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 0)
 
     async def test_spawn_subagent_single_rejects_write_capable_agent(self):
-        self.write_agent("exec", ["read_file", "write_file"])
+        self.write_agent("exec", ["read", "write"])
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
         result = await spawn_subagent.ainvoke({"name": "exec", "prompt": "change code"})
 
-        self.assertIn("unsafe tools for subagent exec: write_file", result)
+        self.assertIn("unsafe tools for subagent exec: write", result)
         self.assertEqual(model.calls, 0)
 
     async def test_spawn_subagent_single_succeeds_with_read_only_tools(self):
-        self.write_agent("explore", ["read_file"])
+        self.write_agent("explore", ["read"])
         model = ConcurrentEchoModel(text="single ok")
         set_subagent_runtime(model)
 
@@ -146,7 +146,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 1)
 
     async def test_spawn_subagent_timeout_is_reported_per_task(self):
-        self.write_agent("slow", ["read_file"])
+        self.write_agent("slow", ["read"])
         model = ConcurrentEchoModel(delay=1.2)
         set_subagent_runtime(model)
 
@@ -163,7 +163,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error=timed out after 1s", result)
 
     async def test_spawn_subagent_rejects_mixed_single_and_batch_arguments(self):
-        self.write_agent("explore", ["read_file"])
+        self.write_agent("explore", ["read"])
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
@@ -180,7 +180,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 0)
 
     async def test_spawn_subagent_rejects_nested_subagent_tool(self):
-        self.write_agent("nested", ["read_file", "spawn_subagent"])
+        self.write_agent("nested", ["read", "spawn_subagent"])
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
@@ -190,7 +190,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 0)
 
     async def test_thread_id_is_consistent_between_graph_and_invoke_config(self):
-        self.write_agent("explore", ["read_file"])
+        self.write_agent("explore", ["read"])
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
         seen: dict[str, str | None] = {}
@@ -216,10 +216,10 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["thread_id"], seen["config_thread_id"])
         self.assertEqual(seen["agent_mode"], "act")
         self.assertEqual(seen["state_agent_mode"], "act")
-        self.assertEqual(seen["tool_names"], "read_file")
+        self.assertEqual(seen["tool_names"], "read")
 
     async def test_spawn_subagent_rejects_unknown_agent_before_running(self):
-        self.write_agent("explore", ["read_file"])
+        self.write_agent("explore", ["read"])
         model = ConcurrentEchoModel(text="partial ok")
         set_subagent_runtime(model)
 
@@ -246,6 +246,41 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("unknown agent 'missing'", result)
         self.assertEqual(model.calls, 0)
 
+    async def test_global_concurrency_cap_limits_across_concurrent_calls(self):
+        # Reset the cached global semaphore so this test installs its own loop-bound one.
+        subagents._global_concurrency_semaphore = None
+        try:
+            subagents._global_concurrency_semaphore = None
+        except Exception:
+            pass
+
+        self.write_agent("explore", ["read"])
+        # Slower model so tasks actually contend on the global semaphore.
+        model = ConcurrentEchoModel(delay=0.2)
+        set_subagent_runtime(model)
+
+        cap = subagents.MAX_CONCURRENCY
+        # Two batch calls of `cap` tasks each, fired concurrently. The global cap
+        # must keep max_in_flight <= cap, even though each call alone could run
+        # all `cap` tasks at once.
+        async def fire_batch():
+            return await spawn_subagent.ainvoke(
+                {
+                    "tasks": [
+                        {"name": "explore", "prompt": f"task {n}", "label": f"l{n}"}
+                        for n in range(cap)
+                    ],
+                    "max_concurrency": cap,
+                    "timeout": 10,
+                }
+            )
+
+        await asyncio.gather(fire_batch(), fire_batch())
+
+        # cap tasks per call * 2 calls = 2*cap tasks; in-flight never exceeds cap
+        self.assertEqual(model.calls, cap * 2)
+        self.assertLessEqual(model.max_in_flight, cap)
+        self.assertEqual(subagent_runs_active(), 0)
 
 if __name__ == "__main__":
     unittest.main()

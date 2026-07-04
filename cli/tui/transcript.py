@@ -6,9 +6,9 @@ from cli.tool_display import (
     BATCHABLE_TOOL_CALLS,
     format_batched_tool_args,
     format_tool_args,
+    format_tool_result_preview,
     should_show_tool_call,
     should_show_tool_result,
-    spawn_subagent_result_summary,
 )
 from cli.tui.formatting import USER_STYLE, user_message_lines
 from cli.tui.markdown_render import markdown_transcript_lines, todos_transcript_lines
@@ -335,25 +335,11 @@ class TranscriptMixin:
         return TranscriptLine("", text, fragments=fragments)
 
     def append_tool_result(self, name: str, content: str, *, exit_status: str | None = None) -> None:
-        if not should_show_tool_result(name):
+        if not should_show_tool_result(name, content, exit_status=exit_status):
             return
 
-        if name == "spawn_subagent":
-            summary = spawn_subagent_result_summary(content)
-            summary_text = f"  └ {summary}"
-            self._append_transcript(
-                TranscriptLine(
-                    "class:transcript.subagent.summary",
-                    summary_text,
-                    fragments=[("class:transcript.subagent.summary", summary_text)],
-                )
-            )
-            return
-
-        preview = " ".join(str(content).split())
-        if len(preview) > 320:
-            preview = preview[:320] + "..."
-        prefix = f"  [{exit_status}] " if exit_status and exit_status != "ok" else "  "
+        preview = format_tool_result_preview(name, content)
+        prefix = f"  [{exit_status}] " if exit_status and exit_status != "ok" else "  └ "
         body = prefix + preview
         self._append_transcript(
             TranscriptLine(
