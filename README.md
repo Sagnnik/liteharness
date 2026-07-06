@@ -293,13 +293,13 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 - `/threads`: list saved sessions.
 - `/resume <thread_id>`: resume a saved thread.
 - `/save`: archive the current thread with a headline summary.
-- `/reset`: archive and start a fresh thread.
+- `/new`: archive and start a fresh thread.
 - `/compact`: mark/manual compaction request.
 
 **Context & memory**
 
 - `/skill [<name>]`: list skills, or load a skill's full instructions on the next message.
-- `/init [force]`: generate `.ness/NESS.md`.
+- `/init [force]`: initialize `.ness/` (dirs, permissions, hooks, mcp) and generate `.ness/NESS.md`.
 - `/memory` or `/memory add <note>`: read or append project memory.
 - `/user` or `/user add <note>`: read or append user preferences.
 
@@ -312,7 +312,8 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Input**
 
 - `/copy`, `/copy code`, `/copy <n>`: copy assistant output.
-- `@image:path`: attach an inline image path to the current prompt.
+- `Ctrl+G`: paste an image from the clipboard into the prompt as `[Image #N]`. The image is resized (max 2000px long edge, max 5 MB) and sent to vision-capable models.
+- `@path/to/file`: attach a file's contents to the next prompt — its current contents are inlined as a `<document>` block above your text. Type `@` to see suggestions from the repo's tracked paths; ↑/↓ to pick, Enter or Tab to complete, Esc to dismiss. Mention tokens persist on resume/rollback and re-expand from disk.
 
 Markdown files under `.ness/commands/*.md` become project-local slash commands. Their body is used as a prompt template with `{{args}}` substitution.
 
@@ -341,7 +342,7 @@ Event kinds stored in `events.payload` (session threads only):
 
 `/resume` rebuilds user messages, assistant tool-call turns, and tool results from saved events. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
 
-Threads are archived on `/save`, `/reset`, `/resume`, and session exit. Archived threads get a headline summary from the first user message.
+Threads are archived on `/save`, `/new`, `/resume`, and session exit. Archived threads get a headline summary from the first user message.
 
 ## Verification
 
