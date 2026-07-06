@@ -91,10 +91,14 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._form_kind: str | None = None
         self._form_label = ""
         self._ignore_buffer_menu = False
+        self._pending_paste: str | None = None
+        self._collapsing_paste: bool = False
         self._follow_transcript = True
         self._transcript_revision = 0
         self._slash_menu_cache_query: str | None = None
         self._slash_menu_cache_items: list[MenuItem] = []
+        self._mention_cache_query: str | None = None
+        self._mention_cache_items: list[MenuItem] = []
         self._working_active = False
         self._worked_label: str | None = None
         self._worked_elapsed = 0.0
@@ -121,7 +125,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._reasoning_spans: list[dict] = []
         self._transcript_store = TranscriptStore(self._lines)
 
-        self._buffer = Buffer(history=FileHistory(str(history_path)))
+        self._buffer = Buffer(history=FileHistory(str(history_path)), multiline=True)
         self._buffer.read_only = Condition(self._main_buffer_read_only)
         self._form_buffer = Buffer()
         self._form_buffer.password = Condition(lambda: self._form_kind in ("openai_key", "exa_key"))
@@ -143,6 +147,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._menu_open = Condition(lambda: self._menu_kind is not None)
         self._menu_navigation_open = Condition(lambda: self._menu_kind is not None and not self._prompt_note_active)
         self._slash_menu_open = Condition(lambda: self._menu_kind == "slash")
+        self._mention_menu_open = Condition(lambda: self._menu_kind == "mention")
         self._transcript_scroll_open = Condition(lambda: self._menu_kind is None and not self._form_visible())
         self._transcript_focused = Condition(lambda: self._layout.current_control is self._transcript_control)
         self._transcript_selection_active = Condition(self._transcript_has_selection)

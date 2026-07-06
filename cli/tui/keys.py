@@ -124,6 +124,11 @@ def build_key_bindings(ui) -> KeyBindings:
         ui._complete_slash_selection()
         event.app.invalidate()
 
+    @kb.add("tab", filter=ui._mention_menu_open)
+    def _tab_complete_mention(event) -> None:
+        ui._complete_mention_selection()
+        event.app.invalidate()
+
     @kb.add("enter")
     def _submit_line(event) -> None:
         buff = event.app.current_buffer
@@ -171,13 +176,35 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
-        text = buff.text.strip()
-        if text:
-            buff.append_to_history()
+        if ui._menu_kind == "mention" and ui._visible_menu_items():
+            # Inside the @mention menu, Enter completes the selection and
+            # keeps the user in the input buffer so they can finish writing
+            # the rest of the prompt instead of submitting a partial one.
+            ui._complete_mention_selection()
+            event.app.invalidate()
+            return
+
+        if ui._pending_paste is not None:
+            text = ui._pending_paste.strip()
+            if text:
+                buff.history.append_string(text)
+            ui._pending_paste = None
+        else:
+            text = buff.text.strip()
+            if text:
+                buff.append_to_history()
         ui._reset_buffer()
         ui._close_menu()
         ui._schedule_submit(text)
         event.app.invalidate()
+
+    @kb.add(
+        "c-j",
+        filter=Condition(lambda: get_app().current_buffer is ui._buffer),
+        eager=True,
+    )
+    def _block_newline(event) -> None:
+        pass
 
     @kb.add("c-c", filter=ui._transcript_selection_active, eager=True)
     def _copy_transcript_selection(event) -> None:

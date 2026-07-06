@@ -3,13 +3,23 @@ from __future__ import annotations
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 
+from cli import mentions as mention_mod
 from cli.config_panel import ConfigResult
 from cli.menu import COMMAND_CATALOG
-from cli.tui.constants import MENU_DESC_COL, MENU_MAX_ROWS, PICKER_MODES
+from cli.tui.constants import (
+    MENU_DESC_COL,
+    MENU_MAX_ROWS,
+    MENTION_MAX_ROWS,
+    MENTION_MENU,
+    PICKER_MODES,
+)
 from cli.tui.models import MenuItem
 from cli.tui.utils import term_width
 from config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
 from model import active_model_name, active_reasoning_effort
+
+# Characters allowed inside an @mention token after the `@`.
+_PATH_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./_-")
 
 
 class MenuMixin:
@@ -20,7 +30,12 @@ class MenuMixin:
         return text[1:] if text.startswith("/") else ""
 
     def _on_buffer_changed(self, buffer: Buffer) -> None:
+        if self._collapsing_paste:
+            return
         if self._ignore_buffer_menu or self._menu_kind in PICKER_MODES or self._form_kind or self._prompt_kind:
+            return
+        if self._maybe_collapse_paste(buffer):
+            self.invalidate()
             return
         text = buffer.text
         if text.startswith("/") and " " not in text and self._slash_menu_items():
@@ -30,8 +45,57 @@ class MenuMixin:
                 self._menu_index = 0
                 self._menu_scroll = 0
             self._sync_slash_index()
-        elif self._menu_kind == "slash":
-            self._close_menu()
+        else:
+            if self._menu_kind == "slash":
+                self._close_menu()
+            # @-mention trigger: only when the cursor sits inside an active
+            # `@token` we can extend. The buffer stays editable so the user
+            # can keep typing prose around the token — the menu reads the
+            # token span (from `@` up to the cursor) live.
+            query = self._active_mention_query(buffer)
+            if query is None:
+                if self._menu_kind == MENTION_MENU:
+                    self._close_menu()
+            else:
+                was_mention = self._menu_kind == MENTION_MENU
+                self._menu_kind = MENTION_MENU
+                if not was_mention:
+                    self._menu_index = 0
+                    self._menu_scroll = 0
+                self._invalidate_mention_cache()
+                self._clamp_menu_index()
+
+    def _maybe_collapse_paste(self, buffer: Buffer) -> bool:
+        text = buffer.text
+        if "\n" not in text and self._pending_paste is None:
+            return False
+        if self._pending_paste is not None:
+            n = self._pending_paste.count("\n") + 1
+            expected = f"[pasted {n} lines]"
+            if text == expected:
+                return True
+            if "\n" not in text:
+                self._pending_paste = None
+                return False
+            new_part = text.replace(expected, "", 1).strip("\n")
+            if new_part:
+                self._pending_paste = self._pending_paste + "\n" + new_part
+            self._write_paste_placeholder()
+            return True
+        self._pending_paste = text
+        self._write_paste_placeholder()
+        return True
+
+    def _write_paste_placeholder(self) -> None:
+        if self._pending_paste is None:
+            return
+        n = self._pending_paste.count("\n") + 1
+        placeholder = f"[pasted {n} lines]"
+        self._collapsing_paste = True
+        try:
+            self._write_buffer_text(placeholder)
+        finally:
+            self._collapsing_paste = False
 
     def _sync_slash_index(self) -> None:
         query = self._slash_filter().lower()
@@ -95,12 +159,95 @@ class MenuMixin:
         self._slash_menu_cache_query = None
         self._slash_menu_cache_items = []
 
+    # --- @mention autocomplete -------------------------------------------
+    def _active_mention_query(self, buffer: Buffer) -> str | None:
+        """Return the in-progress `@token` query at the cursor, or None.
+
+        The token must:
+        - start with `@` (matched by scanning backward from the cursor),
+        - be preceded by a word boundary (start, whitespace, newline),
+        - not introduce an `@image:` block (the existing inline-image
+          shortcut is owned by `_extract_inline_images` in session_app.py),
+        - contain no whitespace (a trailing space closes the mention).
+        """
+        text = buffer.text
+        cursor = buffer.cursor_position
+        if cursor <= 0 or cursor > len(text):
+            return None
+        i = cursor - 1
+        while i >= 0 and text[i] in _PATH_TOKEN_CHARS:
+            i -= 1
+        if i < 0 or text[i] != "@":
+            return None
+        at_index = i
+        if at_index > 0 and text[at_index - 1] not in (" ", "\n", "\t"):
+            return None
+        token = text[at_index + 1 : cursor]
+        if not token and at_index + 1 < len(text) and text[at_index + 1 : at_index + 7] == "image:":
+            return None
+        if token.startswith("image:"):
+            return None
+        return token
+
+    def _mention_filter(self) -> str:
+        if self._menu_kind != MENTION_MENU:
+            return ""
+        return self._active_mention_query(self._buffer) or ""
+
+    def _mention_items(self) -> list[MenuItem]:
+        query = self._mention_filter()
+        if query == self._mention_cache_query:
+            return list(self._mention_cache_items)
+        self._mention_cache_query = query
+        try:
+            files = mention_mod.index_files()
+        except Exception:
+            files = []
+        self._mention_cache_items = mention_mod.filter_files(query, files, limit=MENTION_MAX_ROWS)
+        return list(self._mention_cache_items)
+
+    def _invalidate_mention_cache(self) -> None:
+        self._mention_cache_query = None
+        self._mention_cache_items = []
+
+    def _complete_mention_selection(self) -> None:
+        """Replace the active `@token` with `@<selected path>` and a trailing space."""
+        items = self._visible_menu_items()
+        if not items:
+            return
+        item = items[self._menu_index]
+        buffer = self._buffer
+        text = buffer.text
+        cursor = buffer.cursor_position
+        if cursor <= 0 or cursor > len(text):
+            return
+        i = cursor - 1
+        while i >= 0 and text[i] in _PATH_TOKEN_CHARS:
+            i -= 1
+        if i < 0 or text[i] != "@":
+            return
+        at_index = i
+        before = text[:at_index]
+        after = text[cursor:]
+        replacement = "@" + item.key + " "
+        self._ignore_buffer_menu = True
+        try:
+            buffer.set_document(
+                Document(before + replacement + after, cursor_position=len(before) + len(replacement)),
+                bypass_readonly=True,
+            )
+        finally:
+            self._ignore_buffer_menu = False
+        self._close_menu()
+        self._focus_command_input()
+
     def _visible_menu_items(self) -> list[MenuItem]:
         builders = {
             "config_models": self._config_model_items,
             "config_reasoning": self._config_reasoning_items,
             "config_action": self._config_action_items,
             "slash": self._slash_menu_items,
+            MENTION_MENU: self._mention_items,
             "approval": lambda: self._prompt_items,
             "question": lambda: self._prompt_items,
             "rollback": lambda: self._prompt_items,
@@ -111,7 +258,8 @@ class MenuMixin:
     def _menu_body_height(self) -> int:
         if not self._menu_kind:
             return 0
-        rows = min(MENU_MAX_ROWS, max(1, len(self._visible_menu_items())))
+        max_rows = MENTION_MAX_ROWS if self._menu_kind == MENTION_MENU else MENU_MAX_ROWS
+        rows = min(max_rows, max(1, len(self._visible_menu_items())))
         if self._prompt_detail_lines:
             rows += min(5, len(self._prompt_detail_lines))
         return rows
@@ -121,10 +269,11 @@ class MenuMixin:
         if not items:
             self._menu_scroll = 0
             return
+        max_rows = MENTION_MAX_ROWS if self._menu_kind == MENTION_MENU else MENU_MAX_ROWS
         if self._menu_index < self._menu_scroll:
             self._menu_scroll = self._menu_index
-        elif self._menu_index >= self._menu_scroll + MENU_MAX_ROWS:
-            self._menu_scroll = self._menu_index - MENU_MAX_ROWS + 1
+        elif self._menu_index >= self._menu_scroll + max_rows:
+            self._menu_scroll = self._menu_index - max_rows + 1
 
     def _clamp_menu_index(self) -> None:
         items = self._visible_menu_items()
@@ -147,6 +296,7 @@ class MenuMixin:
             "config_models": "/config > models - Select the chat model:",
             "config_reasoning": "/config > reasoning - Select reasoning effort:",
             "config_action": "/config - What would you like to change:",
+            MENTION_MENU: "files - @mention autocomplete",
             "approval": self._prompt_title,
             "question": self._prompt_title,
             "rollback": self._prompt_title,
@@ -241,6 +391,7 @@ class MenuMixin:
             self._ignore_buffer_menu = False
 
     def _reset_buffer(self) -> None:
+        self._pending_paste = None
         self._set_buffer_text("")
 
     def _open_picker(self, kind: str, buffer_text: str, *, index: int = 0) -> None:

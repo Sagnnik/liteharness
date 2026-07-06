@@ -24,6 +24,7 @@ from memory import (
     append_user_memory,
     load_ness_memory,
     load_user_memory,
+    setup_ness_structure,
     write_ness_memory,
 )
 from model import active_model_name, active_reasoning_effort, effective_openrouter_session_id
@@ -111,6 +112,12 @@ async def cmd_skill(app: "SessionApp", args: str) -> None:
 
 async def cmd_init(app: "SessionApp", args: str) -> None:
     force = args.strip() in {"force", "--force"}
+    created = setup_ness_structure()
+    if created:
+        render.render_notice(
+            f"Initialized .ness/ ({', '.join(created)})",
+            title="init",
+        )
     with render.thinking("generating NESS.md"):
         response = await app.model.ainvoke([HumanMessage(content=build_init_memory_prompt(get_project_context()))])
     result = write_ness_memory(str(response.content), overwrite=force)
@@ -245,7 +252,7 @@ async def cmd_save(app: "SessionApp", args: str) -> None:
     render.render_notice(app.save_thread(), title="save")
 
 
-async def cmd_reset(app: "SessionApp", args: str) -> None:
+async def cmd_new(app: "SessionApp", args: str) -> None:
     await app.reset_thread()
     render.render_notice("Started a fresh thread.")
 
@@ -333,7 +340,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "threads": cmd_threads,
     "resume": cmd_resume,
     "save": cmd_save,
-    "reset": cmd_reset,
+    "new": cmd_new,
     "compact": cmd_compact,
     "copy": cmd_copy,
     "rollback": cmd_rollback,

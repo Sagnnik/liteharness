@@ -539,7 +539,7 @@ class TranscriptMixin:
         return self._transcript_store.total_rows
 
     def _chrome_height_lines(self) -> int:
-        lines = 5
+        lines = 4 + self._input_row_count()
         if self._working_status_visible():
             lines += 1
         if self._queue_line_visible():

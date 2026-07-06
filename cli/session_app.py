@@ -57,6 +57,7 @@ from tools.subagents import subagent_runs_active
 from tools.todo import get_thread_todos
 
 from cli import render
+from cli.mentions import expand_documents
 
 
 def new_thread_id() -> str:
@@ -236,7 +237,7 @@ class SessionApp:
             if pending_switch:
                 await self._maybe_checkpoint_before_act()
 
-            user_message = self._build_user_message(user_text)
+            user_message, persist_text = self._build_user_message(user_text)
 
             # Per-turn rollback checkpoint: snapshot files (git stash create) +
             # the per-thread session memory file BEFORE the agent acts, then
@@ -246,7 +247,7 @@ class SessionApp:
             # git is unavailable (create_file_checkpoint returns None then).
             git_hash = await asyncio.to_thread(create_file_checkpoint)
             mem_snapshot = await asyncio.to_thread(read_mem_file, NESS_DIR, self.thread_id)
-            user_seq = append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
+            user_seq = append_event(self.thread_id, {"kind": "user", "content": _event_content(persist_text)})
             if user_seq is not None:
                 save_checkpoint(self.thread_id, user_seq, git_hash, mem_snapshot)
             self.turn_count += 1
@@ -717,17 +718,28 @@ class SessionApp:
         )
 
     # --- message building --------------------------------------------------
-    def _build_user_message(self, text: str) -> HumanMessage:
+    def _build_user_message(self, text: str) -> tuple[HumanMessage, str]:
+        """Return the ``HumanMessage`` sent to the model and the ``persist_text``
+        that goes to the events table. The persist form keeps the visible
+        ``@mention`` tokens (image-syntax stripped) so resume/rollback can
+        re-expand fresh from disk; the message form has ``<document>`` blocks
+        prepended via ``expand_documents`` and the prose still shows the
+        ``@token`` so the model knows where the user pointed.
+        """
         cleaned, inline_images = _extract_inline_images(text)
+        persist_text = cleaned
+        # Expand @file mentions into <document> blocks prepended to the user
+        # text. ``expand_documents`` is a no-op when no mention is present.
+        expanded = expand_documents(cleaned)
         if not inline_images:
-            return HumanMessage(content=cleaned)
+            return HumanMessage(content=expanded), persist_text
         if not settings.supports_vision:
             render.render_warning("Current model is not marked vision-capable; sending text only.")
-            return HumanMessage(content=cleaned)
-        blocks: list[dict[str, Any]] = [{"type": "text", "text": cleaned or "Please inspect this image."}]
+            return HumanMessage(content=expanded), persist_text
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": expanded or "Please inspect this image."}]
         for image_path in inline_images:
             blocks.append({"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}})
-        return HumanMessage(content=blocks)
+        return HumanMessage(content=blocks), persist_text
 
     def _save_plan(self, text: str) -> Path:
         plans_dir = Path(settings.ness_dir) / "plans"
@@ -767,7 +779,12 @@ def _events_to_messages_full(
         kind = event.get("kind")
         if kind == "user":
             content = event.get("content", "")
-            messages.append(HumanMessage(content=content if isinstance(content, str) else str(content)))
+            text = content if isinstance(content, str) else str(content)
+            # Re-expand @file mentions against current disk on replay
+            # (resume/rollback) so attached file content always reflects the
+            # latest state rather than the snapshot at send time.
+            text = expand_documents(text)
+            messages.append(HumanMessage(content=text))
         elif kind == "assistant":
             tool_calls_raw = event.get("tool_calls") or []
             tool_calls = [

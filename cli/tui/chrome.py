@@ -8,9 +8,14 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.processors import AfterInput, BeforeInput
 
-from cli.tui.constants import FORM_FIELD_WIDTH
+from cli.tui.constants import (
+    FORM_FIELD_WIDTH,
+    INPUT_MAX_ROWS_CAP,
+    INPUT_MAX_ROWS_FRACTION,
+    PICKER_MODES,
+)
 from cli.tui.formatting import worked_fragments, working_fragments
-from cli.tui.utils import context_bar, display_cwd, model_footer_name, term_width
+from cli.tui.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
 from cli.tui.widgets import TranscriptViewportControl
 from config import cost_tracker
 from model import active_model_name, active_reasoning_effort
@@ -44,7 +49,8 @@ class ChromeMixin:
                 focus_on_click=True,
                 input_processors=[BeforeInput(self._input_prefix_fragments)],
             ),
-            height=D.exact(1),
+            height=self._input_height,
+            wrap_lines=True,
             style="class:screen",
         )
         self._working_window = Window(
@@ -212,6 +218,28 @@ class ChromeMixin:
         if self._form_kind or self._prompt_kind:
             return self._prompt_prefix() + [("class:transcript.muted", self._buffer.text or "/config")]
         return self._prompt_prefix()
+
+    def _input_max_rows(self) -> int:
+        return max(3, min(INPUT_MAX_ROWS_CAP, term_height() // INPUT_MAX_ROWS_FRACTION))
+
+    def _input_prefix_display_width(self) -> int:
+        return sum(len(s) for _, s in self._input_prefix_fragments())
+
+    def _input_row_count(self) -> int:
+        if self._form_kind or self._prompt_kind or self._menu_kind in PICKER_MODES:
+            return 1
+        text = self._buffer.text
+        if not text:
+            return 1
+        prefix_w = self._input_prefix_display_width()
+        wrap_w = max(10, term_width() - prefix_w)
+        rows = 0
+        for line in text.split("\n"):
+            rows += max(1, -(-len(line) // wrap_w))
+        return rows
+
+    def _input_height(self):
+        return D.exact(min(self._input_max_rows(), self._input_row_count()))
 
     def _form_label_display_width(self) -> int:
         return len(f"{self._visible_form_label()} :")
