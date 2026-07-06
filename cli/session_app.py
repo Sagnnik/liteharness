@@ -8,8 +8,6 @@ compaction checkpoint, and full-transcript resume / reset / save.
 from __future__ import annotations
 
 import asyncio
-import base64
-import mimetypes
 import re
 import uuid
 from datetime import datetime
@@ -48,7 +46,6 @@ from session import (
     archive_thread,
     get_checkpoint,
     list_subagents,
-    list_user_turns,
     load_thread_events,
     save_checkpoint,
     truncate_after,
@@ -195,7 +192,7 @@ class SessionApp:
         }
 
     # --- the turn ----------------------------------------------------------
-    async def run_turn(self, user_text: str) -> None:
+    async def run_turn(self, user_text: str, image_data_urls: list[str] | None = None) -> None:
         # Fresh token per turn; a stale trigger from the prior turn must not
         # immediately abort this one.
         self.cancel_token.reset()
@@ -237,7 +234,15 @@ class SessionApp:
             if pending_switch:
                 await self._maybe_checkpoint_before_act()
 
-            user_message, persist_text = self._build_user_message(user_text)
+            # Strip image blocks from prior answered image-bearing HumanMessages
+            # so the large base64 payloads are not re-sent on every turn. Only
+            # messages followed by an AIMessage are trimmed — the trailing
+            # (unanswered) image message from a resumed crashed turn is kept.
+            await self._strip_prior_image_blocks(config)
+
+            user_message, persist_text, turn_image_urls = self._build_user_message(
+                user_text, image_data_urls
+            )
 
             # Per-turn rollback checkpoint: snapshot files (git stash create) +
             # the per-thread session memory file BEFORE the agent acts, then
@@ -247,7 +252,10 @@ class SessionApp:
             # git is unavailable (create_file_checkpoint returns None then).
             git_hash = await asyncio.to_thread(create_file_checkpoint)
             mem_snapshot = await asyncio.to_thread(read_mem_file, NESS_DIR, self.thread_id)
-            user_seq = append_event(self.thread_id, {"kind": "user", "content": _event_content(persist_text)})
+            user_event: dict[str, Any] = {"kind": "user", "content": _event_content(persist_text)}
+            if turn_image_urls:
+                user_event["images"] = turn_image_urls
+            user_seq = append_event(self.thread_id, user_event)
             if user_seq is not None:
                 save_checkpoint(self.thread_id, user_seq, git_hash, mem_snapshot)
             self.turn_count += 1
@@ -718,28 +726,72 @@ class SessionApp:
         )
 
     # --- message building --------------------------------------------------
-    def _build_user_message(self, text: str) -> tuple[HumanMessage, str]:
-        """Return the ``HumanMessage`` sent to the model and the ``persist_text``
-        that goes to the events table. The persist form keeps the visible
-        ``@mention`` tokens (image-syntax stripped) so resume/rollback can
-        re-expand fresh from disk; the message form has ``<document>`` blocks
-        prepended via ``expand_documents`` and the prose still shows the
-        ``@token`` so the model knows where the user pointed.
+    async def _strip_prior_image_blocks(self, config: dict) -> None:
+        """Rewrite prior list-content HumanMessages to text-only (by id).
+
+        Walks the checkpointer state; for each ``HumanMessage`` whose
+        ``.content`` is a list (i.e. carries image blocks) AND that is
+        followed by an ``AIMessage`` (i.e. the turn was answered), replaces
+        it with a text-only ``HumanMessage`` carrying the same id so the
+        ``add_messages`` reducer swaps it in-place. The trailing image
+        message from a resumed crashed turn (no following AIMessage) is
+        left intact so the model can still see the image.
         """
-        cleaned, inline_images = _extract_inline_images(text)
+        try:
+            snapshot = await self.app.aget_state(config)
+        except Exception:
+            return
+        messages = snapshot.values.get("messages") or []
+        if not messages:
+            return
+        answered_image_ids: list[tuple[str, str]] = []
+        for i, msg in enumerate(messages):
+            if (
+                getattr(msg, "type", None) == "human"
+                and isinstance(getattr(msg, "content", None), list)
+            ):
+                followed_by_ai = any(
+                    getattr(messages[j], "type", None) in ("ai", "assistant")
+                    for j in range(i + 1, len(messages))
+                )
+                if followed_by_ai and msg.id:
+                    text_block = _extract_text_from_blocks(msg.content)
+                    answered_image_ids.append((msg.id, text_block))
+        if not answered_image_ids:
+            return
+        replacements = [
+            HumanMessage(content=text, id=mid) for mid, text in answered_image_ids
+        ]
+        try:
+            await self.app.aupdate_state(config, {"messages": replacements})
+        except Exception as exc:
+            render.render_warning(f"Image strip failed: {exc}")
+
+    def _build_user_message(
+        self, text: str, image_data_urls: list[str] | None = None
+    ) -> tuple[HumanMessage, str, list[str]]:
+        """Return ``(HumanMessage, persist_text, image_data_urls)``.
+
+        ``[Image #N]`` placeholders are stripped from both the model text and
+        the persisted text. When ``image_data_urls`` is non-empty and the
+        active model supports vision, the message is built as a list of
+        content blocks (text + image_url) per the OpenAI vision format.
+        """
+        image_data_urls = image_data_urls or []
+        cleaned = re.sub(r"\[Image #\d+\]", "", text or "").strip()
         persist_text = cleaned
-        # Expand @file mentions into <document> blocks prepended to the user
-        # text. ``expand_documents`` is a no-op when no mention is present.
         expanded = expand_documents(cleaned)
-        if not inline_images:
-            return HumanMessage(content=expanded), persist_text
+        if not image_data_urls:
+            return HumanMessage(content=expanded), persist_text, []
         if not settings.supports_vision:
             render.render_warning("Current model is not marked vision-capable; sending text only.")
-            return HumanMessage(content=expanded), persist_text
-        blocks: list[dict[str, Any]] = [{"type": "text", "text": expanded or "Please inspect this image."}]
-        for image_path in inline_images:
-            blocks.append({"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}})
-        return HumanMessage(content=blocks), persist_text
+            return HumanMessage(content=expanded), persist_text, []
+        blocks: list[dict[str, Any]] = [
+            {"type": "text", "text": expanded or "Please inspect this image."}
+        ]
+        for url in image_data_urls:
+            blocks.append({"type": "image_url", "image_url": {"url": url}})
+        return HumanMessage(content=blocks), persist_text, image_data_urls
 
     def _save_plan(self, text: str) -> Path:
         plans_dir = Path(settings.ness_dir) / "plans"
@@ -770,12 +822,29 @@ def _events_to_messages_full(
     events: list[dict],
     subagents: list[dict[str, Any]] | None = None,
 ) -> list[BaseMessage]:
-    """Rebuild the LangGraph transcript from saved events."""
+    """Rebuild the LangGraph transcript from saved events.
+
+    Image-bearing user events carry an ``images`` field (list of data URLs).
+    On replay, images are re-attached ONLY for user events that have no
+    following ``assistant`` event — i.e. a turn that crashed or was
+    cancelled before the model replied. Answered image turns are replayed
+    as text-only so the large base64 payloads are not re-sent.
+    """
     subagents = subagents or []
     messages: list[BaseMessage] = []
     pending_calls: list[dict[str, Any]] = []
 
-    for event in events:
+    # Pre-pass: find user event seqs that are followed by an assistant event.
+    answered_user_indices: set[int] = set()
+    for idx, event in enumerate(events):
+        if event.get("kind") == "user":
+            if any(
+                events[j].get("kind") == "assistant"
+                for j in range(idx + 1, len(events))
+            ):
+                answered_user_indices.add(idx)
+
+    for idx, event in enumerate(events):
         kind = event.get("kind")
         if kind == "user":
             content = event.get("content", "")
@@ -784,7 +853,16 @@ def _events_to_messages_full(
             # (resume/rollback) so attached file content always reflects the
             # latest state rather than the snapshot at send time.
             text = expand_documents(text)
-            messages.append(HumanMessage(content=text))
+            images = event.get("images") or []
+            if images and idx not in answered_user_indices and settings.supports_vision:
+                blocks: list[dict[str, Any]] = [
+                    {"type": "text", "text": text or "Please inspect this image."}
+                ]
+                for url in images:
+                    blocks.append({"type": "image_url", "image_url": {"url": url}})
+                messages.append(HumanMessage(content=blocks))
+            else:
+                messages.append(HumanMessage(content=text))
         elif kind == "assistant":
             tool_calls_raw = event.get("tool_calls") or []
             tool_calls = [
@@ -863,21 +941,20 @@ def _restore_cost_from_events(events: list[dict]) -> None:
             cost_tracker.model_name = model
 
 
-def _extract_inline_images(text: str) -> tuple[str, list[str]]:
-    pattern = r"@image:([^\s]+)"
-    images = re.findall(pattern, text)
-    cleaned = re.sub(pattern, "", text).strip()
-    return cleaned, images
-
-
-def _image_to_data_url(path: str) -> str:
-    p = Path(path).expanduser()
-    data = base64.b64encode(p.read_bytes()).decode("ascii")
-    mime = mimetypes.guess_type(str(p))[0] or "image/png"
-    return f"data:{mime};base64,{data}"
-
-
 def _event_content(content: Any) -> Any:
     if isinstance(content, (str, int, float, bool)) or content is None:
         return content
+    return str(content)
+
+
+def _extract_text_from_blocks(content: Any) -> str:
+    """Join all ``text`` blocks from a list-content message into a string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "\n".join(p for p in parts if p)
     return str(content)

@@ -17,11 +17,6 @@ The raw ``@``-tagged text is what gets persisted to the events table; the
 expansion happens fresh on every ``run_turn`` and again on resume/rollback
 replay so file content always reflects current disk (see the symmetric
 branch in ``_events_to_messages_full``).
-
-The legacy ``@image:<path>`` inline-image shortcut is preserved:
-``extract_mentions`` explicitly excludes any ``@`` whose next chars are
-``image:`` (and ``_extract_inline_images`` already runs ahead of
-``expand_documents`` in ``_build_user_message``).
 """
 
 from __future__ import annotations
@@ -39,10 +34,8 @@ if TYPE_CHECKING:
     from cli.tui.models import MenuItem
 
 # A mention is ``@`` not preceded by a word char, followed by one or more
-# path-safe chars. ``image:`` is excluded inline so the existing vision
-# shortcut keeps working — the LOOK-behind only blocks word chars, so we
-# add an explicit negative lookahead for ``image:`` after the ``@``.
-_MENTION_TOKEN_RE = re.compile(r"(?<![\w])@(?!image:)([\w./\-]+)")
+# path-safe chars.
+_MENTION_TOKEN_RE = re.compile(r"(?<![\w])@([\w./\-]+)")
 
 # Skip these directory names for the non-git walk fallback. The git path
 # underneath already respects .gitignore via ``git ls-files``.

@@ -166,8 +166,6 @@ class MenuMixin:
         The token must:
         - start with `@` (matched by scanning backward from the cursor),
         - be preceded by a word boundary (start, whitespace, newline),
-        - not introduce an `@image:` block (the existing inline-image
-          shortcut is owned by `_extract_inline_images` in session_app.py),
         - contain no whitespace (a trailing space closes the mention).
         """
         text = buffer.text
@@ -183,10 +181,6 @@ class MenuMixin:
         if at_index > 0 and text[at_index - 1] not in (" ", "\n", "\t"):
             return None
         token = text[at_index + 1 : cursor]
-        if not token and at_index + 1 < len(text) and text[at_index + 1 : at_index + 7] == "image:":
-            return None
-        if token.startswith("image:"):
-            return None
         return token
 
     def _mention_filter(self) -> str:

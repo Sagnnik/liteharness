@@ -256,4 +256,34 @@ def build_key_bindings(ui) -> KeyBindings:
         ui.toggle_reasoning()
         event.app.invalidate()
 
+    @kb.add(
+        "c-g",
+        filter=~ui._menu_open & ~ui._form_open & ~ui._line_prompt_open & ~ui._question_prompt_open,
+        eager=True,
+    )
+    def _paste_clipboard_image(event) -> None:
+        from cli import render
+        from cli.images import ImageTooLarge, save_clipboard_image
+
+        try:
+            result = save_clipboard_image()
+        except ImageTooLarge as exc:
+            render.render_warning(f"Image too large after resize: {exc}")
+            event.app.invalidate()
+            return
+        except Exception as exc:
+            render.render_warning(f"Image paste failed: {exc}")
+            event.app.invalidate()
+            return
+        if result is None:
+            render.render_warning("No image on clipboard.")
+            event.app.invalidate()
+            return
+        _path, data_url = result
+        ui._pending_images.append(data_url)
+        ui._image_counter += 1
+        buff = event.app.current_buffer
+        buff.insert_text(f"[Image #{ui._image_counter}] ")
+        event.app.invalidate()
+
     return kb

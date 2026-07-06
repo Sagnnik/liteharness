@@ -93,6 +93,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._ignore_buffer_menu = False
         self._pending_paste: str | None = None
         self._collapsing_paste: bool = False
+        self._pending_images: list[str] = []
+        self._image_counter: int = 0
         self._follow_transcript = True
         self._transcript_revision = 0
         self._slash_menu_cache_query: str | None = None
@@ -269,13 +271,15 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             if is_slash:
                 await self._dispatch(self.session, text, busy=False)
             else:
-                await self.session.run_turn(text)
+                await self.session.run_turn(text, list(self._pending_images))
             while not self.session.should_exit:
                 queued = self.session.dequeue_prompt()
                 if queued is None:
                     break
                 self.append_user(queued)
-                await self.session.run_turn(queued)
+                await self.session.run_turn(queued, [])
+            if self.session.should_exit:
+                self._app.exit()
             if self.session.should_exit:
                 self._app.exit()
         except asyncio.CancelledError:
@@ -293,6 +297,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             self._busy = False
             self._close_menu()
             self._reset_buffer()
+            self._pending_images.clear()
+            self._image_counter = 0
             self._focus_command_input()
             self._refresh_cwd_line_if_changed()
             self.invalidate()

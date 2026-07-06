@@ -145,7 +145,7 @@ def build_graph(
         if state.get("force_compact"):
             prefix_cache.clear()
 
-        user_input = next((m.content for m in reversed(messages) if m.type == "human"), "")
+        user_input = _message_text(next((m for m in reversed(messages) if m.type == "human"), None))
         
         previous_skill_key = tuple(sorted(sticky_skill_names))
         # Full skill bodies load into L2 on trigger match or /skill; otherwise the
@@ -574,6 +574,22 @@ def _effective_conversation(messages: list[BaseMessage], state: AgentState) -> l
     if compacted and 0 <= source_count <= len(raw): 
         return compacted + raw[source_count:]
     return raw
+
+
+def _message_text(message: BaseMessage | None) -> str:
+    """Return the text content of a message, joining text blocks if content is a list."""
+    if message is None:
+        return ""
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "\n".join(p for p in parts if p)
+    return str(content)
 
 
 def _with_working_state_tail(messages: list[BaseMessage], overlay: str) -> list[BaseMessage]:
