@@ -22,11 +22,13 @@ from cli.theme import (
     GRAY_BRIGHT,
     GRAY_DIM,
     PURPLE,
-    YELLOW,
 )
 
 # --- palette (mirrors assets/cli-header-concept.svg) ------------------------
 _LOOP_STOPS = (CYAN, BLUE, PURPLE)  # cyan -> blue -> purple
+_NODE_TOP_COLOR = "#6ee7b7"  # mint
+_NODE_BR_COLOR = "#6d28d9"  # dark purple
+_NODE_BL_COLOR = "#f97316"  # orange
 
 # --- braille (2x4 dot matrix) -----------------------------------------------
 # Braille base codepoint U+2800; each char encodes an 8-bit dot pattern:
@@ -83,6 +85,11 @@ _CY = (_DOT_H - 1) / 2.0
 _RING_R = min(_CX, _CY) - 1.0  # SVG ring radius ~60 at center 88
 _RING_STROKE = 2.5
 _CHORD_GRAY = "#4b5563"
+_NODE_TOP_R = 2.1
+_NODE_SIDE_R = 1.4
+_NODE_RESERVE_PADDING = 0.4
+
+_NodeSpec = tuple[str, float, float, float, str]
 
 
 def _ring_color_for_angle(angle: float) -> str:
@@ -103,6 +110,45 @@ def _svg_node_positions(cx: float, cy: float, ring_r: float) -> dict[str, tuple[
 def _svg_chord_anchor_top(cx: float, cy: float, ring_r: float) -> tuple[float, float]:
     """Inner chord origin slightly below the top node (SVG y=35 vs node y=28)."""
     return (cx, cy - ring_r * 53 / 60)
+
+
+def _node_layout(cx: float, cy: float, ring_r: float) -> list[_NodeSpec]:
+    """Node positions and colors — computed first so the ring can leave room."""
+    nodes = _svg_node_positions(cx, cy, ring_r)
+    return [
+        ("top", nodes["top"][0], nodes["top"][1], _NODE_TOP_R, _NODE_TOP_COLOR),
+        ("br", nodes["br"][0], nodes["br"][1], _NODE_SIDE_R, _NODE_BR_COLOR),
+        ("bl", nodes["bl"][0], nodes["bl"][1], _NODE_SIDE_R, _NODE_BL_COLOR),
+    ]
+
+
+def _in_node_disk(
+    px: float,
+    py: float,
+    nx: float,
+    ny: float,
+    radius: float,
+    *,
+    padding: float = 0.0,
+) -> bool:
+    dx = px - nx
+    dy = py - ny
+    limit = radius + padding
+    return dx * dx + dy * dy <= limit * limit
+
+
+def _reserved_mask(layout: list[_NodeSpec]) -> set[tuple[int, int]]:
+    """Pixels withheld from ring/chords so nodes sit in clean slots."""
+    blocked: set[tuple[int, int]] = set()
+    pad = _NODE_RESERVE_PADDING
+    for py in range(_DOT_H):
+        for px in range(_DOT_W):
+            if any(
+                _in_node_disk(px, py, nx, ny, radius, padding=pad)
+                for _, nx, ny, radius, _ in layout
+            ):
+                blocked.add((px, py))
+    return blocked
 
 
 def _canvas_set(canvas: dict[tuple[int, int], str], x: int, y: int, color: str) -> None:
@@ -141,12 +187,11 @@ def _draw_line(
     y1: float,
     color: str,
     *,
-    dashed: bool = False,
+    skip: set[tuple[int, int]] | None = None,
 ) -> None:
-    for i, (x, y) in enumerate(_iter_line(x0, y0, x1, y1)):
-        if dashed and i % 4 >= 2:
-            continue
-        _canvas_set(canvas, x, y, color)
+    for x, y in _iter_line(x0, y0, x1, y1):
+        if skip is None or (x, y) not in skip:
+            _canvas_set(canvas, x, y, color)
 
 
 def _draw_disc(
@@ -199,12 +244,16 @@ def _logo_rows() -> list[TranscriptLine]:
     cx, cy = _CX, _CY
     r_out = _RING_R
     r_in = r_out - _RING_STROKE
+    layout = _node_layout(cx, cy, r_out)
+    reserved = _reserved_mask(layout)
     nodes = _svg_node_positions(cx, cy, r_out)
     top_anchor = _svg_chord_anchor_top(cx, cy, r_out)
 
-    # Gradient ring (SVG active loop path).
+    # Ring: skip reserved node slots so we don't paint then overwrite.
     for py in range(_DOT_H):
         for px in range(_DOT_W):
+            if (px, py) in reserved:
+                continue
             vx = px - cx
             vy = py - cy
             dist = math.hypot(vx, vy)
@@ -212,15 +261,12 @@ def _logo_rows() -> list[TranscriptLine]:
                 angle = math.atan2(vy, vx)
                 _canvas_set(canvas, px, py, _ring_color_for_angle(angle))
 
-    # Inner chord lines (SVG lines between the three nodes).
-    _draw_line(canvas, *top_anchor, *nodes["br"], PURPLE)
-    _draw_line(canvas, *top_anchor, *nodes["bl"], CYAN)
-    _draw_line(canvas, *nodes["br"], *nodes["bl"], _CHORD_GRAY, dashed=True)
+    _draw_line(canvas, *top_anchor, *nodes["br"], PURPLE, skip=reserved)
+    _draw_line(canvas, *top_anchor, *nodes["bl"], CYAN, skip=reserved)
+    _draw_line(canvas, *nodes["br"], *nodes["bl"], _CHORD_GRAY, skip=reserved)
 
-    # Node discs on top of ring/chords.
-    _draw_disc(canvas, *nodes["top"], 1.6, CYAN)
-    _draw_disc(canvas, *nodes["br"], 1.4, PURPLE)
-    _draw_disc(canvas, *nodes["bl"], 1.4, YELLOW)
+    for _, nx, ny, radius, node_color in layout:
+        _draw_disc(canvas, nx, ny, radius, node_color)
     return _canvas_to_rows(canvas)
 
 

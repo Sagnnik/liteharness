@@ -12,6 +12,7 @@ wheels/
 coding_agents_sc/
 instructions/liteharness_prompt_analysis.md
 scripts/
+assets/preview_logo.py
 
 # Virtual environments
 .venv

@@ -303,7 +303,7 @@ class CostTracker:
             ]
         )
         if resume_thread_id:
-            lines.append(f"Resume:  uv run python -m cli.main --resume {resume_thread_id}")
+            lines.append(f"Resume:  liteharness --resume {resume_thread_id}")
         return "\n".join(lines)
 
 
