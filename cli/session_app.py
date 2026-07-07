@@ -8,8 +8,6 @@ compaction checkpoint, and full-transcript resume / reset / save.
 from __future__ import annotations
 
 import asyncio
-import base64
-import mimetypes
 import re
 import uuid
 from datetime import datetime
@@ -29,7 +27,13 @@ from compaction import (
 )
 from config import cost_tracker, settings
 from memory import NESS_DIR
-from model import active_model_name, create_model, create_reflection_model
+from model import (
+    active_model_name,
+    active_reasoning_effort,
+    create_model,
+    create_reflection_model,
+    model_supports_reasoning,
+)
 from reflection import finalize_session_reflection
 from rollback import (
     create_file_checkpoint,
@@ -42,7 +46,6 @@ from session import (
     archive_thread,
     get_checkpoint,
     list_subagents,
-    list_user_turns,
     load_thread_events,
     save_checkpoint,
     truncate_after,
@@ -51,6 +54,7 @@ from tools.subagents import subagent_runs_active
 from tools.todo import get_thread_todos
 
 from cli import render
+from cli.mentions import expand_documents
 
 
 def new_thread_id() -> str:
@@ -188,7 +192,7 @@ class SessionApp:
         }
 
     # --- the turn ----------------------------------------------------------
-    async def run_turn(self, user_text: str) -> None:
+    async def run_turn(self, user_text: str, image_data_urls: list[str] | None = None) -> None:
         # Fresh token per turn; a stale trigger from the prior turn must not
         # immediately abort this one.
         self.cancel_token.reset()
@@ -213,6 +217,15 @@ class SessionApp:
         before = self._cost_snapshot()
         stream: render.AssistantStream | None = None
         streamed_any = False
+        # ``reasoning_enabled`` is a fast-path guard only — it short-circuits
+        # the ``additional_kwargs`` dict thunk on the streaming hot path for
+        # non-reasoning models and when the user has explicitly set
+        # effort="none". The actual gate for whether to emit a block is the
+        # buffer-emptiness check inside ``AssistantStream.finalize_reasoning``;
+        # some providers (Anthropic via OpenRouter) emit reasoning_content
+        # even at minimal effort, so we trust the observed data and only
+        # fast-path-skip the obvious no-op case.
+        reasoning_enabled = model_supports_reasoning(active_model_name()) and active_reasoning_effort() != "none"
         self._plan_turn_texts = []
 
         render.begin_turn()
@@ -221,7 +234,15 @@ class SessionApp:
             if pending_switch:
                 await self._maybe_checkpoint_before_act()
 
-            user_message = self._build_user_message(user_text)
+            # Strip image blocks from prior answered image-bearing HumanMessages
+            # so the large base64 payloads are not re-sent on every turn. Only
+            # messages followed by an AIMessage are trimmed — the trailing
+            # (unanswered) image message from a resumed crashed turn is kept.
+            await self._strip_prior_image_blocks(config)
+
+            user_message, persist_text, turn_image_urls = self._build_user_message(
+                user_text, image_data_urls
+            )
 
             # Per-turn rollback checkpoint: snapshot files (git stash create) +
             # the per-thread session memory file BEFORE the agent acts, then
@@ -231,7 +252,10 @@ class SessionApp:
             # git is unavailable (create_file_checkpoint returns None then).
             git_hash = await asyncio.to_thread(create_file_checkpoint)
             mem_snapshot = await asyncio.to_thread(read_mem_file, NESS_DIR, self.thread_id)
-            user_seq = append_event(self.thread_id, {"kind": "user", "content": _event_content(user_message.content)})
+            user_event: dict[str, Any] = {"kind": "user", "content": _event_content(persist_text)}
+            if turn_image_urls:
+                user_event["images"] = turn_image_urls
+            user_seq = append_event(self.thread_id, user_event)
             if user_seq is not None:
                 save_checkpoint(self.thread_id, user_seq, git_hash, mem_snapshot)
             self.turn_count += 1
@@ -265,6 +289,19 @@ class SessionApp:
                     streamed_any = False
                 elif etype == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
+                    # Reasoning capture (OpenRouter): the model's chain-of-thought
+                    # arrives on ``chunk.additional_kwargs["reasoning_content"]``
+                    # as a stream of string fragments (``content`` may be empty
+                    # for pure-reasoning chunks). The facade reserves a slot
+                    # above the assistant stream's reserved markdown slot
+                    # (Anthropic/OpenCode convention) on the first fragment;
+                    # finalize at ``on_chat_model_end`` re-emits the collapsed
+                    # ``+ Thinking: n sec`` line.
+                    if reasoning_enabled:
+                        ak = getattr(chunk, "additional_kwargs", None) or {}
+                        rtext = ak.get("reasoning_content") if isinstance(ak, dict) else None
+                        if isinstance(rtext, str) and rtext and stream is not None:
+                            stream.feed_reasoning(rtext)
                     text = getattr(chunk, "content", "")
                     if isinstance(text, str) and text and stream is not None:
                         stream.feed(text)
@@ -274,6 +311,7 @@ class SessionApp:
                         stream.stop()
                         if streamed_any and stream.text.strip():
                             self._record_assistant(stream.text)
+                        stream.finalize_reasoning()
                         stream = None
                 # on_chain_end -> each langgraph node end, name -> node name
                 elif etype == "on_chain_end" and name == "agent":
@@ -343,11 +381,24 @@ class SessionApp:
         some providers reject.
         """
         recorded_text = False
+        partial_reasoning: tuple[str | None, float] = (None, 0.0)
         if stream is not None:
+            # Capture partial reasoning before ``stop()`` discards any
+            # in-flight reasoning state held by the facade.
+            partial_reasoning = stream.reasoning_state()
             stream.stop()
             if streamed_any and stream.text.strip():
                 self._record_assistant(stream.text.strip() + " … [interrupted]")
                 recorded_text = True
+
+        # Flush any partial reasoning captured before the cancel so the
+        # interruption marker follows after the CoT block, not above an empty
+        # region. The ``… [interrupted]`` suffix mirrors the assistant-text
+        # convention; ``partial_reasoning[0] is None`` means the cancel landed
+        # before reasoning started (or the model was non-reasoning) so nothing
+        # is emitted.
+        if partial_reasoning[0]:
+            render.render_reasoning(partial_reasoning[0] + " … [interrupted]", elapsed=partial_reasoning[1])
 
         synthetic: list[BaseMessage] = []
         try:
@@ -437,6 +488,8 @@ class SessionApp:
                 self._record_assistant(text)
 
     def _render_tool_results(self, event: dict) -> None:
+        from cli.tool_display import extract_diff_section, extract_edit_summary
+
         todo_updated = False
         for msg in _messages_from_event(event):
             if getattr(msg, "type", None) != "tool":
@@ -444,9 +497,23 @@ class SessionApp:
             if (getattr(msg, "additional_kwargs", None) or {}).get("hidden"):
                 continue
             name = getattr(msg, "name", "tool")
+            content = str(msg.content)
             if str(name or "") == "todo":
                 todo_updated = True
-            render.render_tool_result(name, str(msg.content))
+                render.render_tool_result(name, content)
+                continue
+            if name in ("edit", "write"):
+                summary = extract_edit_summary(content)
+                if summary:
+                    render.render_tool_result(name, summary)
+                diff = extract_diff_section(content)
+                if diff:
+                    render.render_diff(diff, title=f"diff {name}")
+                continue
+            if name == "shell":
+                render.render_shell_output(content)
+                continue
+            render.render_tool_result(name, content)
         if todo_updated:
             render.render_todos(get_thread_todos(self.thread_id))
 
@@ -585,8 +652,53 @@ class SessionApp:
             await self.finalize_reflection()
             archive_thread(self.thread_id)
 
+        # Clear the visible transcript before replaying so the resumed
+        # conversation is shown on a clean pane (no stale messages from the
+        # abandoned thread). The graph is rebuilt below by _bootstrap_from_events.
+        render.clear_transcript()
+        self._replay_events_to_transcript(events)
         await self._bootstrap_from_events(thread_id, replay_cost=True)
         render.render_notice(f"Resumed thread {thread_id}.", title="resume")
+
+    def _replay_events_to_transcript(self, events: list[dict]) -> None:
+        """Render a saved event stream into the live transcript on resume.
+
+        Mirrors the live-turn render path: user echoes, assistant panels, and
+        tool call/result rows are appended in order so the resumed session
+        reads like the original conversation. Usage events are skipped (costs
+        are replayed separately by ``_restore_cost_from_events``). Tool calls
+        carried by an assistant event are rendered inline before the
+        assistant text, matching the live streaming layout.
+        """
+        for event in events:
+            kind = event.get("kind")
+            if kind == "user":
+                content = event.get("content", "")
+                text = content if isinstance(content, str) else str(content)
+                if text.strip():
+                    render.render_user_echo(text)
+            elif kind == "assistant":
+                tool_calls_raw = event.get("tool_calls") or []
+                if tool_calls_raw:
+                    calls = [
+                        {
+                            "name": tc.get("name"),
+                            "args": tc.get("args", {}),
+                            "id": tc.get("id"),
+                            "type": tc.get("type", "tool_call"),
+                        }
+                        for tc in tool_calls_raw
+                    ]
+                    render.render_tool_calls(calls)
+                content = event.get("content")
+                text = "" if content is None else str(content)
+                if text.strip():
+                    render.render_assistant_panel(text)
+            elif kind == "tool":
+                tool_name = str(event.get("tool") or "")
+                result = str(event.get("result") or "")
+                if tool_name:
+                    render.render_tool_result(tool_name, result)
 
     async def _bootstrap_from_events(self, thread_id: str, *, replay_cost: bool) -> None:
         """Rebuild the live graph from persisted events for ``thread_id``.
@@ -675,17 +787,72 @@ class SessionApp:
         )
 
     # --- message building --------------------------------------------------
-    def _build_user_message(self, text: str) -> HumanMessage:
-        cleaned, inline_images = _extract_inline_images(text)
-        if not inline_images:
-            return HumanMessage(content=cleaned)
+    async def _strip_prior_image_blocks(self, config: dict) -> None:
+        """Rewrite prior list-content HumanMessages to text-only (by id).
+
+        Walks the checkpointer state; for each ``HumanMessage`` whose
+        ``.content`` is a list (i.e. carries image blocks) AND that is
+        followed by an ``AIMessage`` (i.e. the turn was answered), replaces
+        it with a text-only ``HumanMessage`` carrying the same id so the
+        ``add_messages`` reducer swaps it in-place. The trailing image
+        message from a resumed crashed turn (no following AIMessage) is
+        left intact so the model can still see the image.
+        """
+        try:
+            snapshot = await self.app.aget_state(config)
+        except Exception:
+            return
+        messages = snapshot.values.get("messages") or []
+        if not messages:
+            return
+        answered_image_ids: list[tuple[str, str]] = []
+        for i, msg in enumerate(messages):
+            if (
+                getattr(msg, "type", None) == "human"
+                and isinstance(getattr(msg, "content", None), list)
+            ):
+                followed_by_ai = any(
+                    getattr(messages[j], "type", None) in ("ai", "assistant")
+                    for j in range(i + 1, len(messages))
+                )
+                if followed_by_ai and msg.id:
+                    text_block = _extract_text_from_blocks(msg.content)
+                    answered_image_ids.append((msg.id, text_block))
+        if not answered_image_ids:
+            return
+        replacements = [
+            HumanMessage(content=text, id=mid) for mid, text in answered_image_ids
+        ]
+        try:
+            await self.app.aupdate_state(config, {"messages": replacements})
+        except Exception as exc:
+            render.render_warning(f"Image strip failed: {exc}")
+
+    def _build_user_message(
+        self, text: str, image_data_urls: list[str] | None = None
+    ) -> tuple[HumanMessage, str, list[str]]:
+        """Return ``(HumanMessage, persist_text, image_data_urls)``.
+
+        ``[Image #N]`` placeholders are stripped from both the model text and
+        the persisted text. When ``image_data_urls`` is non-empty and the
+        active model supports vision, the message is built as a list of
+        content blocks (text + image_url) per the OpenAI vision format.
+        """
+        image_data_urls = image_data_urls or []
+        cleaned = re.sub(r"\[Image #\d+\]", "", text or "").strip()
+        persist_text = cleaned
+        expanded = expand_documents(cleaned)
+        if not image_data_urls:
+            return HumanMessage(content=expanded), persist_text, []
         if not settings.supports_vision:
             render.render_warning("Current model is not marked vision-capable; sending text only.")
-            return HumanMessage(content=cleaned)
-        blocks: list[dict[str, Any]] = [{"type": "text", "text": cleaned or "Please inspect this image."}]
-        for image_path in inline_images:
-            blocks.append({"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}})
-        return HumanMessage(content=blocks)
+            return HumanMessage(content=expanded), persist_text, []
+        blocks: list[dict[str, Any]] = [
+            {"type": "text", "text": expanded or "Please inspect this image."}
+        ]
+        for url in image_data_urls:
+            blocks.append({"type": "image_url", "image_url": {"url": url}})
+        return HumanMessage(content=blocks), persist_text, image_data_urls
 
     def _save_plan(self, text: str) -> Path:
         plans_dir = Path(settings.ness_dir) / "plans"
@@ -716,16 +883,47 @@ def _events_to_messages_full(
     events: list[dict],
     subagents: list[dict[str, Any]] | None = None,
 ) -> list[BaseMessage]:
-    """Rebuild the LangGraph transcript from saved events."""
+    """Rebuild the LangGraph transcript from saved events.
+
+    Image-bearing user events carry an ``images`` field (list of data URLs).
+    On replay, images are re-attached ONLY for user events that have no
+    following ``assistant`` event — i.e. a turn that crashed or was
+    cancelled before the model replied. Answered image turns are replayed
+    as text-only so the large base64 payloads are not re-sent.
+    """
     subagents = subagents or []
     messages: list[BaseMessage] = []
     pending_calls: list[dict[str, Any]] = []
 
-    for event in events:
+    # Pre-pass: find user event seqs that are followed by an assistant event.
+    answered_user_indices: set[int] = set()
+    for idx, event in enumerate(events):
+        if event.get("kind") == "user":
+            if any(
+                events[j].get("kind") == "assistant"
+                for j in range(idx + 1, len(events))
+            ):
+                answered_user_indices.add(idx)
+
+    for idx, event in enumerate(events):
         kind = event.get("kind")
         if kind == "user":
             content = event.get("content", "")
-            messages.append(HumanMessage(content=content if isinstance(content, str) else str(content)))
+            text = content if isinstance(content, str) else str(content)
+            # Re-expand @file mentions against current disk on replay
+            # (resume/rollback) so attached file content always reflects the
+            # latest state rather than the snapshot at send time.
+            text = expand_documents(text)
+            images = event.get("images") or []
+            if images and idx not in answered_user_indices and settings.supports_vision:
+                blocks: list[dict[str, Any]] = [
+                    {"type": "text", "text": text or "Please inspect this image."}
+                ]
+                for url in images:
+                    blocks.append({"type": "image_url", "image_url": {"url": url}})
+                messages.append(HumanMessage(content=blocks))
+            else:
+                messages.append(HumanMessage(content=text))
         elif kind == "assistant":
             tool_calls_raw = event.get("tool_calls") or []
             tool_calls = [
@@ -804,21 +1002,20 @@ def _restore_cost_from_events(events: list[dict]) -> None:
             cost_tracker.model_name = model
 
 
-def _extract_inline_images(text: str) -> tuple[str, list[str]]:
-    pattern = r"@image:([^\s]+)"
-    images = re.findall(pattern, text)
-    cleaned = re.sub(pattern, "", text).strip()
-    return cleaned, images
-
-
-def _image_to_data_url(path: str) -> str:
-    p = Path(path).expanduser()
-    data = base64.b64encode(p.read_bytes()).decode("ascii")
-    mime = mimetypes.guess_type(str(p))[0] or "image/png"
-    return f"data:{mime};base64,{data}"
-
-
 def _event_content(content: Any) -> Any:
     if isinstance(content, (str, int, float, bool)) or content is None:
         return content
+    return str(content)
+
+
+def _extract_text_from_blocks(content: Any) -> str:
+    """Join all ``text`` blocks from a list-content message into a string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "\n".join(p for p in parts if p)
     return str(content)

@@ -124,6 +124,11 @@ def build_key_bindings(ui) -> KeyBindings:
         ui._complete_slash_selection()
         event.app.invalidate()
 
+    @kb.add("tab", filter=ui._mention_menu_open)
+    def _tab_complete_mention(event) -> None:
+        ui._complete_mention_selection()
+        event.app.invalidate()
+
     @kb.add("enter")
     def _submit_line(event) -> None:
         buff = event.app.current_buffer
@@ -171,13 +176,35 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
-        text = buff.text.strip()
-        if text:
-            buff.append_to_history()
+        if ui._menu_kind == "mention" and ui._visible_menu_items():
+            # Inside the @mention menu, Enter completes the selection and
+            # keeps the user in the input buffer so they can finish writing
+            # the rest of the prompt instead of submitting a partial one.
+            ui._complete_mention_selection()
+            event.app.invalidate()
+            return
+
+        if ui._pending_paste is not None:
+            text = ui._expand_paste(buff.text).strip()
+            if text:
+                buff.history.append_string(text)
+            ui._pending_paste = None
+        else:
+            text = buff.text.strip()
+            if text:
+                buff.append_to_history()
         ui._reset_buffer()
         ui._close_menu()
         ui._schedule_submit(text)
         event.app.invalidate()
+
+    @kb.add(
+        "c-j",
+        filter=Condition(lambda: get_app().current_buffer is ui._buffer),
+        eager=True,
+    )
+    def _block_newline(event) -> None:
+        pass
 
     @kb.add("c-c", filter=ui._transcript_selection_active, eager=True)
     def _copy_transcript_selection(event) -> None:
@@ -219,5 +246,44 @@ def build_key_bindings(ui) -> KeyBindings:
     @kb.add("c-q")
     def _quit(event) -> None:
         event.app.exit()
+
+    @kb.add(
+        "c-t",
+        filter=~ui._menu_open & ~ui._form_open & ~ui._line_prompt_open & ~ui._question_prompt_open,
+        eager=True,
+    )
+    def _toggle_reasoning(event) -> None:
+        ui.toggle_reasoning()
+        event.app.invalidate()
+
+    @kb.add(
+        "c-g",
+        filter=~ui._menu_open & ~ui._form_open & ~ui._line_prompt_open & ~ui._question_prompt_open,
+        eager=True,
+    )
+    def _paste_clipboard_image(event) -> None:
+        from cli import render
+        from cli.images import ImageTooLarge, save_clipboard_image
+
+        try:
+            result = save_clipboard_image()
+        except ImageTooLarge as exc:
+            render.render_warning(f"Image too large after resize: {exc}")
+            event.app.invalidate()
+            return
+        except Exception as exc:
+            render.render_warning(f"Image paste failed: {exc}")
+            event.app.invalidate()
+            return
+        if result is None:
+            render.render_warning("No image on clipboard.")
+            event.app.invalidate()
+            return
+        _path, data_url = result
+        ui._pending_images.append(data_url)
+        ui._image_counter += 1
+        buff = event.app.current_buffer
+        buff.insert_text(f"[Image #{ui._image_counter}] ")
+        event.app.invalidate()
 
     return kb

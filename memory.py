@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -16,6 +17,16 @@ There are 3 main memory files:
 NESS_DIR = Path(settings.ness_dir)
 NESS_FILE = NESS_DIR / "NESS.md"
 SESSIONS_DIR = NESS_DIR / "sessions"
+
+NESS_SUBDIRS = (
+    "sessions",
+    "agents",
+    "commands",
+    "skills",
+    "plans",
+    "threads",
+    "shells",
+)
 
 def user_memory_path() -> Path:
     """Resolve the USER.md location (repo-local or global home fallback)."""
@@ -162,6 +173,37 @@ def check_ness_health() -> str | None:
 def append_ness_memory(text: str) -> str:
     """Append a note to project memory. Restricted to explicit human actions or /memory add <note>"""
     return _append_markdown_file(NESS_FILE, text)
+
+
+def setup_ness_structure() -> list[str]:
+    """Ensure .ness dirs and default config files exist. Returns created paths."""
+    created: list[str] = []
+
+    if not NESS_DIR.exists():
+        NESS_DIR.mkdir(parents=True, exist_ok=True)
+        created.append(str(NESS_DIR))
+
+    for name in NESS_SUBDIRS:
+        path = NESS_DIR / name
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            created.append(str(path))
+
+    from permissions import DEFAULT_RULES
+
+    config_files: dict[Path, str] = {
+        NESS_DIR / "permissions.json": json.dumps(DEFAULT_RULES, indent=2) + "\n",
+        NESS_DIR / "hooks.json": "{}\n",
+        NESS_DIR / "mcp.json": json.dumps({"servers": {}}, indent=2) + "\n",
+    }
+    for path, content in config_files.items():
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        created.append(str(path))
+
+    return created
 
 
 def write_ness_memory(text: str, overwrite: bool = False) -> str:

@@ -24,11 +24,12 @@ from memory import (
     append_user_memory,
     load_ness_memory,
     load_user_memory,
+    setup_ness_structure,
     write_ness_memory,
 )
 from model import active_model_name, active_reasoning_effort, effective_openrouter_session_id
 from permissions import list_rules, persist_rule, remove_rule
-from session import list_threads, list_user_turns
+from session import first_user_message, list_threads, list_user_turns
 from skill_loader import load_skill_errors, load_skills
 from utils import get_project_context
 
@@ -111,6 +112,12 @@ async def cmd_skill(app: "SessionApp", args: str) -> None:
 
 async def cmd_init(app: "SessionApp", args: str) -> None:
     force = args.strip() in {"force", "--force"}
+    created = setup_ness_structure()
+    if created:
+        render.render_notice(
+            f"Initialized .ness/ ({', '.join(created)})",
+            title="init",
+        )
     with render.thinking("generating NESS.md"):
         response = await app.model.ainvoke([HumanMessage(content=build_init_memory_prompt(get_project_context()))])
     result = write_ness_memory(str(response.content), overwrite=force)
@@ -220,10 +227,13 @@ async def cmd_threads(app: "SessionApp", args: str) -> None:
         input_tokens = int(item.get("input_tokens", 0) or 0)
         cached = int(item.get("cached_input_tokens", 0) or 0)
         cache_hit = cached / input_tokens if input_tokens else 0.0
+        label = item.get("summary") or first_user_message(item.get("thread_id", "")) or "(no messages)"
+        if "archived_at" not in item:
+            label = f"{label} (active)"
         rows.append(
             [
                 item.get("thread_id", ""),
-                item.get("summary", "") or "(active)",
+                label,
                 str(item.get("turn_count", 0)),
                 f"${float(item.get('total_cost_usd', 0.0)):.4f}",
                 f"{cache_hit:.0%}",
@@ -245,7 +255,7 @@ async def cmd_save(app: "SessionApp", args: str) -> None:
     render.render_notice(app.save_thread(), title="save")
 
 
-async def cmd_reset(app: "SessionApp", args: str) -> None:
+async def cmd_new(app: "SessionApp", args: str) -> None:
     await app.reset_thread()
     render.render_notice("Started a fresh thread.")
 
@@ -333,7 +343,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "threads": cmd_threads,
     "resume": cmd_resume,
     "save": cmd_save,
-    "reset": cmd_reset,
+    "new": cmd_new,
     "compact": cmd_compact,
     "copy": cmd_copy,
     "rollback": cmd_rollback,
