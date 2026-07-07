@@ -8,15 +8,15 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.processors import AfterInput, BeforeInput
 
-from cli.tui.constants import (
+from cli.constants import (
     FORM_FIELD_WIDTH,
     INPUT_MAX_ROWS_CAP,
     INPUT_MAX_ROWS_FRACTION,
     PICKER_MODES,
 )
-from cli.tui.formatting import worked_fragments, working_fragments
-from cli.tui.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
-from cli.tui.widgets import TranscriptViewportControl
+from cli.formatting import worked_fragments, working_fragments
+from cli.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
+from cli.widgets import TranscriptViewportControl
 from config import cost_tracker
 from model import active_model_name, active_reasoning_effort
 

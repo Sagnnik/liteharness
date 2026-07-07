@@ -10,8 +10,8 @@ from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.layout.controls import UIContent, UIControl
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 
-from cli.tui.constants import MOUSE_SCROLL_LINES
-from cli.tui.models import TranscriptLine
+from cli.constants import MOUSE_SCROLL_LINES
+from cli.models import TranscriptLine
 
 DEFAULT_TRANSCRIPT_WIDTH = 80
 SELECTION_STYLE = "class:transcript.selection"

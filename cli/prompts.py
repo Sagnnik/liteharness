@@ -4,8 +4,8 @@ import asyncio
 import json
 from typing import Any
 
-from cli.tui.models import MenuItem
-from cli.tui.utils import term_width
+from cli.models import MenuItem
+from cli.utils import term_width
 from utils import preview_diff
 
 

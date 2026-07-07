@@ -211,11 +211,6 @@ def save_clipboard_image() -> tuple[Path, str] | None:
     return path, data_url
 
 
-def file_to_data_url(path: Path) -> str:
-    """Encode a file on disk as a ``data:`` URL (used for replay fallback)."""
-    return _bytes_to_data_url(path.read_bytes())
-
-
 def _bytes_to_data_url(data: bytes) -> str:
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{_PNG_MIME};base64,{encoded}"

@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from cli.tui.app import TuiApp
+    from cli.app import TuiApp
 
 STREAM_FLUSH_INTERVAL_S = 0.05
 STREAM_FLUSH_CHARS = 256

@@ -1,3 +1,12 @@
+"""Shared fixtures for the LiteHarness TUI test suite.
+
+Migrated from the legacy ``tests/test_cli/helpers.py`` so tests can take
+``make_app`` as a fixture instead of importing a factory function. The
+fake implementations mirror the live ``SessionApp`` surface the TUI's
+command-dispatch and queue paths depend on, without pulling in the
+LangGraph app or model factory.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,15 +15,17 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from cli.tui.app import TuiApp
+import pytest
+
+from cli.app import TuiApp
 
 
 class _FakeCancelToken:
     """Minimal stand-in for ``cli.session_app.CancelToken`` used by FakeSession.
 
     Mirrors the trigger/is_set/reset surface the TUI's cancel cascade depends
-    on without requiring a real ``SessionApp`` (which would pull in the LangGraph
-    app and model factory).
+    on without requiring a real ``SessionApp`` (which would pull in the
+    LangGraph app and model factory).
     """
 
     def __init__(self) -> None:
@@ -116,12 +127,23 @@ class FakeSession:
 Dispatcher = Callable[[FakeSession, str], Awaitable[None]]
 
 
-def make_app(command_dispatcher: Dispatcher | None = None) -> TuiApp:
-    tmp = TemporaryDirectory()
-    session = FakeSession()
-    kwargs = {"history_path": Path(tmp.name) / "hist"}
-    if command_dispatcher is not None:
-        kwargs["command_dispatcher"] = command_dispatcher
-    app = TuiApp(session, **kwargs)  # type: ignore[arg-type]
-    app._tmpdir = tmp
-    return app
+@pytest.fixture
+def make_app() -> Callable[..., TuiApp]:
+    """Factory fixture: build a fresh TuiApp backed by a FakeSession.
+
+    Each call returns a TuiApp with its own TemporaryDirectory history path;
+    the tempdir's lifetime is tied to the closure (and thus to the test), so
+    no explicit cleanup is required.
+    """
+
+    def _factory(command_dispatcher: Dispatcher | None = None) -> TuiApp:
+        tmp = TemporaryDirectory()
+        session = FakeSession()
+        kwargs: dict = {"history_path": Path(tmp.name) / "hist"}
+        if command_dispatcher is not None:
+            kwargs["command_dispatcher"] = command_dispatcher
+        app = TuiApp(session, **kwargs)  # type: ignore[arg-type]
+        app._tmpdir = tmp
+        return app
+
+    return _factory

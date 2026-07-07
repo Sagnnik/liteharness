@@ -31,7 +31,7 @@ import permissions
 from permissions import validate_path
 
 if TYPE_CHECKING:
-    from cli.tui.models import MenuItem
+    from cli.models import MenuItem
 
 # A mention is ``@`` not preceded by a word char, followed by one or more
 # path-safe chars.
@@ -212,7 +212,7 @@ def filter_files(query: str, files: list[Path], limit: int) -> "list[MenuItem]":
     Empty query: most-recently-modified first (mtime desc), so the menu
     surfaces what the user just touched.
     """
-    from cli.tui.models import MenuItem
+    from cli.models import MenuItem
 
     query = (query or "").lower()
 

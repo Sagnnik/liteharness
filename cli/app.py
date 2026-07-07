@@ -16,18 +16,18 @@ from prompt_toolkit.styles import Style
 
 from cli import render
 from cli.commands import dispatch
-from cli.config_panel import ConfigResult
+from cli.config_flow import ConfigResult
 from cli.theme import PTK_STYLE_RULES
-from cli.tui.chrome import ChromeMixin
-from cli.tui.config_flow import ConfigFlowMixin
-from cli.tui.constants import ESCAPE_KEY_FLUSH_TIMEOUT, KEY_BINDING_TIMEOUT, PICKER_MODES
-from cli.tui.keys import build_key_bindings
-from cli.tui.menu import MenuMixin
-from cli.tui.models import MenuItem, TranscriptLine
-from cli.tui.prompts import PromptMixin
-from cli.tui.transcript import TranscriptMixin
-from cli.tui.utils import display_cwd
-from cli.tui.widgets import TranscriptStore, TranscriptViewportControl
+from cli.chrome import ChromeMixin
+from cli.config_flow import ConfigFlowMixin
+from cli.constants import ESCAPE_KEY_FLUSH_TIMEOUT, KEY_BINDING_TIMEOUT, PICKER_MODES
+from cli.keys import build_key_bindings
+from cli.pickers import MenuMixin
+from cli.models import MenuItem, TranscriptLine
+from cli.prompts import PromptMixin
+from cli.transcript import TranscriptMixin
+from cli.utils import display_cwd
+from cli.widgets import TranscriptStore, TranscriptViewportControl
 
 if TYPE_CHECKING:
     from cli.session_app import SessionApp

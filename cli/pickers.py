@@ -4,17 +4,17 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 
 from cli import mentions as mention_mod
-from cli.config_panel import ConfigResult
-from cli.menu import COMMAND_CATALOG
-from cli.tui.constants import (
+from cli.config_flow import ConfigResult
+from cli.command_catalog import COMMAND_CATALOG
+from cli.constants import (
     MENU_DESC_COL,
     MENU_MAX_ROWS,
     MENTION_MAX_ROWS,
     MENTION_MENU,
     PICKER_MODES,
 )
-from cli.tui.models import MenuItem
-from cli.tui.utils import term_width
+from cli.models import MenuItem
+from cli.utils import term_width
 from config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
 from model import active_model_name, active_reasoning_effort
 

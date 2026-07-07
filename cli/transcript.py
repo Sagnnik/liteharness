@@ -10,11 +10,17 @@ from cli.tool_display import (
     should_show_tool_call,
     should_show_tool_result,
 )
-from cli.tui.formatting import USER_STYLE, user_message_lines
-from cli.tui.markdown_render import markdown_transcript_lines, todos_transcript_lines
-from cli.tui.models import TranscriptLine
-from cli.tui.stream import Thinking, TuiAssistantStream
-from cli.tui.utils import term_height, term_width
+from cli.formatting import USER_STYLE, user_message_lines
+from cli.markdown import markdown_transcript_lines, todos_transcript_lines
+from cli.models import TranscriptLine
+from cli.stream import Thinking, TuiAssistantStream
+from cli.utils import term_height, term_width
+
+
+# --- module-level line builders ---------------------------------------------
+# Pure helpers that turn a string/dict into a list of TranscriptLine rows.
+# These are stateless and sit at module scope so the mixin methods can compose
+# them without re-deriving layout per call.
 
 _TAG_STYLES: dict[str, str] = {
     "session": "class:transcript.tag.session",
@@ -148,8 +154,30 @@ def _reasoning_block_lines(text: str, *, elapsed: float, expanded: bool, width: 
 
 
 class TranscriptMixin:
-    """Transcript buffer, render-sink methods, and scroll behavior."""
+    """Transcript buffer, render-sink methods, and scroll behavior.
 
+    Composed into ``TuiApp`` (see cli/app.py) and registered as the active
+    ``RenderSink`` via ``render.set_sink``. Methods are grouped by concern
+    and separated by banner comments inline:
+
+    - Tagged/diff/shell line builders              (module scope above)
+    - Reasoning line builders                        (module scope above)
+    - Sink entry points (high-level render calls)   (append_header, append_user)
+    - Resize + reflow machinery                     (_on_transcript_render_width...)
+    - Tagged render sink methods                     (append_muted, append_notice, ...)
+    - Assistant markdown rendering                  (append_assistant, _reasoning_block_for_span)
+    - Reasoning slot lifecycle                       (reserve_reasoning_slot, finalize, toggle)
+    - Live assistant streaming                       (set_assistant_stream, finalize, clear)
+    - Transcript buffer primitives + reset           (_append_transcript, _sync...)
+    - Tool calls & results                          (append_tool_calls, append_tool_result)
+    - Todos / diff / shell output                   (append_todos, append_diff, append_shell_output)
+    - Streaming adapters (start_assistant_stream, thinking)
+    - Layout sizing + scroll navigation             (_chrome_height_lines, _scroll_*)
+    """
+
+    # ------------------------------------------------------------------ #
+    # Sink entry points (high-level render)                               #
+    # ------------------------------------------------------------------ #
     def append_header(
         self,
         *,
@@ -174,6 +202,9 @@ class TranscriptMixin:
         self._append_transcript(TranscriptLine("class:transcript.muted", ""))
         self._layout_term_width = width
 
+    # ------------------------------------------------------------------ #
+    # Resize + reflow machinery                                          #
+    # ------------------------------------------------------------------ #
     def _on_transcript_render_width(self, width: int) -> None:
         self._on_transcript_render_size(width, self._transcript_viewport_height or self._transcript_viewport_lines())
 
@@ -197,7 +228,7 @@ class TranscriptMixin:
         self._reflow_user_blocks_for_width(width)
 
     def _expected_user_band_width(self, width: int | None = None) -> int:
-        from cli.tui.formatting import user_band_width
+        from cli.formatting import user_band_width
 
         return user_band_width(width=width if width is not None else term_width())
 
@@ -252,6 +283,7 @@ class TranscriptMixin:
         elif self._transcript_pane is not None:
             self._transcript_pane.vertical_scroll = min(old_scroll, self._max_transcript_scroll())
 
+    # Tagged render sink methods (muted/notice/warning/error/panel/table) -------
     def append_muted(self, text: str) -> None:
         self._append_transcript(TranscriptLine("class:transcript.muted", text))
 
@@ -294,6 +326,7 @@ class TranscriptMixin:
         lines_out.append(TranscriptLine("class:transcript.muted", ""))
         self._append_transcript(*lines_out)
 
+    # Assistant markdown rendering -----------------------------------------
     def append_assistant(self, text: str) -> None:
         if not text.strip():
             return
@@ -312,6 +345,7 @@ class TranscriptMixin:
             width=width,
         )
 
+    # Reasoning slot lifecycle ---------------------------------------------
     def reserve_reasoning_slot(self, before_stream: TuiAssistantStream | None = None) -> dict:
         """Insert a ``Thinking…`` placeholder above the live assistant stream.
 
@@ -405,6 +439,7 @@ class TranscriptMixin:
             return [TranscriptLine("class:transcript.assistant", "")]
         return [TranscriptLine("class:transcript.assistant", part) for part in text.split("\n")]
 
+    # Live assistant streaming ----------------------------------------------
     def set_assistant_stream(
         self,
         text: str,
@@ -445,6 +480,7 @@ class TranscriptMixin:
         self._scroll_transcript_to_bottom()
         self.invalidate()
 
+    # Transcript reset / clear ---------------------------------------------
     def _sync_transcript_buffer(self, *, scroll: bool = True, invalidate_ui: bool = True) -> None:
         self._transcript_store.reset()
         self._transcript_revision = self._transcript_store.revision
@@ -458,6 +494,7 @@ class TranscriptMixin:
         # wipe the visible pane before replaying the prior conversation.
         self._sync_transcript_buffer()
 
+    # Tool calls & results -------------------------------------------------
     def append_tool_call(self, name: str, args: Any) -> None:
         self.append_tool_calls([{"name": name, "args": args if isinstance(args, dict) else {}}])
 
@@ -539,6 +576,7 @@ class TranscriptMixin:
     def append_usage(self, usage: dict[str, Any]) -> None:
         self.invalidate()
 
+    # Todos / diff / shell output ------------------------------------------
     def append_todos(self, todos: list[dict]) -> None:
         if not todos:
             if self._todos_block_start is not None:
@@ -572,12 +610,14 @@ class TranscriptMixin:
         body_lines = body.splitlines() if body.strip() else ["(no output)"]
         self._append_transcript(*_shell_output_lines(title, body_lines))
 
+    # Streaming adapters ---------------------------------------------------
     def start_assistant_stream(self) -> TuiAssistantStream:
         return TuiAssistantStream(self)
 
     def thinking(self, label: str = "thinking") -> Thinking:
         return Thinking(self, label)
 
+    # Transcript buffer helpers (read/append primitives) -------------------
     def _transcript_plain_text(self) -> str:
         return self._transcript_store.plain_text()
 
@@ -592,6 +632,9 @@ class TranscriptMixin:
     def _transcript_content_lines(self) -> int:
         return self._transcript_store.total_rows
 
+    # ------------------------------------------------------------------ #
+    # Layout sizing + scroll navigation                                   #
+    # ------------------------------------------------------------------ #
     def _chrome_height_lines(self) -> int:
         lines = 4 + self._input_row_count()
         if self._working_status_visible():

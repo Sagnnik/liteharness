@@ -38,5 +38,3 @@ COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("copy", "Copy assistant output", "Input", "/copy [code|<n>]"),
     CommandSpec("exit", "End the session", "General", "/exit"),
 )
-
-COMMAND_NAMES: tuple[str, ...] = tuple(spec.name for spec in COMMAND_CATALOG)

@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from cli.theme import RICH_THEME
-from cli.tui.models import TranscriptLine
+from cli.models import TranscriptLine
 
 _STATUS_MARKER: dict[str, str] = {
     "completed": "[x]",

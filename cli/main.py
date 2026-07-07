@@ -56,7 +56,7 @@ from tools import is_git_repo, register_dynamic_tools, set_mcp_catalog
 
 from cli import render
 from cli.session_app import SessionApp
-from cli.tui import TuiApp
+from cli.app import TuiApp
 
 app = typer.Typer(add_completion=False, help="LiteHarness agent CLI")
 
@@ -206,14 +206,21 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
             session.save_thread()
         except Exception as exc:
             render.render_warning(f"Archive skipped: {exc}")
-        await mcp_manager.stop()
+        # Render the session summary *before* shutting down MCP servers so
+        # any subprocess stderr flushed during mcp_manager.stop() cannot
+        # interleave with or visually clobber the summary panel.
         render.render_panel_text(
             cost_tracker.report(resume_thread_id=resume_thread_id),
             title="session summary",
             style="usage.value",
         )
+        await mcp_manager.stop()
         render.set_sink(None)
 
 
-if __name__ == "__main__":
+def main() -> None:
     app()
+
+
+if __name__ == "__main__":
+    main()

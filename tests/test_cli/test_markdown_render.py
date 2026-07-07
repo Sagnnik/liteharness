@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from cli.tui.markdown_render import markdown_transcript_lines
-from cli.tui.models import TranscriptLine
+from cli.markdown import markdown_transcript_lines
+from cli.models import TranscriptLine
 
 
 def _all_text(lines: list[TranscriptLine]) -> str:
@@ -50,7 +50,7 @@ def test_complex_document_invariant_holds():
 
 
 def test_live_stream_helper_remains_plain():
-    from cli.tui.transcript import TranscriptMixin
+    from cli.transcript import TranscriptMixin
 
     lines = TranscriptMixin._assistant_stream_lines("not **markdown**")
     assert len(lines) == 1
