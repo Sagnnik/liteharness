@@ -111,6 +111,11 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._transcript_render_width = 0
         self._transcript_viewport_height = 0
         self._layout_term_width = 0
+        # Set on the first render once the transcript pane's real width is
+        # known. The --resume startup path awaits this before replaying the
+        # saved conversation so markdown/user lines are wrapped to the actual
+        # pane width instead of the raw terminal width.
+        self._transcript_ready = asyncio.Event()
         self._stats_line_cache_key: tuple[Any, ...] | None = None
         self._stats_line_cache: list[tuple[str, str]] = []
         self._path_line_cache_key: tuple[Any, ...] | None = None
@@ -238,7 +243,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         if not text:
             return
         if self._busy:
-            if text.startswith("/"):
+            if text.startswith(("/", "!")):
                 self._app.create_background_task(self._busy_dispatch(text))
             else:
                 self.session.enqueue_prompt(text)
@@ -254,22 +259,77 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
     async def _busy_dispatch(self, text: str) -> None:
         try:
-            await self._dispatch(self.session, text, busy=True)
+            if text.startswith("!"):
+                await self._run_shell(text[1:])
+            else:
+                await self._dispatch(self.session, text, busy=True)
         except Exception as exc:
             self.append_error(f"{type(exc).__name__}: {exc}")
         finally:
             self._reset_buffer()
             self.invalidate()
 
+    # --- shell escape (!command) ------------------------------------------
+    _SHELL_OUTPUT_CAP = 20_000
+    _SHELL_TIMEOUT = 60.0
+
+    async def _run_shell(self, command: str) -> None:
+        """Run a user-typed `!command` through the shell and show its output.
+
+        This is an explicit user shell escape (like vim's `:!`): it runs with
+        the user's normal environment and bypasses the agent approval system by
+        design, since the user invoked it directly rather than the model.
+        """
+        command = command.strip()
+        if not command:
+            return
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as exc:
+            self.append_error(f"shell: {type(exc).__name__}: {exc}")
+            return
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=self._SHELL_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            self.append_warning(f"shell: timed out after {self._SHELL_TIMEOUT:.0f}s")
+            return
+        stdout = stdout_b.decode(errors="replace") if stdout_b else ""
+        stderr = stderr_b.decode(errors="replace") if stderr_b else ""
+        code = proc.returncode
+        parts: list[str] = []
+        if stdout:
+            parts.append(stdout)
+        if stderr:
+            parts.append(stderr.rstrip())
+        body = "\n".join(parts)
+        if len(body) > self._SHELL_OUTPUT_CAP:
+            body = body[: self._SHELL_OUTPUT_CAP] + f"\n... (truncated, {len(body)} chars total)"
+        if not body:
+            body = "(no output)"
+        render.render_panel_text(body, title="shell")
+        if code and code != 0:
+            self.append_warning(f"shell: exit {code}")
+
     async def _submit_async(self, text: str) -> None:
         self._busy = True
         self.invalidate()
         try:
             is_slash = text.startswith("/")
-            if not is_slash:
+            is_shell = text.startswith("!")
+            if not is_slash and not is_shell:
                 self.append_user(text)
             if is_slash:
                 await self._dispatch(self.session, text, busy=False)
+            elif is_shell:
+                await self._run_shell(text[1:])
             else:
                 await self.session.run_turn(text, list(self._pending_images))
             while not self.session.should_exit:
@@ -367,10 +427,12 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             return True
         return False
 
-    async def run_async(self) -> None:
+    async def run_async(self, *, resume_thread_id: str | None = None) -> None:
         await self.session.refresh_context_snapshot()
         render.set_sink(self)
         self._configure_escape_timeouts(self._app)
+        if resume_thread_id:
+            self._start_resume_task(resume_thread_id)
         try:
             await self._app.run_async()
         finally:
@@ -380,3 +442,18 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
                 self._submit_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._submit_task
+
+    def _start_resume_task(self, thread_id: str) -> None:
+        """Replay a saved thread into the transcript after the first render.
+
+        The replay must run only once the transcript pane's real render width
+        is known (set in ``_on_transcript_render_size``); otherwise the
+        pre-wrapped markdown/user lines would be built against the raw
+        terminal width and render misaligned in the narrower pane.
+        """
+
+        async def _resume() -> None:
+            await self._transcript_ready.wait()
+            await self.session.resume_thread(thread_id)
+
+        self._app.create_background_task(_resume())

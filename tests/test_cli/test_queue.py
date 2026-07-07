@@ -21,5 +21,5 @@ def test_busy_safe_commands_includes_status_and_help():
     assert "status" in BUSY_SAFE_COMMANDS
     assert "help" in BUSY_SAFE_COMMANDS
     assert "config" not in BUSY_SAFE_COMMANDS
-    assert "reset" not in BUSY_SAFE_COMMANDS
+    assert "new" not in BUSY_SAFE_COMMANDS
     assert "exit" not in BUSY_SAFE_COMMANDS

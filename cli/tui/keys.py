@@ -185,7 +185,7 @@ def build_key_bindings(ui) -> KeyBindings:
             return
 
         if ui._pending_paste is not None:
-            text = ui._pending_paste.strip()
+            text = ui._expand_paste(buff.text).strip()
             if text:
                 buff.history.append_string(text)
             ui._pending_paste = None

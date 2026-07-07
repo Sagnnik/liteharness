@@ -442,6 +442,35 @@ def get_checkpoint(thread_id: str, user_seq: int) -> dict[str, Any] | None:
     }
 
 
+def first_user_message(thread_id: str) -> str | None:
+    """Return the headline (truncated first user message) for a thread.
+
+    Mirrors the summary derivation in ``archive_thread`` so the /threads table
+    can show a useful label for threads that have not been archived yet.
+    """
+    if not THREADS_DB.exists():
+        return None
+    with _connect() as conn:
+        _ensure_schema(conn)
+        row = conn.execute(
+            """
+            SELECT payload FROM events
+            WHERE thread_id = ? AND json_extract(payload, '$.kind') = 'user'
+            ORDER BY seq ASC
+            LIMIT 1
+            """,
+            (thread_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = json.loads(row[0])
+    content = payload.get("content")
+    text = content if isinstance(content, str) else str(content)
+    headline = " ".join(text.split())[:200]
+    cleaned = " ".join(headline.split()).strip().strip('"').strip(".")
+    return cleaned[:80].strip() or None
+
+
 def list_user_turns(thread_id: str) -> list[dict[str, Any]]:
     """Return every persisted user-message event for a thread, oldest-first.
 

@@ -51,6 +51,7 @@ class RenderSink(Protocol):
     def append_tool_result(self, name: str, content: str, *, exit_status: str | None = None) -> None: ...
     def append_todos(self, todos: list[dict]) -> None: ...
     def append_diff(self, diff_text: str, *, title: str = "diff") -> None: ...
+    def append_shell_output(self, content: str) -> None: ...
     def append_usage(self, usage: dict[str, Any]) -> None: ...
     def append_notice(self, title: str, *lines: str) -> None: ...
     def append_warning(self, text: str) -> None: ...
@@ -60,6 +61,7 @@ class RenderSink(Protocol):
     def thinking(self, label: str = "thinking") -> AbstractContextManager[Any]: ...
     def begin_turn(self) -> None: ...
     def finish_turn(self) -> None: ...
+    def clear_transcript(self) -> None: ...
     async def ask_approval(self, name: str, args: dict) -> str: ...
     async def ask_questions(self, questions: list[dict]) -> list[dict]: ...
     async def ask_line(self, message: str) -> str: ...
@@ -237,6 +239,10 @@ def render_diff(diff_text: str, *, title: str = "diff") -> None:
     _sink().append_diff(diff_text, title=title)
 
 
+def render_shell_output(content: str) -> None:
+    _sink().append_shell_output(content)
+
+
 def render_usage_footer(usage: dict[str, Any]) -> None:
     if usage:
         _sink().append_usage(usage)
@@ -280,6 +286,11 @@ def begin_turn() -> None:
 def finish_turn() -> None:
     if _ACTIVE_SINK is not None:
         _ACTIVE_SINK.finish_turn()
+
+
+def clear_transcript() -> None:
+    if _ACTIVE_SINK is not None:
+        _ACTIVE_SINK.clear_transcript()
 
 
 async def ask_approval(name: str, args: dict) -> str:
@@ -492,6 +503,23 @@ class _TerminalSink:
     def append_diff(self, diff_text: str, *, title: str = "diff") -> None:
         console.print(Panel(diff_renderable(diff_text), title=title, title_align="left", box=ROUNDED, border_style="panel.frame", padding=(0, 1)))
 
+    def append_shell_output(self, content: str) -> None:
+        from cli.tool_display import format_shell_output
+
+        header, body = format_shell_output(content)
+        title = f"shell {header}".strip()
+        text = body if body.strip() else "(no output)"
+        console.print(
+            Panel(
+                Text(text, style="tool.result"),
+                title=title,
+                title_align="left",
+                box=ROUNDED,
+                border_style="panel.frame",
+                padding=(0, 1),
+            )
+        )
+
     def append_usage(self, usage: dict[str, Any]) -> None:
         line = Text()
 
@@ -542,6 +570,9 @@ class _TerminalSink:
         return
 
     def finish_turn(self) -> None:
+        return
+
+    def clear_transcript(self) -> None:
         return
 
     async def ask_approval(self, name: str, args: dict) -> str:

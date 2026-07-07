@@ -30,6 +30,45 @@ _TAG_STYLES: dict[str, str] = {
 }
 
 
+def _diff_line_style(line: str) -> str:
+    if line.startswith(("+++", "---")):
+        return "class:transcript.diff.meta"
+    if line.startswith("@@"):
+        return "class:transcript.diff.hunk"
+    if line.startswith("+"):
+        return "class:transcript.diff.add"
+    if line.startswith("-"):
+        return "class:transcript.diff.del"
+    return "class:transcript.diff.context"
+
+
+def _diff_transcript_lines(diff_text: str, title: str) -> list[TranscriptLine]:
+    header = TranscriptLine(
+        style="class:transcript.tool",
+        text=f"[{title}]",
+        fragments=[("class:transcript.tool", f"[{title}]")],
+    )
+    lines: list[TranscriptLine] = [header]
+    for line in str(diff_text or "").splitlines():
+        style = _diff_line_style(line)
+        lines.append(TranscriptLine(style, f"  {line}" if line else ""))
+    lines.append(TranscriptLine("class:transcript.muted", ""))
+    return lines
+
+
+def _shell_output_lines(title: str, body_lines: list[str]) -> list[TranscriptLine]:
+    header = TranscriptLine(
+        style="class:transcript.tool",
+        text=f"[{title}]",
+        fragments=[("class:transcript.tool", f"[{title}]")],
+    )
+    lines: list[TranscriptLine] = [header]
+    for line in body_lines:
+        lines.append(TranscriptLine("class:transcript.tool.result", f"  {line}" if line else ""))
+    lines.append(TranscriptLine("class:transcript.muted", ""))
+    return lines
+
+
 def _tag_style(title: str) -> str:
     key = title.lower()
     if key.startswith("question"):
@@ -141,6 +180,8 @@ class TranscriptMixin:
     def _on_transcript_render_size(self, width: int, height: int) -> None:
         self._transcript_render_width = width
         self._transcript_viewport_height = height
+        if width > 0:
+            self._transcript_ready.set()
         if self._transcript_store.set_width(width) and self._follow_transcript:
             self._scroll_transcript_to_bottom()
 
@@ -412,6 +453,11 @@ class TranscriptMixin:
         if invalidate_ui:
             self.invalidate()
 
+    def clear_transcript(self) -> None:
+        # Public sink entry point used by /resume (and --resume startup) to
+        # wipe the visible pane before replaying the prior conversation.
+        self._sync_transcript_buffer()
+
     def append_tool_call(self, name: str, args: Any) -> None:
         self.append_tool_calls([{"name": name, "args": args if isinstance(args, dict) else {}}])
 
@@ -516,7 +562,15 @@ class TranscriptMixin:
         self.invalidate()
 
     def append_diff(self, diff_text: str, *, title: str = "diff") -> None:
-        self.append_panel(title, *str(diff_text).splitlines())
+        self._append_transcript(*_diff_transcript_lines(diff_text, title))
+
+    def append_shell_output(self, content: str) -> None:
+        from cli.tool_display import format_shell_output
+
+        header, body = format_shell_output(content)
+        title = f"shell {header}".strip()
+        body_lines = body.splitlines() if body.strip() else ["(no output)"]
+        self._append_transcript(*_shell_output_lines(title, body_lines))
 
     def start_assistant_stream(self) -> TuiAssistantStream:
         return TuiAssistantStream(self)

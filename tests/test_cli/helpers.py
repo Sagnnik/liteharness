@@ -63,7 +63,7 @@ class FakeSession:
     async def refresh_context_snapshot(self) -> None:
         return
 
-    async def run_turn(self, text: str) -> None:
+    async def run_turn(self, text: str, image_data_urls: list[str] | None = None) -> None:
         self.turn_count += 1
         self.assistant_history.append(f"echo {text}")
 

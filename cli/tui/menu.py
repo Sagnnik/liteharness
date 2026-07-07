@@ -67,24 +67,49 @@ class MenuMixin:
 
     def _maybe_collapse_paste(self, buffer: Buffer) -> bool:
         text = buffer.text
-        if "\n" not in text and self._pending_paste is None:
-            return False
-        if self._pending_paste is not None:
-            n = self._pending_paste.count("\n") + 1
-            expected = f"[pasted {n} lines]"
-            if text == expected:
-                return True
+        if self._pending_paste is None:
             if "\n" not in text:
-                self._pending_paste = None
                 return False
+            self._pending_paste = text
+            self._write_paste_placeholder()
+            return True
+        n = self._pending_paste.count("\n") + 1
+        expected = f"[pasted {n} lines]"
+        if text == expected:
+            return True
+        if expected not in text:
+            # The user deleted the marker token — they intend to discard the
+            # paste, so drop the stashed content and let normal buffer handling
+            # proceed. Never leave a stale ``[pasted N lines]`` literal behind.
+            self._pending_paste = None
+            return False
+        if "\n" in text:
+            # Additional multiline content was pasted on top of the marker;
+            # fold it into the stashed paste and re-collapse.
             new_part = text.replace(expected, "", 1).strip("\n")
             if new_part:
                 self._pending_paste = self._pending_paste + "\n" + new_part
             self._write_paste_placeholder()
-            return True
-        self._pending_paste = text
-        self._write_paste_placeholder()
+        # Marker is still present (possibly with single-line prose typed around
+        # it). Keep the paste stashed and leave the user's prose intact so the
+        # marker can be expanded back into the real content at submit time.
         return True
+
+    def _expand_paste(self, text: str) -> str:
+        """Replace the ``[pasted N lines]`` marker with the stashed content.
+
+        If no paste is pending or the marker is absent, ``text`` is returned
+        unchanged. This is the single source of truth for turning the visible
+        placeholder back into the real pasted text on submit, so the literal
+        ``[pasted N lines]`` string is never sent to the model.
+        """
+        if self._pending_paste is None:
+            return text
+        n = self._pending_paste.count("\n") + 1
+        marker = f"[pasted {n} lines]"
+        if marker in text:
+            return text.replace(marker, self._pending_paste, 1)
+        return text
 
     def _write_paste_placeholder(self) -> None:
         if self._pending_paste is None:

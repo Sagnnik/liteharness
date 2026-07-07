@@ -29,7 +29,7 @@ from memory import (
 )
 from model import active_model_name, active_reasoning_effort, effective_openrouter_session_id
 from permissions import list_rules, persist_rule, remove_rule
-from session import list_threads, list_user_turns
+from session import first_user_message, list_threads, list_user_turns
 from skill_loader import load_skill_errors, load_skills
 from utils import get_project_context
 
@@ -227,10 +227,13 @@ async def cmd_threads(app: "SessionApp", args: str) -> None:
         input_tokens = int(item.get("input_tokens", 0) or 0)
         cached = int(item.get("cached_input_tokens", 0) or 0)
         cache_hit = cached / input_tokens if input_tokens else 0.0
+        label = item.get("summary") or first_user_message(item.get("thread_id", "")) or "(no messages)"
+        if "archived_at" not in item:
+            label = f"{label} (active)"
         rows.append(
             [
                 item.get("thread_id", ""),
-                item.get("summary", "") or "(active)",
+                label,
                 str(item.get("turn_count", 0)),
                 f"${float(item.get('total_cost_usd', 0.0)):.4f}",
                 f"{cache_hit:.0%}",

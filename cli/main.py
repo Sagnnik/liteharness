@@ -103,10 +103,15 @@ def run(
         help="OpenRouter reasoning effort: none, minimal, low, medium, high, xhigh, max",
     ),
     worktree: str = typer.Option(None, "--worktree", "-w", help="Run inside an isolated git worktree"),
+    resume: str = typer.Option(
+        None,
+        "--resume",
+        help="Resume a saved thread id at startup (loads prior conversation into the transcript)",
+    ),
 ) -> None:
     """Start an interactive LiteHarness session."""
     configure_model(_overrides(model, reflection_model, api_key, base_url, session_id, reasoning_effort))
-    asyncio.run(_main())
+    asyncio.run(_main(resume_thread_id=resume or None))
 
 
 def _render_mcp_startup() -> None:
@@ -155,7 +160,7 @@ def _check_prompt_budget(git_available: bool) -> str | None:
     return None
 
 
-async def _main() -> None:
+async def _main(*, resume_thread_id: str | None = None) -> None:
     git_available = is_git_repo()
     clear_session_rules()
 
@@ -190,15 +195,23 @@ async def _main() -> None:
     _render_mcp_startup()
 
     try:
-        await ui.run_async()
+        await ui.run_async(resume_thread_id=resume_thread_id)
     finally:
+        resume_thread_id = None
         try:
             await session.finalize_reflection()
+            resume_thread_id = (
+                session.thread_id if (settings.auto_save_threads and session.turn_count > 0) else None
+            )
             session.save_thread()
         except Exception as exc:
             render.render_warning(f"Archive skipped: {exc}")
         await mcp_manager.stop()
-        render.render_panel_text(cost_tracker.report(), title="session summary", style="usage.value")
+        render.render_panel_text(
+            cost_tracker.report(resume_thread_id=resume_thread_id),
+            title="session summary",
+            style="usage.value",
+        )
         render.set_sink(None)
 
 

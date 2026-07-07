@@ -280,7 +280,7 @@ class CostTracker:
     def total_cost_usd(self) -> float | None:
         return self.cost_usd if self.cost_usd > 0 else None
 
-    def report(self, session_id: str | None = None) -> str:
+    def report(self, session_id: str | None = None, *, resume_thread_id: str | None = None) -> str:
         cost_str = f"${self.cost_usd:.4f}" if self.cost_usd > 0 else "unknown"
         lines: list[str] = []
         if session_id is not None:
@@ -297,6 +297,8 @@ class CostTracker:
                 f"Cost: {cost_str}",
             ]
         )
+        if resume_thread_id:
+            lines.append(f"Resume:  uv run python -m cli.main --resume {resume_thread_id}")
         return "\n".join(lines)
 
 

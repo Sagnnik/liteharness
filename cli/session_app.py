@@ -488,6 +488,8 @@ class SessionApp:
                 self._record_assistant(text)
 
     def _render_tool_results(self, event: dict) -> None:
+        from cli.tool_display import extract_diff_section, extract_edit_summary
+
         todo_updated = False
         for msg in _messages_from_event(event):
             if getattr(msg, "type", None) != "tool":
@@ -495,9 +497,23 @@ class SessionApp:
             if (getattr(msg, "additional_kwargs", None) or {}).get("hidden"):
                 continue
             name = getattr(msg, "name", "tool")
+            content = str(msg.content)
             if str(name or "") == "todo":
                 todo_updated = True
-            render.render_tool_result(name, str(msg.content))
+                render.render_tool_result(name, content)
+                continue
+            if name in ("edit", "write"):
+                summary = extract_edit_summary(content)
+                if summary:
+                    render.render_tool_result(name, summary)
+                diff = extract_diff_section(content)
+                if diff:
+                    render.render_diff(diff, title=f"diff {name}")
+                continue
+            if name == "shell":
+                render.render_shell_output(content)
+                continue
+            render.render_tool_result(name, content)
         if todo_updated:
             render.render_todos(get_thread_todos(self.thread_id))
 
@@ -636,8 +652,53 @@ class SessionApp:
             await self.finalize_reflection()
             archive_thread(self.thread_id)
 
+        # Clear the visible transcript before replaying so the resumed
+        # conversation is shown on a clean pane (no stale messages from the
+        # abandoned thread). The graph is rebuilt below by _bootstrap_from_events.
+        render.clear_transcript()
+        self._replay_events_to_transcript(events)
         await self._bootstrap_from_events(thread_id, replay_cost=True)
         render.render_notice(f"Resumed thread {thread_id}.", title="resume")
+
+    def _replay_events_to_transcript(self, events: list[dict]) -> None:
+        """Render a saved event stream into the live transcript on resume.
+
+        Mirrors the live-turn render path: user echoes, assistant panels, and
+        tool call/result rows are appended in order so the resumed session
+        reads like the original conversation. Usage events are skipped (costs
+        are replayed separately by ``_restore_cost_from_events``). Tool calls
+        carried by an assistant event are rendered inline before the
+        assistant text, matching the live streaming layout.
+        """
+        for event in events:
+            kind = event.get("kind")
+            if kind == "user":
+                content = event.get("content", "")
+                text = content if isinstance(content, str) else str(content)
+                if text.strip():
+                    render.render_user_echo(text)
+            elif kind == "assistant":
+                tool_calls_raw = event.get("tool_calls") or []
+                if tool_calls_raw:
+                    calls = [
+                        {
+                            "name": tc.get("name"),
+                            "args": tc.get("args", {}),
+                            "id": tc.get("id"),
+                            "type": tc.get("type", "tool_call"),
+                        }
+                        for tc in tool_calls_raw
+                    ]
+                    render.render_tool_calls(calls)
+                content = event.get("content")
+                text = "" if content is None else str(content)
+                if text.strip():
+                    render.render_assistant_panel(text)
+            elif kind == "tool":
+                tool_name = str(event.get("tool") or "")
+                result = str(event.get("result") or "")
+                if tool_name:
+                    render.render_tool_result(tool_name, result)
 
     async def _bootstrap_from_events(self, thread_id: str, *, replay_cost: bool) -> None:
         """Rebuild the live graph from persisted events for ``thread_id``.

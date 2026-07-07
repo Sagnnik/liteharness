@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Preview prompt context layers for plan or act mode.
 
 Usage:
@@ -47,7 +46,7 @@ from context import (
 from memory import load_ness_memory, load_repo_context, load_user_memory
 from skill_loader import load_skills, render_skill_catalog, select_sticky_skills
 from tools import is_git_repo, select_tools_for_session
-from tools.git import git_worktree_summary
+from git_context import git_worktree_summary
 
 app = typer.Typer(add_completion=False, help="Preview LiteHarness L1/L2/L3 context layers.")
 console = Console()
@@ -64,7 +63,7 @@ def _sample_todos(mode: str) -> list[dict]:
         return []
     return [
         {"id": "1", "content": "Read tools/web.py and tests/test_web.py", "status": "completed"},
-        {"id": "2", "content": "Add retry wrapper to fetch_url", "status": "in_progress"},
+        {"id": "2", "content": "Add retry wrapper to webfetch", "status": "in_progress"},
         {"id": "3", "content": "Add tests for retry behavior", "status": "pending"},
     ]
 
@@ -109,7 +108,7 @@ def _build_mode_parts(
     token_count: int | None,
     user_message_count: int,
 ):
-    tools = select_tools_for_session(git_available)
+    tools = select_tools_for_session()
     tool_names = {tool.name for tool in tools}
 
     all_skills = load_skills()
@@ -204,7 +203,7 @@ def _assert_diff_modes(
         raise AssertionError("bound tool metadata should be identical across modes")
     if plan["stable_prefix"] != act["stable_prefix"]:
         raise AssertionError("cached system prefix should be identical across modes")
-    if "write_file" not in plan["tool_names"]:
+    if "write" not in plan["tool_names"]:
         raise AssertionError("full tool set should be bound in plan mode")
     if plan["tool_names"] != act["tool_names"]:
         raise AssertionError("plan and act mode should expose the same tool set")

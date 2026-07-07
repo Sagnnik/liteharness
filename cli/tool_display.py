@@ -65,8 +65,14 @@ def should_show_tool_result(
     *,
     exit_status: str | None = None,
 ) -> bool:
-    """Show tool results on the CLI only when the run failed."""
-    _ = name
+    """Show tool results on the CLI when informative.
+
+    edit/write always surface (so the summary line precedes the rendered diff)
+    and shell always surfaces (its output panel is the primary signal).
+    Other tools show only on failure.
+    """
+    if name in ("edit", "write", "shell"):
+        return True
     if is_tool_result_error(content):
         return True
     return exit_status is not None and exit_status not in ("ok",)
@@ -405,10 +411,17 @@ def _spawn_subagent_error_preview(content: str) -> str:
 
 
 def format_tool_result_preview(name: str, content: str, *, limit: int = _DEFAULT_RESULT_PREVIEW) -> str:
-    """One-line preview for an error tool result."""
+    """One-line preview for a tool result.
+
+    For edit/write the result body carries a trailing unified diff that is
+    rendered separately; only the summary line is previewed here.
+    """
     text = str(content or "").strip()
     if not text:
         return ""
+
+    if name in ("edit", "write"):
+        return _truncate(extract_edit_summary(text), limit)
 
     json_error = _json_error_message(text)
     if json_error is not None:
@@ -426,4 +439,55 @@ def format_tool_result_preview(name: str, content: str, *, limit: int = _DEFAULT
             return _truncate(body, limit)
 
     return _truncate(text.replace("\n", " "), limit)
+
+
+_DIFF_MARKER = "\ndiff:\n"
+
+
+def extract_diff_section(content: str) -> str | None:
+    """Return the unified diff embedded in an edit/write result, if present."""
+    text = str(content or "")
+    index = text.find(_DIFF_MARKER)
+    if index == -1:
+        return None
+    body = text[index + len(_DIFF_MARKER):].strip()
+    return body or None
+
+
+def extract_edit_summary(content: str) -> str:
+    """Return the summary line of an edit/write result (before the diff)."""
+    text = str(content or "").strip()
+    index = text.find(_DIFF_MARKER)
+    if index != -1:
+        return text[:index].strip()
+    first = text.splitlines()[0] if text else ""
+    return first.strip()
+
+
+_SHELL_DISPLAY_LIMIT = 8000
+
+
+def _shell_field(content: str, field: str) -> str | None:
+    for line in str(content or "").splitlines()[:8]:
+        if line.startswith(f"{field}="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def format_shell_output(content: str) -> tuple[str, str]:
+    """Return (header, body) for a shell tool result.
+
+    ``header`` summarises status/exit; ``body`` is the captured output
+    (bounded) suitable for a multi-line panel.
+    """
+    text = str(content or "")
+    status = parse_result_status(text) or "ok"
+    exit_code = _shell_field(text, "exit_code")
+    body = _extract_output_section(text)
+    if len(body) > _SHELL_DISPLAY_LIMIT:
+        body = "..." + body[-_SHELL_DISPLAY_LIMIT:]
+    header = f"status={status}"
+    if exit_code and exit_code != "0":
+        header += f" exit={exit_code}"
+    return header, body
 

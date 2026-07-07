@@ -86,9 +86,12 @@ def write(path: str, content: str) -> str:
             return error
         p = Path(abs_path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        original = p.read_text(encoding="utf-8") if p.exists() else ""
         _atomic_write(p, content)
         auto_format(abs_path)
-        return f"Wrote {len(content)} chars to {rel}"
+        written = p.read_text(encoding="utf-8")
+        summary = f"Wrote {len(content)} chars to {rel}"
+        return _with_diff(summary, _unified_diff(rel, original, written))
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -120,7 +123,8 @@ def edit(path: str, edits: list[EditItem]) -> str:
         if not edits:
             return "Error: edits must contain at least one edit"
         p = Path(abs_path)
-        content = p.read_text(encoding="utf-8")
+        original = p.read_text(encoding="utf-8")
+        content = original
         total = 0
         fuzzy_edits: list[int] = []
         for idx, item in enumerate(edits, 1):
@@ -134,18 +138,21 @@ def edit(path: str, edits: list[EditItem]) -> str:
                 fuzzy_edits.append(idx)
         _atomic_write(p, content)
         auto_format(abs_path)
+        written = p.read_text(encoding="utf-8")
         if fuzzy_edits:
             which = ", ".join(str(n) for n in fuzzy_edits)
-            return (
+            summary = (
                 f"WARNING: FUZZY MATCH applied to edit(s) {which} in {rel} — "
                 f"verify the result before continuing. "
                 f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
                 f"({total} replacement{'s' if total != 1 else ''})."
             )
-        return (
-            f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
-            f"({total} replacement{'s' if total != 1 else ''}) to {rel}"
-        )
+        else:
+            summary = (
+                f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
+                f"({total} replacement{'s' if total != 1 else ''}) to {rel}"
+            )
+        return _with_diff(summary, _unified_diff(rel, original, written))
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -198,6 +205,27 @@ def _replace_content(content: str, old: str, new: str, replace_all: bool) -> tup
     replacement_lines = new.splitlines()
     new_lines = lines[:best_idx] + replacement_lines + lines[best_idx + len(old_lines) :]
     return "\n".join(new_lines) + ("\n" if content.endswith("\n") else ""), 1, True
+
+
+def _unified_diff(rel: str, old: str, new: str) -> str:
+    """Return a unified diff string for the file change, or empty if identical."""
+    if old == new:
+        return ""
+    fromfile = f"a/{rel}" if old else "/dev/null"
+    tofile = f"b/{rel}" if new else "/dev/null"
+    diff = difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=fromfile,
+        tofile=tofile,
+    )
+    return "".join(diff).rstrip()
+
+
+def _with_diff(summary: str, diff_text: str) -> str:
+    if not diff_text or not diff_text.strip():
+        return summary
+    return f"{summary}\ndiff:\n{diff_text}"
 
 
 def _atomic_write(path: Path, content: str) -> None:
