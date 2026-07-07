@@ -1,14 +1,76 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 
-from cli.config_panel import ConfigResult, current_config_lines, note_model_reasoning_changes
-from cli.tui.constants import FORM_LABELS
-from cli.tui.utils import write_env
+from cli import render
+from cli.constants import FORM_LABELS
+from cli.utils import write_env
 from config import reasoning_efforts_for_model, reload_settings, settings
-from model import active_model_name, active_reasoning_effort, set_active_model, set_active_reasoning_effort
+from model import (
+    active_model_name,
+    active_reasoning_effort,
+    set_active_model,
+    set_active_reasoning_effort,
+)
 
 
+# --- shared /config data + delegator ---------------------------------------
+@dataclass
+class ConfigResult:
+    rebuild: bool = False
+    session_update: bool = False
+    messages: list[str] = field(default_factory=list)
+
+    def note(self, message: str) -> None:
+        self.messages.append(message)
+
+    def mark_session_update(self) -> None:
+        self.session_update = True
+
+
+def note_model_reasoning_changes(
+    result: ConfigResult,
+    *,
+    model_changed: bool,
+    model_name: str,
+    reasoning_changed: bool,
+    reasoning: str,
+) -> None:
+    parts: list[str] = []
+    if model_changed:
+        parts.append(f"Model switched to {model_name}")
+    if reasoning_changed:
+        parts.append(f"Reasoning effort set to {reasoning}")
+    if parts:
+        result.note("; ".join(parts) + ".")
+
+
+def current_config_lines() -> list[str]:
+    return [
+        f"model         {active_model_name()}",
+        f"reasoning     {active_reasoning_effort()}",
+        f"reflection    {settings.reflection_model_name}",
+        f"base url      {settings.openai_base_url or '(default)'}",
+        f"approval      {'on' if settings.enable_approval else 'off'}",
+        f"autosave      {'on' if settings.auto_save_threads else 'off'}",
+        f"session end reflection  {'on' if settings.session_end_reflection else 'off'}",
+        f"provider key  {'set' if settings.openai_api_key else 'missing'}",
+        f"Exa key       {'set' if settings.exa_api_key else 'missing'}",
+    ]
+
+
+async def run_config() -> ConfigResult:
+    """Run the active TUI config picker; fall back to a notice when headless."""
+    sink = render.get_sink()
+    if sink is None:
+        result = ConfigResult()
+        result.note("/config is available only in the interactive TUI.")
+        return result
+    return await sink.run_config()
+
+
+# --- interactive /config picker + credential forms ------------------------
 class ConfigFlowMixin:
     """Interactive /config picker and credential forms."""
 

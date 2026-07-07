@@ -6,7 +6,7 @@ from prompt_toolkit.application import get_app
 from prompt_toolkit.filters import Condition, has_selection
 from prompt_toolkit.key_binding import KeyBindings
 
-from cli.tui.constants import PICKER_MODES
+from cli.constants import PICKER_MODES
 
 def build_key_bindings(ui) -> KeyBindings:
     kb = KeyBindings()

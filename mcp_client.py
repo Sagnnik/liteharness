@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -222,9 +223,21 @@ class MCPManager:
             cwd=spec.get("cwd") or str(PROJECT_ROOT),
         )
 
+        # stdio_client forwards the child server's stderr straight to the
+        # parent process stderr by default. That leaks startup/shutdown log
+        # lines (e.g. "Secure MCP Filesystem Server running on stdio") onto
+        # the user's terminal and visually clobbers the session summary panel
+        # on exit. Route child stderr to /dev/null so the noise never reaches
+        # the TUI; the per-server status surfaced by startup_summary() and
+        # /mcp still reports real connection failures.
+        errlog = open(os.devnull, "w", encoding="utf-8")
+        stack.callback(errlog.close)
+
         # stdio_client yields two streams: read_stream (from server) and write_stream (to server).
         # put them inside async context manager or context stack 
-        read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
+        read_stream, write_stream = await stack.enter_async_context(
+            stdio_client(params, errlog=errlog)
+        )
         
         # ClientSession consumes those raw streams and provides session object with async methods like call_tool, list_tools, etc.
         # put this inside async context manager or context stack as well

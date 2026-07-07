@@ -6,7 +6,6 @@ from unittest.mock import patch
 from cli import render
 from cli.commands import dispatch
 from config import settings
-from tests.test_cli.helpers import make_app
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
@@ -17,7 +16,7 @@ async def _dispatch_with_sink(app, command: str) -> None:
         render.set_sink(None)
 
 
-def test_help_command_lists_supported_commands():
+def test_help_command_lists_supported_commands(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/help"))
     text = "\n".join(line.text for line in app._lines)
@@ -31,13 +30,13 @@ def test_help_command_lists_supported_commands():
     assert "/image" not in text
 
 
-def test_dispatch_exit_sets_session_flag():
+def test_dispatch_exit_sets_session_flag(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/exit"))
     assert app.session.should_exit is True
 
 
-def test_status_command_shows_session_summary():
+def test_status_command_shows_session_summary(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/status"))
     text = "\n".join(line.text for line in app._lines)
@@ -45,7 +44,7 @@ def test_status_command_shows_session_summary():
     assert "cache read" in text
 
 
-def test_config_action_can_update_persisted_setting():
+def test_config_action_can_update_persisted_setting(make_app):
     app = make_app()
     previous = settings.enable_approval
     settings.enable_approval = True
@@ -53,7 +52,7 @@ def test_config_action_can_update_persisted_setting():
         app._open_picker("config_action", "/config", index=0)
         items = app._config_action_items()
         app._menu_index = next(i for i, item in enumerate(items) if item.key == "approval")
-        with patch("cli.tui.config_flow.write_env"):
+        with patch("cli.config_flow.write_env"):
             app._apply_picker_selection()
         assert settings.enable_approval is False
         assert app._menu_kind is None
@@ -61,13 +60,13 @@ def test_config_action_can_update_persisted_setting():
         settings.enable_approval = previous
 
 
-def test_rollback_command_with_numeric_arg_calls_rollback_to():
+def test_rollback_command_with_numeric_arg_calls_rollback_to(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/rollback 5"))
     assert app.session.rolled_back_seq == 5
 
 
-def test_rollback_command_no_turns_warns():
+def test_rollback_command_no_turns_warns(make_app):
     app = make_app()
     with patch("cli.commands.list_user_turns", return_value=[]):
         asyncio.run(_dispatch_with_sink(app, "/rollback"))

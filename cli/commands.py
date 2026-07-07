@@ -34,13 +34,25 @@ from skill_loader import load_skill_errors, load_skills
 from utils import get_project_context
 
 from cli import render
-from cli.config_panel import run_config
-from cli.menu import COMMAND_CATALOG
+from cli.config_flow import run_config
+from cli.command_catalog import COMMAND_CATALOG
 
 if TYPE_CHECKING:
     from cli.session_app import SessionApp
 
 CommandHandler = Callable[["SessionApp", str], Awaitable[None]]
+
+
+def _flag(args: str, *names: str) -> bool:
+    """True when the trimmed args equal one of the flag tokens."""
+    return args.strip() in set(names)
+
+
+def _add_text(args: str) -> str | None:
+    """Return the text after ``add `` if present, else ``None``."""
+    args = args.strip()
+    return args[4:].strip() if args.startswith("add ") else None
+
 
 # --- handlers ---------------------------------------------------------------
 async def cmd_exit(app: "SessionApp", args: str) -> None:
@@ -111,7 +123,7 @@ async def cmd_skill(app: "SessionApp", args: str) -> None:
 
 
 async def cmd_init(app: "SessionApp", args: str) -> None:
-    force = args.strip() in {"force", "--force"}
+    force = _flag(args, "force", "--force")
     created = setup_ness_structure()
     if created:
         render.render_notice(
@@ -128,25 +140,25 @@ async def cmd_init(app: "SessionApp", args: str) -> None:
 
 
 async def cmd_memory(app: "SessionApp", args: str) -> None:
-    args = args.strip()
-    if not args:
-        render.render_panel_text(load_ness_memory() or "(empty)", title=str(NESS_FILE), style="usage.value")
+    text = _add_text(args)
+    if text is None:
+        if not args.strip():
+            render.render_panel_text(load_ness_memory() or "(empty)", title=str(NESS_FILE), style="usage.value")
+            return
+        render.render_error("Usage: /memory or /memory add <note>")
         return
-    if args.startswith("add "):
-        render.render_notice(append_ness_memory(args[4:]))
-        return
-    render.render_error("Usage: /memory or /memory add <note>")
+    render.render_notice(append_ness_memory(text))
 
 
 async def cmd_user(app: "SessionApp", args: str) -> None:
-    args = args.strip()
-    if not args:
-        render.render_panel_text(load_user_memory() or "(empty)", title=str(USER_FILE), style="usage.value")
+    text = _add_text(args)
+    if text is None:
+        if not args.strip():
+            render.render_panel_text(load_user_memory() or "(empty)", title=str(USER_FILE), style="usage.value")
+            return
+        render.render_error("Usage: /user or /user add <preference>")
         return
-    if args.startswith("add "):
-        render.render_notice(append_user_memory(args[4:]))
-        return
-    render.render_error("Usage: /user or /user add <preference>")
+    render.render_notice(append_user_memory(text))
 
 
 async def cmd_permissions(app: "SessionApp", args: str) -> None:
@@ -217,12 +229,8 @@ async def cmd_mcp(app: "SessionApp", args: str) -> None:
         )
 
 
-async def cmd_threads(app: "SessionApp", args: str) -> None:
-    threads = list_threads(20)
-    if not threads:
-        render.render_notice("No saved sessions.")
-        return
-    rows = []
+def _thread_rows(threads: list[dict]) -> list[list[str]]:
+    rows: list[list[str]] = []
     for item in threads:
         input_tokens = int(item.get("input_tokens", 0) or 0)
         cached = int(item.get("cached_input_tokens", 0) or 0)
@@ -239,7 +247,19 @@ async def cmd_threads(app: "SessionApp", args: str) -> None:
                 f"{cache_hit:.0%}",
             ]
         )
-    render.render_table(title="threads", columns=["thread", "summary", "turns", "cost", "cache"], rows=rows)
+    return rows
+
+
+async def cmd_threads(app: "SessionApp", args: str) -> None:
+    threads = list_threads(20)
+    if not threads:
+        render.render_notice("No saved sessions.")
+        return
+    render.render_table(
+        title="threads",
+        columns=["thread", "summary", "turns", "cost", "cache"],
+        rows=_thread_rows(threads),
+    )
 
 
 async def cmd_resume(app: "SessionApp", args: str) -> None:

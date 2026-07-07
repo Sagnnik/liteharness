@@ -16,18 +16,18 @@ from prompt_toolkit.styles import Style
 
 from cli import render
 from cli.commands import dispatch
-from cli.config_panel import ConfigResult
+from cli.config_flow import ConfigResult
 from cli.theme import PTK_STYLE_RULES
-from cli.tui.chrome import ChromeMixin
-from cli.tui.config_flow import ConfigFlowMixin
-from cli.tui.constants import ESCAPE_KEY_FLUSH_TIMEOUT, KEY_BINDING_TIMEOUT, PICKER_MODES
-from cli.tui.keys import build_key_bindings
-from cli.tui.menu import MenuMixin
-from cli.tui.models import MenuItem, TranscriptLine
-from cli.tui.prompts import PromptMixin
-from cli.tui.transcript import TranscriptMixin
-from cli.tui.utils import display_cwd
-from cli.tui.widgets import TranscriptStore, TranscriptViewportControl
+from cli.chrome import ChromeMixin
+from cli.config_flow import ConfigFlowMixin
+from cli.constants import ESCAPE_KEY_FLUSH_TIMEOUT, KEY_BINDING_TIMEOUT, PICKER_MODES
+from cli.keys import build_key_bindings
+from cli.pickers import MenuMixin
+from cli.models import MenuItem, TranscriptLine
+from cli.prompts import PromptMixin
+from cli.transcript import TranscriptMixin
+from cli.utils import display_cwd
+from cli.widgets import TranscriptStore, TranscriptViewportControl
 
 if TYPE_CHECKING:
     from cli.session_app import SessionApp
@@ -49,22 +49,12 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._dispatch = command_dispatcher
         self._cwd_line = display_cwd()
         history_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lines: list[TranscriptLine] = [
-            TranscriptLine("class:transcript.header", "LiteHarness"),
-            TranscriptLine(
-                "class:transcript.muted",
-                "Slash hints: ↑/↓ select, Enter run, Tab complete. PgUp/PgDn scroll; End jumps to latest.",
-            ),
-            TranscriptLine(
-                "class:transcript.muted",
-                "Click-drag transcript to select; Ctrl+C copies and returns to input.",
-            ),
-            TranscriptLine(
-                "class:transcript.muted",
-                "Shift+Tab toggles act/plan. Try /config, /help, /status. /exit to quit.",
-            ),
-            TranscriptLine("class:transcript.muted", ""),
-        ]
+        # The startup header (gradient logo + dashboard panel + hints) is
+        # appended via ``session.render_header()`` once the transcript pane's
+        # real width is known (see ``_start_initial_header_task``), so the
+        # pre-wrapped TranscriptLines aren't built against a stale fallback
+        # width and re-wrap into a half-screen artifact on first render.
+        self._lines: list[TranscriptLine] = []
 
         self._busy = False
         self._submit_task: asyncio.Task | None = None
@@ -123,6 +113,11 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         self._todos_block_start: int | None = None
         self._todos_block_count = 0
+        # Startup header block: tracked so /config refreshes it in place
+        # (instead of re-appending a duplicate banner mid-conversation) and
+        # so a terminal resize re-flows it at the new width. Shape:
+        # {"start": int, "count": int, "width": int, "source": dict}.
+        self._header_block: dict | None = None
         # Reasoning (CoT) blocks: one per LLM call that emitted reasoning_content.
         # Each span: {"start": int, "count": int, "text": str, "elapsed": float}.
         # Collapsed by default; Ctrl+T flips ``_show_reasoning`` and re-emits
@@ -135,7 +130,9 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._buffer = Buffer(history=FileHistory(str(history_path)), multiline=True)
         self._buffer.read_only = Condition(self._main_buffer_read_only)
         self._form_buffer = Buffer()
-        self._form_buffer.password = Condition(lambda: self._form_kind in ("openai_key", "exa_key"))
+        self._form_buffer.password = Condition(
+            lambda: self._form_kind in ("openai_key", "exa_key")
+        )
         self._buffer.on_text_changed.add_handler(self._on_buffer_changed)
 
         self._transcript_control: TranscriptViewportControl | None = None
@@ -152,11 +149,17 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         self._layout = self._build_layout()
         self._menu_open = Condition(lambda: self._menu_kind is not None)
-        self._menu_navigation_open = Condition(lambda: self._menu_kind is not None and not self._prompt_note_active)
+        self._menu_navigation_open = Condition(
+            lambda: self._menu_kind is not None and not self._prompt_note_active
+        )
         self._slash_menu_open = Condition(lambda: self._menu_kind == "slash")
         self._mention_menu_open = Condition(lambda: self._menu_kind == "mention")
-        self._transcript_scroll_open = Condition(lambda: self._menu_kind is None and not self._form_visible())
-        self._transcript_focused = Condition(lambda: self._layout.current_control is self._transcript_control)
+        self._transcript_scroll_open = Condition(
+            lambda: self._menu_kind is None and not self._form_visible()
+        )
+        self._transcript_focused = Condition(
+            lambda: self._layout.current_control is self._transcript_control
+        )
         self._transcript_selection_active = Condition(self._transcript_has_selection)
         self._form_open = Condition(self._form_visible)
         self._line_prompt_open = Condition(lambda: self._prompt_kind == "line")
@@ -223,7 +226,9 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             self._buffer.insert_text(text)
 
     def _transcript_has_selection(self) -> bool:
-        return bool(self._transcript_control and self._transcript_control.has_selection())
+        return bool(
+            self._transcript_control and self._transcript_control.has_selection()
+        )
 
     def _copy_transcript_selection(self):
         if self._transcript_control is None:
@@ -311,7 +316,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             parts.append(stderr.rstrip())
         body = "\n".join(parts)
         if len(body) > self._SHELL_OUTPUT_CAP:
-            body = body[: self._SHELL_OUTPUT_CAP] + f"\n... (truncated, {len(body)} chars total)"
+            body = (
+                body[: self._SHELL_OUTPUT_CAP]
+                + f"\n... (truncated, {len(body)} chars total)"
+            )
         if not body:
             body = "(no output)"
         render.render_panel_text(body, title="shell")
@@ -431,6 +439,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         await self.session.refresh_context_snapshot()
         render.set_sink(self)
         self._configure_escape_timeouts(self._app)
+        self._start_initial_header_task()
         if resume_thread_id:
             self._start_resume_task(resume_thread_id)
         try:
@@ -457,3 +466,24 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             await self.session.resume_thread(thread_id)
 
         self._app.create_background_task(_resume())
+
+    def _start_initial_header_task(self) -> None:
+        """Render the startup header once the transcript pane's real width is known.
+
+        ``session.render_header()`` is normally called from ``cli.main._main``
+        before the TUI starts running. At that point ``_transcript_render_width``
+        is still 0, so ``append_header`` falls back to ``shutil``s terminal width,
+        which can differ from the actual transcript pane width reported on the
+        first render. Building the header lines against the wrong width then
+        re-wrapping them once the real width arrives leaves each header row
+        split across two visual rows, one only partially filled ("half screen"
+        artifact). Waiting on ``_transcript_ready`` (set from
+        ``_on_transcript_render_size`` -> ``set_width``) guarantees the width
+        used to build the lines matches the width used to slice them.
+        """
+
+        async def _header() -> None:
+            await self._transcript_ready.wait()
+            self.session.render_header()
+
+        self._app.create_background_task(_header())

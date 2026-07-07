@@ -4,14 +4,13 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Callable
 
-from prompt_toolkit.application import get_app
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.layout.controls import UIContent, UIControl
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 
-from cli.tui.constants import MOUSE_SCROLL_LINES
-from cli.tui.models import TranscriptLine
+from cli.constants import MOUSE_SCROLL_LINES
+from cli.models import TranscriptLine
 
 DEFAULT_TRANSCRIPT_WIDTH = 80
 SELECTION_STYLE = "class:transcript.selection"
@@ -343,10 +342,3 @@ class TranscriptViewportControl(UIControl):
         text = self.store.row_text(row)
         col = max(0, min(len(text), mouse_event.position.x))
         return VisualPosition(row, col)
-
-
-def safe_invalidate() -> None:
-    try:
-        get_app().invalidate()
-    except Exception:
-        return

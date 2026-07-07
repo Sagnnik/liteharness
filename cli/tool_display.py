@@ -281,11 +281,6 @@ def _mcp_token(full_name: str, args: dict[str, Any]) -> str:
     return _join_parts(label, *shown) if shown else label
 
 
-def spawn_subagent_task_rows(args: dict[str, Any]) -> list[tuple[str, str]]:
-    """Return (agent_name, prompt) rows for spawn_subagent calls."""
-    return _spawn_subagent_lines(args)
-
-
 def _spawn_subagent_lines(args: dict[str, Any]) -> list[tuple[str, str]]:
     """Return (name, args_text) rows; args_text may contain newlines."""
     tasks = args.get("tasks")

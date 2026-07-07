@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from cli.commands import BUSY_SAFE_COMMANDS
-from tests.test_cli.helpers import make_app
 
 
-def test_queue_helpers_round_trip():
+def test_queue_helpers_round_trip(make_app):
     app = make_app()
     sess = app.session
     assert sess.prompt_queue == []

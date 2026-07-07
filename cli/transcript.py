@@ -10,146 +10,106 @@ from cli.tool_display import (
     should_show_tool_call,
     should_show_tool_result,
 )
-from cli.tui.formatting import USER_STYLE, user_message_lines
-from cli.tui.markdown_render import markdown_transcript_lines, todos_transcript_lines
-from cli.tui.models import TranscriptLine
-from cli.tui.stream import Thinking, TuiAssistantStream
-from cli.tui.utils import term_height, term_width
-
-_TAG_STYLES: dict[str, str] = {
-    "session": "class:transcript.tag.session",
-    "mcp": "class:transcript.tag.mcp",
-    "notice": "class:transcript.tag.notice",
-    "skill": "class:transcript.tag.skill",
-    "init": "class:transcript.tag.init",
-    "save": "class:transcript.tag.save",
-    "resume": "class:transcript.tag.session",
-    "compaction": "class:transcript.tag.notice",
-    "pre-execution checkpoint": "class:transcript.tag.notice",
-    "warning": "class:transcript.tag.notice",
-}
+from cli.formatting import USER_STYLE, user_message_lines
+from cli.markdown import (
+    _REASONING_COLLAPSED_STYLE,
+    _diff_transcript_lines,
+    _reasoning_block_lines,
+    _shell_output_lines,
+    _tagged_lines,
+    markdown_transcript_lines,
+    todos_transcript_lines,
+)
+from cli.models import TranscriptLine
+from cli.stream import Thinking, TuiAssistantStream
+from cli.utils import term_height, term_width
 
 
-def _diff_line_style(line: str) -> str:
-    if line.startswith(("+++", "---")):
-        return "class:transcript.diff.meta"
-    if line.startswith("@@"):
-        return "class:transcript.diff.hunk"
-    if line.startswith("+"):
-        return "class:transcript.diff.add"
-    if line.startswith("-"):
-        return "class:transcript.diff.del"
-    return "class:transcript.diff.context"
+# Module-level TranscriptLine row builders (``_diff_transcript_lines``,
+# ``_shell_output_lines``, ``_tagged_lines``, ``_reasoning_block_lines`` and
+# their helpers) live in cli.markdown alongside ``markdown_transcript_lines``
+# and ``todos_transcript_lines``, so every "build TranscriptLines from data"
+# routine sits in one module. Imported back here for the TranscriptMixin sink
+# methods below.
 
 
-def _diff_transcript_lines(diff_text: str, title: str) -> list[TranscriptLine]:
-    header = TranscriptLine(
-        style="class:transcript.tool",
-        text=f"[{title}]",
-        fragments=[("class:transcript.tool", f"[{title}]")],
-    )
-    lines: list[TranscriptLine] = [header]
-    for line in str(diff_text or "").splitlines():
-        style = _diff_line_style(line)
-        lines.append(TranscriptLine(style, f"  {line}" if line else ""))
-    lines.append(TranscriptLine("class:transcript.muted", ""))
-    return lines
+def _header_project() -> str:
+    """CWD-with-branch string for the header's Project cell."""
+    from cli.utils import display_cwd
+
+    return display_cwd()
 
 
-def _shell_output_lines(title: str, body_lines: list[str]) -> list[TranscriptLine]:
-    header = TranscriptLine(
-        style="class:transcript.tool",
-        text=f"[{title}]",
-        fragments=[("class:transcript.tool", f"[{title}]")],
-    )
-    lines: list[TranscriptLine] = [header]
-    for line in body_lines:
-        lines.append(TranscriptLine("class:transcript.tool.result", f"  {line}" if line else ""))
-    lines.append(TranscriptLine("class:transcript.muted", ""))
-    return lines
+def _header_addons_summary() -> str:
+    """Summarize active MCP servers + skills for the header's Add-ons cell.
 
-
-def _tag_style(title: str) -> str:
-    key = title.lower()
-    if key.startswith("question"):
-        return "class:transcript.tag.session"
-    return _TAG_STYLES.get(key, "class:transcript.tag.notice")
-
-
-def _tagged_lines(title: str, *lines: str) -> list[TranscriptLine]:
+    Lazy imports keep the transcript module importable in headless test paths
+    where mcp_client / skill_loader would otherwise drag in heavy deps.
+    """
     parts: list[str] = []
-    for line in lines:
-        parts.extend(str(line).splitlines() or [""])
-    if not parts:
-        parts = [""]
-    indent = " " * (len(f"[{title}]") + 4)
-    out: list[TranscriptLine] = []
-    for index, body in enumerate(parts):
-        if index == 0:
-            text = f"[{title}]    {body}"
-            out.append(
-                TranscriptLine(
-                    style="",
-                    text=text,
-                    fragments=[
-                        (_tag_style(title), f"[{title}]"),
-                        ("class:transcript.tag.body", f"    {body}"),
-                    ],
-                )
-            )
-        else:
-            out.append(TranscriptLine(style="class:transcript.tag.body", text=indent + body))
-    return out
+    try:
+        from mcp_client import mcp_manager
+
+        server_names = sorted(
+            name
+            for name, info in mcp_manager.servers.items()
+            if info.get("status") != "error"
+        )
+        n_mcp = len(server_names)
+        if n_mcp:
+            names = ", ".join(server_names[:3])
+            if len(server_names) > 3:
+                names += ", …"
+            parts.append(f"{n_mcp} MCPs ({names})" if names else f"{n_mcp} MCPs")
+    except Exception:
+        pass
+    try:
+        from skill_loader import load_skills
+
+        parts.append(f"{len(load_skills())} Skills")
+    except Exception:
+        pass
+    return ", ".join(parts)
 
 
-_REASONING_COLLAPSED_STYLE = "class:transcript.reasoning.collapsed"
-_REASONING_BODY_STYLE = "class:transcript.reasoning"
+def _header_version() -> str:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
 
-
-def _format_reasoning_elapsed(elapsed: float) -> str:
-    if elapsed < 60:
-        return f"{elapsed:.1f}s"
-    minutes = int(elapsed // 60)
-    seconds = elapsed % 60
-    return f"{minutes}m {seconds:.1f}s"
-
-
-def _reasoning_header_line(text: str, *, expanded: bool) -> TranscriptLine:
-    glyph = "-" if expanded else "+"
-    label = f"{glyph} Thinking: {text}"
-    return TranscriptLine(
-        style=_REASONING_COLLAPSED_STYLE,
-        text=label,
-        fragments=[(_REASONING_COLLAPSED_STYLE, label)],
-    )
-
-
-def _reasoning_block_lines(text: str, *, elapsed: float, expanded: bool, width: int) -> list[TranscriptLine]:
-    header = _reasoning_header_line(_format_reasoning_elapsed(elapsed), expanded=expanded)
-    if not expanded:
-        return [header]
-    body = (text or "").strip()
-    if not body:
-        return [header]
-    body_lines = markdown_transcript_lines(body, width=width)
-    # Re-style body lines as reasoning (subdued) so they read as subordinate
-    # to the assistant markdown that follows. markdown_transcript_lines pins
-    # each line's style to "class:transcript.assistant" via its fallback, but
-    # emits per-fragment styles from Rich; we override the bare-style case by
-    # passing the style through manually below.
-    styled: list[TranscriptLine] = [header]
-    for line in body_lines:
-        if line.fragments:
-            styled.append(TranscriptLine(_REASONING_BODY_STYLE, line.text, fragments=line.fragments))
-        else:
-            styled.append(TranscriptLine(_REASONING_BODY_STYLE, line.text))
-    styled.append(TranscriptLine("class:transcript.muted", ""))
-    return styled
+        try:
+            return version("liteharness")
+        except PackageNotFoundError:
+            return "dev"
+    except Exception:
+        return "dev"
+    except Exception:
+        return "dev"
 
 
 class TranscriptMixin:
-    """Transcript buffer, render-sink methods, and scroll behavior."""
+    """Transcript buffer, render-sink methods, and scroll behavior.
 
+    Composed into ``TuiApp`` (see cli/app.py) and registered as the active
+    ``RenderSink`` via ``render.set_sink``. Methods are grouped by concern
+    and separated by banner comments inline:
+
+    - Tagged/diff/shell/reasoning line builders       (module scope: cli.markdown)
+    - Sink entry points (high-level render calls)   (append_header, append_user)
+    - Resize + reflow machinery                     (_on_transcript_render_width...)
+    - Tagged render sink methods                     (append_notice, append_warning, ...)
+    - Assistant markdown rendering                  (append_assistant, _reasoning_block_for_span)
+    - Reasoning slot lifecycle                       (reserve_reasoning_slot, finalize, toggle)
+    - Live assistant streaming                       (set_assistant_stream, finalize, clear)
+    - Transcript buffer primitives + reset           (_append_transcript, _sync...)
+    - Tool calls & results                          (append_tool_calls, append_tool_result)
+    - Todos / diff / shell output                   (append_todos, append_diff, append_shell_output)
+    - Streaming adapters (start_assistant_stream, thinking)
+    - Layout sizing + scroll navigation             (_chrome_height_lines, _scroll_*)
+    """
+
+    # ------------------------------------------------------------------ #
+    # Sink entry points (high-level render)                               #
+    # ------------------------------------------------------------------ #
     def append_header(
         self,
         *,
@@ -159,10 +119,59 @@ class TranscriptMixin:
         autosave: bool,
         session_end_reflection: bool,
     ) -> None:
-        self.append_notice(
-            "session",
-            f"model {model}  approval {'on' if approval else 'off'}  autosave {'on' if autosave else 'off'}  session end reflection {'on' if session_end_reflection else 'off'}",
-        )
+        del (
+            autosave,
+            session_end_reflection,
+        )  # surfaced elsewhere (not in the new header)
+        width = self._transcript_render_width or term_width()
+        from cli.header import header_lines
+
+        source = {
+            "mode": mode,
+            "model": model,
+            "approval": approval,
+            "project": _header_project(),
+            "addons_summary": _header_addons_summary(),
+            "version": _header_version(),
+        }
+        rows = header_lines(width=width, show_logo=width >= 96, **source)
+        # The trailing blank line is part of the tracked block so an in-place
+        # replace removes the old blank too (otherwise spacers accumulate).
+        if rows:
+            block_lines = [*rows, TranscriptLine("class:transcript.muted", "")]
+        else:
+            # narrow-terminal fallback (<40 cols): a single [session] notice,
+            # still tracked so a later resize regenerates the full header.
+            block_lines = [
+                *_tagged_lines(
+                    "session", f"model {model}  approval {'on' if approval else 'off'}"
+                ),
+                TranscriptLine("class:transcript.muted", ""),
+            ]
+
+        if self._header_block is None:
+            # First render: append at the top of an (initially empty) transcript.
+            start = len(self._transcript_store.lines)
+            self._transcript_store.append(block_lines)
+            self._header_block = {
+                "start": start,
+                "count": len(block_lines),
+                "width": width,
+                "source": source,
+            }
+        else:
+            # Subsequent renders (e.g. /config changed the model/mode): replace
+            # the existing top-of-transcript block in place instead of appending
+            # a duplicate banner mid-conversation.
+            start = self._header_block["start"]
+            old_count = self._header_block["count"]
+            self._transcript_store.replace(start, old_count, block_lines)
+            self._header_block["count"] = len(block_lines)
+            self._header_block["width"] = width
+            self._header_block["source"] = source
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
 
     def append_user(self, text: str) -> None:
         if not text.strip():
@@ -174,16 +183,57 @@ class TranscriptMixin:
         self._append_transcript(TranscriptLine("class:transcript.muted", ""))
         self._layout_term_width = width
 
+    # ------------------------------------------------------------------ #
+    # Resize + reflow machinery                                          #
+    # ------------------------------------------------------------------ #
     def _on_transcript_render_width(self, width: int) -> None:
-        self._on_transcript_render_size(width, self._transcript_viewport_height or self._transcript_viewport_lines())
+        self._on_transcript_render_size(
+            width, self._transcript_viewport_height or self._transcript_viewport_lines()
+        )
 
     def _on_transcript_render_size(self, width: int, height: int) -> None:
         self._transcript_render_width = width
         self._transcript_viewport_height = height
         if width > 0:
             self._transcript_ready.set()
-        if self._transcript_store.set_width(width) and self._follow_transcript:
-            self._scroll_transcript_to_bottom()
+        if self._transcript_store.set_width(width):
+            # Re-flow the tracked header block at the new width so the
+            # rounded dashboard / logo don't wrap into a half-screen
+            # artifact on terminal shrink (and re-tighten on grow).
+            self._reflow_header_for_width(width)
+            if self._follow_transcript:
+                self._scroll_transcript_to_bottom()
+
+    def _reflow_header_for_width(self, width: int) -> None:
+        """Regenerate the tracked header block at ``width`` if it changed.
+
+        Mirrors ``_reflow_user_blocks_for_width`` but for the single tracked
+        header block: rebuilds its ``TranscriptLine`` rows from the stored
+        source kwargs at the new width and ``replace``s it in place. Guards
+        keep this a no-op when no header has been rendered yet or the width
+        is unchanged / below the render threshold.
+        """
+        block = self._header_block
+        if block is None or width == block["width"]:
+            return
+        from cli.header import header_lines
+
+        rows = header_lines(width=width, show_logo=width >= 96, **block["source"])
+        if rows:
+            new_lines = [*rows, TranscriptLine("class:transcript.muted", "")]
+        else:
+            new_lines = [
+                *_tagged_lines(
+                    "session",
+                    f"model {block['source']['model']}  "
+                    f"approval {'on' if block['source']['approval'] else 'off'}",
+                ),
+                TranscriptLine("class:transcript.muted", ""),
+            ]
+        self._transcript_store.replace(block["start"], block["count"], new_lines)
+        block["count"] = len(new_lines)
+        block["width"] = width
+        self._transcript_revision = self._transcript_store.revision
 
     def _after_render(self) -> None:
         width = self._transcript_render_width
@@ -197,7 +247,7 @@ class TranscriptMixin:
         self._reflow_user_blocks_for_width(width)
 
     def _expected_user_band_width(self, width: int | None = None) -> int:
-        from cli.tui.formatting import user_band_width
+        from cli.formatting import user_band_width
 
         return user_band_width(width=width if width is not None else term_width())
 
@@ -223,7 +273,9 @@ class TranscriptMixin:
             return
 
         follow = self._follow_transcript
-        old_scroll = self._transcript_pane.vertical_scroll if self._transcript_pane else 0
+        old_scroll = (
+            self._transcript_pane.vertical_scroll if self._transcript_pane else 0
+        )
 
         new_lines: list[TranscriptLine] = []
         index = 0
@@ -250,16 +302,21 @@ class TranscriptMixin:
         if follow:
             self._scroll_transcript_to_bottom()
         elif self._transcript_pane is not None:
-            self._transcript_pane.vertical_scroll = min(old_scroll, self._max_transcript_scroll())
+            self._transcript_pane.vertical_scroll = min(
+                old_scroll, self._max_transcript_scroll()
+            )
 
-    def append_muted(self, text: str) -> None:
-        self._append_transcript(TranscriptLine("class:transcript.muted", text))
-
+    # Tagged render sink methods (notice/warning/error/panel/table) ------------
     def append_notice(self, title: str, *lines: str) -> None:
-        self._append_transcript(*_tagged_lines(title, *lines), TranscriptLine("class:transcript.muted", ""))
+        self._append_transcript(
+            *_tagged_lines(title, *lines), TranscriptLine("class:transcript.muted", "")
+        )
 
     def append_warning(self, text: str) -> None:
-        self._append_transcript(*_tagged_lines("warning", str(text)), TranscriptLine("class:transcript.muted", ""))
+        self._append_transcript(
+            *_tagged_lines("warning", str(text)),
+            TranscriptLine("class:transcript.muted", ""),
+        )
 
     def append_error(self, text: str) -> None:
         self._append_transcript(
@@ -275,9 +332,13 @@ class TranscriptMixin:
         )
 
     def append_panel(self, title: str, *lines: str) -> None:
-        self._append_transcript(*_tagged_lines(title, *lines), TranscriptLine("class:transcript.muted", ""))
+        self._append_transcript(
+            *_tagged_lines(title, *lines), TranscriptLine("class:transcript.muted", "")
+        )
 
-    def append_table(self, title: str, headers: list[str], rows: list[list[str]]) -> None:
+    def append_table(
+        self, title: str, headers: list[str], rows: list[list[str]]
+    ) -> None:
         col_widths = [len(h) for h in headers]
         for row in rows:
             for i, cell in enumerate(row):
@@ -286,14 +347,19 @@ class TranscriptMixin:
         lines_out = [
             TranscriptLine("class:transcript.notice", title),
             TranscriptLine("class:transcript.panel", f"  {header_line}"),
-            TranscriptLine("class:transcript.muted", "  " + "  ".join("-" * w for w in col_widths)),
+            TranscriptLine(
+                "class:transcript.muted", "  " + "  ".join("-" * w for w in col_widths)
+            ),
         ]
         for row in rows:
-            line = "  ".join(str(row[i]).ljust(col_widths[i]) for i in range(len(headers)))
+            line = "  ".join(
+                str(row[i]).ljust(col_widths[i]) for i in range(len(headers))
+            )
             lines_out.append(TranscriptLine("class:transcript.panel", f"  {line}"))
         lines_out.append(TranscriptLine("class:transcript.muted", ""))
         self._append_transcript(*lines_out)
 
+    # Assistant markdown rendering -----------------------------------------
     def append_assistant(self, text: str) -> None:
         if not text.strip():
             return
@@ -301,7 +367,9 @@ class TranscriptMixin:
         lines = markdown_transcript_lines(text, width=width)
         self._append_transcript(*lines, TranscriptLine("class:transcript.muted", ""))
 
-    def _reasoning_block_for_span(self, span: dict, *, expanded: bool | None = None) -> list[TranscriptLine]:
+    def _reasoning_block_for_span(
+        self, span: dict, *, expanded: bool | None = None
+    ) -> list[TranscriptLine]:
         width = self._transcript_render_width or term_width()
         if expanded is None:
             expanded = self._show_reasoning
@@ -312,7 +380,10 @@ class TranscriptMixin:
             width=width,
         )
 
-    def reserve_reasoning_slot(self, before_stream: TuiAssistantStream | None = None) -> dict:
+    # Reasoning slot lifecycle ---------------------------------------------
+    def reserve_reasoning_slot(
+        self, before_stream: TuiAssistantStream | None = None
+    ) -> dict:
         """Insert a ``Thinking…`` placeholder above the live assistant stream.
 
         Called from ``SessionApp.run_turn`` on the first reasoning chunk of
@@ -387,7 +458,12 @@ class TranscriptMixin:
         """
         if not text.strip():
             return
-        span = {"start": len(self._transcript_store.lines), "count": 0, "text": text, "elapsed": float(elapsed)}
+        span = {
+            "start": len(self._transcript_store.lines),
+            "count": 0,
+            "text": text,
+            "elapsed": float(elapsed),
+        }
         new_lines = self._reasoning_block_for_span(span)
         self._transcript_store.append(new_lines)
         span["start"] = len(self._transcript_store.lines) - len(new_lines)
@@ -403,8 +479,12 @@ class TranscriptMixin:
         # markdown styling is swapped in by finalize_assistant_stream on completion.
         if not text:
             return [TranscriptLine("class:transcript.assistant", "")]
-        return [TranscriptLine("class:transcript.assistant", part) for part in text.split("\n")]
+        return [
+            TranscriptLine("class:transcript.assistant", part)
+            for part in text.split("\n")
+        ]
 
+    # Live assistant streaming ----------------------------------------------
     def set_assistant_stream(
         self,
         text: str,
@@ -422,7 +502,9 @@ class TranscriptMixin:
         self.invalidate()
         return start, len(lines)
 
-    def finalize_assistant_stream(self, text: str, start: int | None, count: int) -> None:
+    def finalize_assistant_stream(
+        self, text: str, start: int | None, count: int
+    ) -> None:
         if start is None:
             self.append_assistant(text)
             return
@@ -432,7 +514,9 @@ class TranscriptMixin:
             return
         width = self._transcript_render_width or term_width()
         final_lines = markdown_transcript_lines(stripped, width=width)
-        self._transcript_store.replace(start, count, [*final_lines, TranscriptLine("class:transcript.muted", "")])
+        self._transcript_store.replace(
+            start, count, [*final_lines, TranscriptLine("class:transcript.muted", "")]
+        )
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
@@ -445,7 +529,10 @@ class TranscriptMixin:
         self._scroll_transcript_to_bottom()
         self.invalidate()
 
-    def _sync_transcript_buffer(self, *, scroll: bool = True, invalidate_ui: bool = True) -> None:
+    # Transcript reset / clear ---------------------------------------------
+    def _sync_transcript_buffer(
+        self, *, scroll: bool = True, invalidate_ui: bool = True
+    ) -> None:
         self._transcript_store.reset()
         self._transcript_revision = self._transcript_store.revision
         if scroll:
@@ -458,20 +545,20 @@ class TranscriptMixin:
         # wipe the visible pane before replaying the prior conversation.
         self._sync_transcript_buffer()
 
-    def append_tool_call(self, name: str, args: Any) -> None:
-        self.append_tool_calls([{"name": name, "args": args if isinstance(args, dict) else {}}])
-
-    def _append_tool_spacer(self) -> None:
-        self._append_transcript(TranscriptLine("class:transcript.muted", ""))
-
+    # Tool calls & results -------------------------------------------------
     def _tool_spacer_line(self) -> TranscriptLine:
         return TranscriptLine("class:transcript.muted", "")
 
-    def _advance_tool_batch(self, calls: list[dict[str, Any]], index: int, name: str) -> int:
+    def _advance_tool_batch(
+        self, calls: list[dict[str, Any]], index: int, name: str
+    ) -> int:
         if name not in BATCHABLE_TOOL_CALLS:
             return index + 1
         next_index = index + 1
-        while next_index < len(calls) and str(calls[next_index].get("name") or "?") == name:
+        while (
+            next_index < len(calls)
+            and str(calls[next_index].get("name") or "?") == name
+        ):
             next_index += 1
         return next_index
 
@@ -492,11 +579,16 @@ class TranscriptMixin:
             if name in BATCHABLE_TOOL_CALLS:
                 batch = [calls[index]]
                 next_index = index + 1
-                while next_index < len(calls) and str(calls[next_index].get("name") or "?") == name:
+                while (
+                    next_index < len(calls)
+                    and str(calls[next_index].get("name") or "?") == name
+                ):
                     batch.append(calls[next_index])
                     next_index += 1
                 args_text = format_batched_tool_args(name, batch)
-                lines_out.extend([self._tool_call_line(name, args_text), self._tool_spacer_line()])
+                lines_out.extend(
+                    [self._tool_call_line(name, args_text), self._tool_spacer_line()]
+                )
                 index = next_index
                 continue
 
@@ -521,12 +613,16 @@ class TranscriptMixin:
             fragments.append(("class:transcript.tool.args", f"{sep}{args_text}"))
         return TranscriptLine("", text, fragments=fragments)
 
-    def append_tool_result(self, name: str, content: str, *, exit_status: str | None = None) -> None:
+    def append_tool_result(
+        self, name: str, content: str, *, exit_status: str | None = None
+    ) -> None:
         if not should_show_tool_result(name, content, exit_status=exit_status):
             return
 
         preview = format_tool_result_preview(name, content)
-        prefix = f"  [{exit_status}] " if exit_status and exit_status != "ok" else "  └ "
+        prefix = (
+            f"  [{exit_status}] " if exit_status and exit_status != "ok" else "  └ "
+        )
         body = prefix + preview
         self._append_transcript(
             TranscriptLine(
@@ -539,10 +635,13 @@ class TranscriptMixin:
     def append_usage(self, usage: dict[str, Any]) -> None:
         self.invalidate()
 
+    # Todos / diff / shell output ------------------------------------------
     def append_todos(self, todos: list[dict]) -> None:
         if not todos:
             if self._todos_block_start is not None:
-                self._transcript_store.delete(self._todos_block_start, self._todos_block_count)
+                self._transcript_store.delete(
+                    self._todos_block_start, self._todos_block_count
+                )
                 self._todos_block_start = None
                 self._todos_block_count = 0
                 self._transcript_revision = self._transcript_store.revision
@@ -550,9 +649,14 @@ class TranscriptMixin:
             return
 
         width = self._transcript_render_width or term_width()
-        lines = [*todos_transcript_lines(todos, width=width), TranscriptLine("class:transcript.muted", "")]
+        lines = [
+            *todos_transcript_lines(todos, width=width),
+            TranscriptLine("class:transcript.muted", ""),
+        ]
         if self._todos_block_start is not None:
-            self._transcript_store.replace(self._todos_block_start, self._todos_block_count, lines)
+            self._transcript_store.replace(
+                self._todos_block_start, self._todos_block_count, lines
+            )
         else:
             self._todos_block_start = len(self._transcript_store.lines)
             self._transcript_store.append(lines)
@@ -572,15 +676,14 @@ class TranscriptMixin:
         body_lines = body.splitlines() if body.strip() else ["(no output)"]
         self._append_transcript(*_shell_output_lines(title, body_lines))
 
+    # Streaming adapters ---------------------------------------------------
     def start_assistant_stream(self) -> TuiAssistantStream:
         return TuiAssistantStream(self)
 
     def thinking(self, label: str = "thinking") -> Thinking:
         return Thinking(self, label)
 
-    def _transcript_plain_text(self) -> str:
-        return self._transcript_store.plain_text()
-
+    # Transcript buffer helpers (read/append primitives) -------------------
     def _append_transcript(self, *lines: TranscriptLine) -> None:
         if not lines:
             return
@@ -589,9 +692,9 @@ class TranscriptMixin:
         self._scroll_transcript_to_bottom()
         self.invalidate()
 
-    def _transcript_content_lines(self) -> int:
-        return self._transcript_store.total_rows
-
+    # ------------------------------------------------------------------ #
+    # Layout sizing + scroll navigation                                   #
+    # ------------------------------------------------------------------ #
     def _chrome_height_lines(self) -> int:
         lines = 4 + self._input_row_count()
         if self._working_status_visible():
@@ -615,7 +718,9 @@ class TranscriptMixin:
 
     def _set_transcript_scroll(self, value: int) -> None:
         if self._transcript_pane is not None:
-            self._transcript_pane.vertical_scroll = max(0, min(value, self._max_transcript_scroll()))
+            self._transcript_pane.vertical_scroll = max(
+                0, min(value, self._max_transcript_scroll())
+            )
 
     def _scroll_transcript_to_bottom(self) -> None:
         if self._follow_transcript and self._transcript_pane is not None:
@@ -625,7 +730,11 @@ class TranscriptMixin:
         if self._transcript_pane is None:
             return
         self._transcript_pane.vertical_scroll = max(
-            0, min(self._max_transcript_scroll(), self._transcript_pane.vertical_scroll + delta)
+            0,
+            min(
+                self._max_transcript_scroll(),
+                self._transcript_pane.vertical_scroll + delta,
+            ),
         )
         if delta < 0:
             self._follow_transcript = False

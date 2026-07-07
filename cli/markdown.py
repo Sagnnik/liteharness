@@ -8,7 +8,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from cli.theme import RICH_THEME
-from cli.tui.models import TranscriptLine
+from cli.formatting import _format_duration
+from cli.models import TranscriptLine
 
 _STATUS_MARKER: dict[str, str] = {
     "completed": "[x]",
@@ -152,3 +153,134 @@ def markdown_transcript_lines(text: str, *, width: int) -> list[TranscriptLine]:
     while lines and not lines[-1].text:
         lines.pop()
     return lines or _plain_lines(stripped)
+
+
+# --- additional TranscriptLine row builders ----------------------------------
+# Pure helpers that turn a string/dict into a list of TranscriptLine rows.
+# Used by TranscriptMixin (cli/transcript.py) sink methods. Kept here so every
+# "build TranscriptLines from data" routine lives in one module: diff, shell
+# output, tagged panels, todos, reasoning, and markdown.
+
+_TAG_STYLES: dict[str, str] = {
+    "session": "class:transcript.tag.session",
+    "mcp": "class:transcript.tag.mcp",
+    "notice": "class:transcript.tag.notice",
+    "skill": "class:transcript.tag.skill",
+    "init": "class:transcript.tag.init",
+    "save": "class:transcript.tag.save",
+    "resume": "class:transcript.tag.session",
+    "compaction": "class:transcript.tag.notice",
+    "pre-execution checkpoint": "class:transcript.tag.notice",
+    "warning": "class:transcript.tag.notice",
+}
+
+
+def _diff_line_style(line: str) -> str:
+    if line.startswith(("+++", "---")):
+        return "class:transcript.diff.meta"
+    if line.startswith("@@"):
+        return "class:transcript.diff.hunk"
+    if line.startswith("+"):
+        return "class:transcript.diff.add"
+    if line.startswith("-"):
+        return "class:transcript.diff.del"
+    return "class:transcript.diff.context"
+
+
+def _diff_transcript_lines(diff_text: str, title: str) -> list[TranscriptLine]:
+    header = TranscriptLine(
+        style="class:transcript.tool",
+        text=f"[{title}]",
+        fragments=[("class:transcript.tool", f"[{title}]")],
+    )
+    lines: list[TranscriptLine] = [header]
+    for line in str(diff_text or "").splitlines():
+        style = _diff_line_style(line)
+        lines.append(TranscriptLine(style, f"  {line}" if line else ""))
+    lines.append(TranscriptLine("class:transcript.muted", ""))
+    return lines
+
+
+def _shell_output_lines(title: str, body_lines: list[str]) -> list[TranscriptLine]:
+    header = TranscriptLine(
+        style="class:transcript.tool",
+        text=f"[{title}]",
+        fragments=[("class:transcript.tool", f"[{title}]")],
+    )
+    lines: list[TranscriptLine] = [header]
+    for line in body_lines:
+        lines.append(TranscriptLine("class:transcript.tool.result", f"  {line}" if line else ""))
+    lines.append(TranscriptLine("class:transcript.muted", ""))
+    return lines
+
+
+def _tag_style(title: str) -> str:
+    key = title.lower()
+    if key.startswith("question"):
+        return "class:transcript.tag.session"
+    return _TAG_STYLES.get(key, "class:transcript.tag.notice")
+
+
+def _tagged_lines(title: str, *lines: str) -> list[TranscriptLine]:
+    parts: list[str] = []
+    for line in lines:
+        parts.extend(str(line).splitlines() or [""])
+    if not parts:
+        parts = [""]
+    indent = " " * (len(f"[{title}]") + 4)
+    out: list[TranscriptLine] = []
+    for index, body in enumerate(parts):
+        if index == 0:
+            text = f"[{title}]    {body}"
+            out.append(
+                TranscriptLine(
+                    style="",
+                    text=text,
+                    fragments=[
+                        (_tag_style(title), f"[{title}]"),
+                        ("class:transcript.tag.body", f"    {body}"),
+                    ],
+                )
+            )
+        else:
+            out.append(TranscriptLine(style="class:transcript.tag.body", text=indent + body))
+    return out
+
+
+_REASONING_COLLAPSED_STYLE = "class:transcript.reasoning.collapsed"
+_REASONING_BODY_STYLE = "class:transcript.reasoning"
+
+
+def _reasoning_header_line(text: str, *, expanded: bool) -> TranscriptLine:
+    glyph = "-" if expanded else "+"
+    label = f"{glyph} Thinking: {text}"
+    return TranscriptLine(
+        style=_REASONING_COLLAPSED_STYLE,
+        text=label,
+        fragments=[(_REASONING_COLLAPSED_STYLE, label)],
+    )
+
+
+def _reasoning_block_lines(text: str, *, elapsed: float, expanded: bool, width: int) -> list[TranscriptLine]:
+    # Duration label uses the shared formatter from cli.formatting so any
+    # "Worked / Thinking for Nm Ns" UX stays byte-identical across surfaces.
+    header = _reasoning_header_line(_format_duration(elapsed), expanded=expanded)
+    if not expanded:
+        return [header]
+    body = (text or "").strip()
+    if not body:
+        return [header]
+    body_lines = markdown_transcript_lines(body, width=width)
+    # Re-style body lines as reasoning (subdued) so they read as subordinate
+    # to the assistant markdown that follows. markdown_transcript_lines pins
+    # each line's style to "class:transcript.assistant" via its fallback, but
+    # emits per-fragment styles from Rich; we override the bare-style case by
+    # passing the style through manually below.
+    styled: list[TranscriptLine] = [header]
+    for line in body_lines:
+        if line.fragments:
+            styled.append(TranscriptLine(_REASONING_BODY_STYLE, line.text, fragments=line.fragments))
+        else:
+            styled.append(TranscriptLine(_REASONING_BODY_STYLE, line.text))
+    styled.append(TranscriptLine("class:transcript.muted", ""))
+    return styled

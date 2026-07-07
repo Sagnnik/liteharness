@@ -3,6 +3,22 @@
 Responsibilities: build/rebuild the LangGraph app, run a turn (stream + render +
 per-turn usage), themed permission prompts, mode toggling with the plan->act
 compaction checkpoint, and full-transcript resume / reset / save.
+
+The module is organised in five logical sections, separated by banner comments:
+
+1. Module helpers (``new_thread_id``, ``CancelToken``, ``graph_rebuild_needed``)
+2. ``SessionApp`` class
+   a. Graph lifecycle (build / rebuild / ensure)
+   b. Mode toggle + header rendering
+   c. Per-turn cost helpers
+   d. The turn loop (``run_turn`` + ``_dispatch_stream_event`` + cancel-finalize)
+   e. Approval / clarification / interactive prompts
+   f. Context refresh + compaction checkpoint (plan->act)
+   g. Prompt queue
+   h. Compaction / reflection requests
+   i. Thread management (save / reset / resume / rollback)
+   j. Message building + plan autosave
+3. Module-level event utilities (events->messages, cost replay, content defang)
 """
 
 from __future__ import annotations
@@ -57,6 +73,7 @@ from cli import render
 from cli.mentions import expand_documents
 
 
+# === 1. Module helpers ======================================================
 def new_thread_id() -> str:
     return f"session-{uuid.uuid4().hex[:8]}"
 
@@ -98,6 +115,7 @@ def graph_rebuild_needed(current_thread: str, built_thread: str) -> bool:
     return current_thread != built_thread
 
 
+# === 2. SessionApp ==========================================================
 class SessionApp:
     def __init__(self, *, git_available: bool) -> None:
         self.git_available = git_available
@@ -274,50 +292,19 @@ class SessionApp:
             }
 
             async for event in self.app.astream_events(payload, config=config, version="v2"):
-                etype = event.get("event")
-                name = event.get("name", "")
-
+                # Subagent suppression: when child runs are pending, drop all
+                # events except the model-end flush of any in-flight stream so
+                # its spinner doesn't hang while control is in a subagent branch.
                 if subagent_runs_active() > 0:
-                    if etype == "on_chat_model_end" and stream is not None:
+                    if event.get("event") == "on_chat_model_end" and stream is not None:
                         stream.stop()
                         stream = None
                         streamed_any = False
                     continue
 
-                if etype == "on_chat_model_start":
-                    stream = render.AssistantStream()
-                    streamed_any = False
-                elif etype == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    # Reasoning capture (OpenRouter): the model's chain-of-thought
-                    # arrives on ``chunk.additional_kwargs["reasoning_content"]``
-                    # as a stream of string fragments (``content`` may be empty
-                    # for pure-reasoning chunks). The facade reserves a slot
-                    # above the assistant stream's reserved markdown slot
-                    # (Anthropic/OpenCode convention) on the first fragment;
-                    # finalize at ``on_chat_model_end`` re-emits the collapsed
-                    # ``+ Thinking: n sec`` line.
-                    if reasoning_enabled:
-                        ak = getattr(chunk, "additional_kwargs", None) or {}
-                        rtext = ak.get("reasoning_content") if isinstance(ak, dict) else None
-                        if isinstance(rtext, str) and rtext and stream is not None:
-                            stream.feed_reasoning(rtext)
-                    text = getattr(chunk, "content", "")
-                    if isinstance(text, str) and text and stream is not None:
-                        stream.feed(text)
-                        streamed_any = True
-                elif etype == "on_chat_model_end":
-                    if stream is not None:
-                        stream.stop()
-                        if streamed_any and stream.text.strip():
-                            self._record_assistant(stream.text)
-                        stream.finalize_reasoning()
-                        stream = None
-                # on_chain_end -> each langgraph node end, name -> node name
-                elif etype == "on_chain_end" and name == "agent":
-                    self._render_agent_output(event, streamed_any)
-                elif etype == "on_chain_end" and name == "tools":
-                    self._render_tool_results(event)
+                stream, streamed_any = self._dispatch_stream_event(
+                    event, stream, streamed_any, reasoning_enabled
+                )
 
                 # Cooperative cancellation: break out between events so the
                 # post-loop cleanup can flush partial state cleanly. The hard
@@ -353,6 +340,68 @@ class SessionApp:
             raise
         finally:
             render.finish_turn()
+
+    def _dispatch_stream_event(
+        self,
+        event: dict,
+        stream: render.AssistantStream | None,
+        streamed_any: bool,
+        reasoning_enabled: bool,
+    ) -> tuple[render.AssistantStream | None, bool]:
+        """Route one ``astream_events`` chunk into the render facade.
+
+        Returns the possibly updated ``(stream, streamed_any)`` pair so the
+        caller's outer loop keeps the same mutable state across iterations.
+
+        - ``on_chat_model_start``  -> open a fresh ``AssistantStream``
+        - ``on_chat_model_stream`` -> feed content + reasoning_content chunks
+        - ``on_chat_model_end``    -> stop, record assistant text, finalize reasoning
+        - ``on_chain_end`` (agent) -> render assistant panels / tool calls
+        - ``on_chain_end`` (tools) -> render tool results
+
+        Reasoning capture (OpenRouter): the model's chain-of-thought arrives
+        on ``chunk.additional_kwargs["reasoning_content"]`` as a stream of
+        string fragments (``content`` may be empty for pure-reasoning chunks).
+        The facade reserves a slot above the assistant stream's reserved
+        markdown slot (Anthropic/OpenCode convention) on the first fragment;
+        ``finalize_reasoning`` at model-end re-emits the collapsed
+        ``+ Thinking: n sec`` line.
+        """
+        etype = event.get("event")
+        name = event.get("name", "")
+
+        if etype == "on_chat_model_start":
+            return render.AssistantStream(), False
+
+        if etype == "on_chat_model_stream":
+            chunk = event.get("data", {}).get("chunk")
+            if reasoning_enabled and stream is not None:
+                ak = getattr(chunk, "additional_kwargs", None) or {}
+                rtext = ak.get("reasoning_content") if isinstance(ak, dict) else None
+                if isinstance(rtext, str) and rtext and stream is not None:
+                    stream.feed_reasoning(rtext)
+            text = getattr(chunk, "content", "")
+            if isinstance(text, str) and text and stream is not None:
+                stream.feed(text)
+                streamed_any = True
+            return stream, streamed_any
+
+        if etype == "on_chat_model_end":
+            if stream is not None:
+                stream.stop()
+                if streamed_any and stream.text.strip():
+                    self._record_assistant(stream.text)
+                stream.finalize_reasoning()
+                stream = None
+            return stream, streamed_any
+
+        # on_chain_end -> each langgraph node end, name -> node name
+        if etype == "on_chain_end" and name == "agent":
+            self._render_agent_output(event, streamed_any)
+        elif etype == "on_chain_end" and name == "tools":
+            self._render_tool_results(event)
+
+        return stream, streamed_any
 
     async def _finalize_cancelled_turn(
         self,
@@ -731,15 +780,15 @@ class SessionApp:
         Three things happen, in order:
 
         1. Files: surgically restore the paths the agent's tools mutated at or
-           after this turn from the shadow git stash. Falls back to conversation-
-           only restore when git is unavailable or no paths were recorded.
+           after this turn from the shadow git stash (delegates to
+           :meth:`_restore_rollback_files`).
         2. Session memory: overwrite ``sessions/mem_<thread_id>.md`` from the
-           checkpoint snapshot so reflection bullets written by abandoned turns
-           are discarded.
-        3. Conversation: hard-truncate the events tail at ``user_seq`` (deleting
-           the abandoned user message and everything after it) and rebuild the
-           live graph from the remaining events. The in-process cost_tracker is
-           intentionally left untouched — its tally is process-global billing.
+           checkpoint snapshot (delegates to :meth:`_restore_rollback_memory`).
+        3. Conversation: hard-truncate the events tail at ``user_seq`` and
+           rebuild the live graph from the remaining events (the durable
+           events tail + :meth:`_bootstrap_from_events`). The in-process
+           cost_tracker is intentionally left untouched — its tally is
+           process-global billing.
         """
         if user_seq < 0:
             render.render_error("Invalid rollback target.")
@@ -751,31 +800,10 @@ class SessionApp:
             return
 
         # 1. Files (surgical restore; full tree when no paths recorded).
-        git_hash = checkpoint.get("git_hash")
-        if git_hash:
-            import json as _json
-
-            raw = checkpoint.get("modified_paths") or ""
-            paths: list[str] = []
-            if raw:
-                try:
-                    paths = list(_json.loads(raw))
-                except ValueError:
-                    paths = []
-            try:
-                output = await asyncio.to_thread(restore_paths, git_hash, paths)
-                if output and not output.startswith("("):
-                    render.render_warning(f"File restore note: {output}")
-            except Exception as exc:
-                render.render_warning(f"File restore failed: {exc}")
-        else:
-            render.render_notice("No git snapshot for this checkpoint; files not reverted.", title="rollback")
+        await self._restore_rollback_files(checkpoint)
 
         # 2. Session memory (mem_<thread_id>.md) from the snapshot.
-        try:
-            await asyncio.to_thread(restore_mem_file, NESS_DIR, self.thread_id, checkpoint.get("mem_snapshot") or "")
-        except Exception as exc:
-            render.render_warning(f"Session memory restore failed: {exc}")
+        await self._restore_rollback_memory(checkpoint)
 
         # 3. Truncate the durable conversation tail and rebuild the live graph
         #    from the surviving events. cost_tracker is intentionally preserved.
@@ -785,6 +813,47 @@ class SessionApp:
             f"Rolled back to turn @ seq {user_seq}. Files, memory, and conversation restored.",
             title="rollback",
         )
+
+    async def _restore_rollback_files(self, checkpoint: dict) -> None:
+        """Surgically restore the paths recorded in the checkpoint's git snapshot.
+
+        Falls back to a notice when no git hash exists (git unavailable or no
+        snapshot was taken). When the checkpoint recorded no ``modified_paths``,
+        every tracked path is restored (``restore_paths`` treats an empty list
+        as "restore the whole working tree from the stash").
+        """
+        git_hash = checkpoint.get("git_hash")
+        if not git_hash:
+            render.render_notice("No git snapshot for this checkpoint; files not reverted.", title="rollback")
+            return
+
+        raw = checkpoint.get("modified_paths") or ""
+        paths: list[str] = []
+        if raw:
+            import json as _json
+
+            try:
+                paths = list(_json.loads(raw))
+            except ValueError:
+                paths = []
+        try:
+            output = await asyncio.to_thread(restore_paths, git_hash, paths)
+            if output and not output.startswith("("):
+                render.render_warning(f"File restore note: {output}")
+        except Exception as exc:
+            render.render_warning(f"File restore failed: {exc}")
+
+    async def _restore_rollback_memory(self, checkpoint: dict) -> None:
+        """Overwrite the per-thread session-memory file from the snapshot."""
+        try:
+            await asyncio.to_thread(
+                restore_mem_file,
+                NESS_DIR,
+                self.thread_id,
+                checkpoint.get("mem_snapshot") or "",
+            )
+        except Exception as exc:
+            render.render_warning(f"Session memory restore failed: {exc}")
 
     # --- message building --------------------------------------------------
     async def _strip_prior_image_blocks(self, config: dict) -> None:
@@ -863,7 +932,11 @@ class SessionApp:
         return path
 
 
-# --- module helpers ---------------------------------------------------------
+# === 3. Module-level event utilities =========================================
+# Pure helpers below: events->messages reconstruction, subagent-result
+# enrichment, usage-cost replay, content defanging, and image-block text
+# extraction (used by ``_strip_prior_image_blocks``). Kept at module scope so
+# tests can import them directly without touching the SessionApp class.
 def plan_autosave_text(assistant_texts: list[str]) -> str | None:
     """Return the last non-empty assistant text from a plan turn, if any."""
     cleaned = [text.strip() for text in assistant_texts if text.strip()]

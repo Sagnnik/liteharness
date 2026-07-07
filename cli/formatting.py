@@ -3,8 +3,8 @@ from __future__ import annotations
 import textwrap
 
 from cli.theme import GRAY, GRAY_BRIGHT, GRAY_DIM
-from cli.tui.models import TranscriptLine
-from cli.tui.utils import term_width
+from cli.models import TranscriptLine
+from cli.utils import term_width
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # Deep gray base with a light gray / near-white band that sweeps across the label.
