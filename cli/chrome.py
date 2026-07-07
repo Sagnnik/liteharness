@@ -14,7 +14,7 @@ from cli.constants import (
     INPUT_MAX_ROWS_FRACTION,
     PICKER_MODES,
 )
-from cli.formatting import worked_fragments, working_fragments
+from cli.formatting import _format_duration, worked_fragments, working_fragments
 from cli.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
 from cli.widgets import TranscriptViewportControl
 from config import cost_tracker
@@ -185,7 +185,7 @@ class ChromeMixin:
         self._working_active = False
         self._working_started_at = None
         self._worked_elapsed = elapsed
-        self._worked_label = f"Worked for {self._format_worked_duration(elapsed)}"
+        self._worked_label = f"Worked for {_format_duration(elapsed)}"
         self.invalidate()
 
     async def _animate_working(self) -> None:
@@ -198,14 +198,6 @@ class ChromeMixin:
                 self.invalidate()
         except asyncio.CancelledError:
             return
-
-    @staticmethod
-    def _format_worked_duration(elapsed_s: float) -> str:
-        if elapsed_s < 60:
-            return f"{elapsed_s:.1f}s"
-        minutes = int(elapsed_s // 60)
-        seconds = elapsed_s % 60
-        return f"{minutes}m {seconds:.1f}s"
 
     def _prompt_prefix(self):
         mode = self.session.agent_mode

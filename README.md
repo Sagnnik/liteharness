@@ -240,7 +240,7 @@ Per-server fields:
 - `cwd`: working directory for the server process (defaults to the project root).
 - `startup_timeout`: seconds to wait for connect + tool discovery (default `20`).
 
-Tools are exposed as `mcp__<server>__<tool>`. On boot the CLI prints a one-line MCP summary; use `/mcp` for the full server and tool list. Startup failures do not stop the CLI.
+Tools are exposed as `mcp__<server>__<tool>`. The startup header shows connected MCP servers in Add-ons; use `/mcp` for the full server and tool list. Connection failures are shown as a startup warning. Startup failures do not stop the CLI.
 
 **Approval and permissions:** all `mcp__*` tools require approval when `ENABLE_APPROVAL=true`. You can add explicit rules in `.ness/permissions.json`:
 

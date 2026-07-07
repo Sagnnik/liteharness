@@ -22,7 +22,7 @@ MINT = "#87C095"
 LAVENDER = "#C6A0F6"
 # expanded accents so cyan is not the only hue (deep blue + yellow identity)
 BLUE = "#4aa3df"
-#CODE_BG = "#252531"
+# CODE_BG = "#252531"
 CODE_BG = "#1A1B26"
 
 # --- rich theme -------------------------------------------------------------
@@ -140,6 +140,15 @@ PTK_STYLE_RULES: dict[str, str] = {
     "chrome.form.hint": GRAY_DIM,
     "chrome.input.box": GRAY_DIM,
     "chrome.input.field": GRAY_BRIGHT,
+    # startup header dashboard (cli/header.py)
+    "chrome.header.title": f"bold {GRAY_BRIGHT}",
+    "chrome.header.gradient": CYAN,  # per-char gradient overrides inline via fg:
+    "chrome.header.box": GRAY_DIM,
+    "chrome.header.key": GRAY,
+    "chrome.header.value": GRAY_BRIGHT,
+    "chrome.header.hint": f"italic {GRAY_DIM}",
+    "chrome.header.hint.key": GRAY,
+    "chrome.header.hint.accent": PURPLE,
 }
 
 

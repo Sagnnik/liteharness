@@ -92,17 +92,25 @@ def _overrides(
 
 @app.command()
 def run(
-    model: str = typer.Option(None, "--model", help="Chat model name (overrides MODEL_NAME)"),
-    reflection_model: str = typer.Option(None, "--reflection-model", help="Reflection model name"),
+    model: str = typer.Option(
+        None, "--model", help="Chat model name (overrides MODEL_NAME)"
+    ),
+    reflection_model: str = typer.Option(
+        None, "--reflection-model", help="Reflection model name"
+    ),
     api_key: str = typer.Option(None, "--api-key", help="OpenAI-compatible API key"),
     base_url: str = typer.Option(None, "--base-url", help="OpenAI-compatible base URL"),
-    session_id: str = typer.Option(None, "--openrouter-session-id", help="Stable prompt-cache session id"),
+    session_id: str = typer.Option(
+        None, "--openrouter-session-id", help="Stable prompt-cache session id"
+    ),
     reasoning_effort: str = typer.Option(
         None,
         "--reasoning-effort",
         help="OpenRouter reasoning effort: none, minimal, low, medium, high, xhigh, max",
     ),
-    worktree: str = typer.Option(None, "--worktree", "-w", help="Run inside an isolated git worktree"),
+    worktree: str = typer.Option(
+        None, "--worktree", "-w", help="Run inside an isolated git worktree"
+    ),
     resume: str = typer.Option(
         None,
         "--resume",
@@ -110,17 +118,19 @@ def run(
     ),
 ) -> None:
     """Start an interactive LiteHarness session."""
-    configure_model(_overrides(model, reflection_model, api_key, base_url, session_id, reasoning_effort))
+    configure_model(
+        _overrides(
+            model, reflection_model, api_key, base_url, session_id, reasoning_effort
+        )
+    )
     asyncio.run(_main(resume_thread_id=resume or None))
 
 
 def _render_mcp_startup() -> None:
     message, level = mcp_manager.startup_summary()
-    hint = "" if level == "ok" else "  (/mcp for details)"
-    if level == "warn":
-        render.render_warning(message + hint)
-    else:
-        render.render_notice(message + hint, title="mcp" if level == "ok" else None)
+    if level != "warn":
+        return
+    render.render_warning(message + "  (/mcp for details)")
 
 
 _STATIC_PREFIX_TOKEN_TARGET = 7000
@@ -146,11 +156,15 @@ def _check_prompt_budget(git_available: bool) -> str | None:
     prefix = "\n\n".join(
         [
             build_l0(tools),
-            build_l1(DEFAULT_PERSONA, tools, load_user_memory(), load_ness_memory(), catalog),
+            build_l1(
+                DEFAULT_PERSONA, tools, load_user_memory(), load_ness_memory(), catalog
+            ),
             build_project_context_block(load_repo_context(), [], git_available),
         ]
     ).strip()
-    tokens = resolve_token_count([SystemMessage(content=prefix)], known_input_tokens=None)
+    tokens = resolve_token_count(
+        [SystemMessage(content=prefix)], known_input_tokens=None
+    )
     if tokens > _STATIC_PREFIX_TOKEN_TARGET:
         return (
             f"Static prompt prefix (L0+L1+L2) is ~{tokens:,} tokens "
@@ -176,7 +190,10 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
         history_path=Path(settings.ness_dir) / "cli_history",
     )
     render.set_sink(ui)
-    session.render_header()
+    # The startup header is rendered by ``TuiApp`` once the transcript pane's
+    # real width is known (see ``TuiApp._start_initial_header_task``), so the
+    # pre-wrapped TranscriptLines aren't built against a stale fallback width
+    # and re-wrap into a half-screen artifact on first render.
 
     worktree_name = os.environ.get("LITEHARNESS_WORKTREE")
     if worktree_name:
@@ -201,7 +218,9 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
         try:
             await session.finalize_reflection()
             resume_thread_id = (
-                session.thread_id if (settings.auto_save_threads and session.turn_count > 0) else None
+                session.thread_id
+                if (settings.auto_save_threads and session.turn_count > 0)
+                else None
             )
             session.save_thread()
         except Exception as exc:
