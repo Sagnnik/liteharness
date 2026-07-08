@@ -11,7 +11,7 @@ LiteHarness is an experimental, hackable coding-agent harness for engineers who 
 ```bash
 uv sync
 export OPENAI_API_KEY=...
-uv run python cli/main.py
+uv run python -m cli.main
 ```
 
 Useful environment variables:
@@ -40,10 +40,10 @@ Run a second agent in an isolated checkout and branch without touching your main
 
 ```bash
 # Terminal 1 — main checkout
-uv run python cli/main.py
+uv run python -m cli.main
 
 # Terminal 2 — isolated agent (creates .ness/worktrees/auth on first launch)
-uv run python cli/main.py --worktree auth
+uv run python -m cli.main --worktree auth
 ```
 
 Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, sessions, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. `.env` is copied from the repo root on first create. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
