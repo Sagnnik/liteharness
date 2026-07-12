@@ -1,0 +1,231 @@
+"""
+Reflection triggers:
+1. Token delta since last reflection exceeds reflection_token_ratio * usable budget
+2. Session exit (finalize_session_reflection)
+
+Job: distill recent work into up to 2 bullet points -> ./ness/sessions/mem_<thread_id>.md
+Bullets are injected into L3 system-reminder overlay on subsequent turns.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+from langchain_core.messages import BaseMessage, HumanMessage
+from pydantic import BaseModel, Field
+
+from liteharness.tools.todo import render_todos
+
+_reflection_locks: dict[str, asyncio.Lock] = {}
+_completed_indices: dict[str, int] = {}
+
+class ReflectionStructuredOutput(BaseModel):
+    new_bullet_points: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Up to 2 concise bullets: features added, tasks completed, errors hit, "
+            "or conventions discovered."
+        ),
+    )
+
+@dataclass(frozen=True)
+class ReflectionResult:
+    memory_updated: bool = False
+    error: str = ""
+
+def consume_reflection_message_index(thread_id: str) -> int | None:
+    """Pop index written by last successful reflection. Agent stores it in `last_reflected_message_index`"""
+    return _completed_indices.pop(thread_id, None)
+
+
+def mark_reflection_complete(thread_id: str, message_index: int) -> None:
+    """Record len(message_list) after a successful run."""
+    _completed_indices[thread_id] = message_index
+
+
+def reflection_lock(thread_id: str) -> asyncio.Lock:
+    """Get or create a lock for the thread_id and store it in _reflection_locks"""
+    lock = _reflection_locks.get(thread_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _reflection_locks[thread_id] = lock
+    return lock
+
+
+def is_reflection_running(thread_id: str) -> bool:
+    """Returns True if lock exists and is held. Useful to skip scheduling while a run is active."""
+    lock = _reflection_locks.get(thread_id)
+    return bool(lock and lock.locked())
+
+
+# --- reflection gate ---
+def _messages_to_text(messages, limit=16) -> str:
+    messages = list(messages)[-limit:]
+    return "\n\n".join(f"{m.type}: {str(m.content)[:1200]}" for m in messages)
+
+
+def _normalize_bullets(bullets: list[str]) -> list[str]:
+    """Normalize the bullets to a list of strings."""
+    out = []
+    for b in bullets:
+        t = str(b).strip()
+        if t.startswith("- "): 
+            t = t[2:].strip()
+        if t and t not in out: 
+            out.append(t)
+        if len(out) >= 2: 
+            break
+    return out
+
+
+def _log_reflection_event(
+    persistence,
+    thread_id: str,
+    *,
+    prompt: str,
+    response: dict[str, Any],
+    message_index: int,
+    memory_updated: bool,
+    error: str,
+) -> None:
+    if not persistence:
+        return
+    persistence.append_event(
+        thread_id,
+        {
+            "kind": "reflection",
+            "prompt": prompt,
+            "response": response,
+            "message_index": message_index,
+            "memory_updated": memory_updated,
+            "error": error,
+        },
+    )
+
+
+async def run_reflection_gate(
+    thread_id: str, 
+    messages: Iterable[BaseMessage], 
+    model, 
+    user_message_count: int, 
+    *,
+    last_reflected_message_index: int = 0, 
+    todos: str = "",
+    memory=None, 
+    persistence=None, 
+    task_prompts=None, 
+    tracer=None
+) -> ReflectionResult:
+    """Run semantic distillation via structured output."""
+
+    if model is None: 
+        return ReflectionResult()
+    
+    # get the lock for the thread_id
+    lock = reflection_lock(thread_id)
+    if lock.locked(): 
+        return ReflectionResult()
+    
+    # if the lock is not held, acquire it
+    async with lock:
+        msg_list = list(messages)
+        since = max(0, int(last_reflected_message_index or 0))
+        recent = msg_list[since:]
+
+        if not recent: 
+            return ReflectionResult()
+        # get the bullets text
+        bullets_txt = "\n".join(f"- {b}" for b in (memory.load_session(thread_id).splitlines() if memory else []))
+        tmpl = (task_prompts.reflection if task_prompts else None)
+        todos_txt = (todos or "").strip() or "No todos"
+        
+        prompt = tmpl.format(
+            thread_id=thread_id, 
+            user_message_count=user_message_count,
+            messages=_messages_to_text(recent), 
+            current_session_bullets=bullets_txt or "(none yet)",
+            todos=todos_txt,
+        ) if tmpl else _messages_to_text(recent)
+        
+        try:
+            structured_model = model.with_structured_output(ReflectionStructuredOutput)
+            out: ReflectionStructuredOutput = await structured_model.ainvoke(
+                [HumanMessage(content=prompt)]
+            )
+        except Exception as exc:
+            res = ReflectionResult(error=str(exc))
+            _log_reflection_event(
+                persistence,
+                thread_id,
+                prompt=prompt,
+                response={"new_bullet_points": []},
+                message_index=len(msg_list),
+                memory_updated=False,
+                error=res.error,
+            )
+            return res
+
+        bullets = _normalize_bullets(out.new_bullet_points)
+        updated = memory.append_session_bullets(thread_id, bullets) if bullets and memory else False
+        idx = len(msg_list)
+        mark_reflection_complete(thread_id, idx)
+
+        _log_reflection_event(
+            persistence,
+            thread_id,
+            prompt=prompt,
+            response=out.model_dump(),
+            message_index=idx,
+            memory_updated=updated,
+            error="",
+        )
+        return ReflectionResult(memory_updated=updated)
+
+# --- finalize session reflection ---
+async def finalize_session_reflection(
+    app, 
+    thread_id: str, model, 
+    *, 
+    memory=None, 
+    persistence=None,
+    task_prompts=None, 
+    tracer=None
+) -> ReflectionResult:
+    """Final synchronous reflection pass before session archive (option on)."""
+    # get the snapshot of the thread
+    try:
+        snapshot = await app.aget_state({"configurable": {"thread_id": thread_id}})
+    except Exception as exc:
+        result = ReflectionResult(error=str(exc))
+        _log_reflection_event(
+            persistence,
+            thread_id,
+            prompt="",
+            response={"new_bullet_points": []},
+            message_index=0,
+            memory_updated=False,
+            error=str(exc),
+        )
+        return result
+
+    # get the state of the thread
+    state = dict(snapshot.values or {})
+    messages = list(state.get("messages", []))
+    if not messages: 
+        return ReflectionResult()
+    
+    user_count = sum(1 for m in messages if m.type == "human")
+    return await run_reflection_gate(
+        thread_id, 
+        messages, 
+        model, 
+        user_count,
+        last_reflected_message_index=int(state.get("last_reflected_message_index", 0) or 0),
+        todos=render_todos(state.get("todos", [])),
+        memory=memory, 
+        persistence=persistence, 
+        task_prompts=task_prompts, 
+        tracer=tracer
+    )
