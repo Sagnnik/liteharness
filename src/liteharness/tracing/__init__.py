@@ -1,4 +1,27 @@
-from liteharness.tracing.config import TracingConfig
-from liteharness.tracing.tracer import NoopTracer, Span, Tracer, build_tracer
+from liteharness.tracing.config import PricingDict, TracingConfig
+from liteharness.tracing.cost import CostTracker, TokenUsage
+from liteharness.tracing.tracer import (
+    InMemorySpan,
+    MultiSpan,
+    MultiTracer,
+    NoopSpan,
+    NoopTracer,
+    Span,
+    Tracer,
+    build_tracer,
+)
 
-__all__ = ["TracingConfig", "Tracer", "NoopTracer", "build_tracer", "Span"]
+__all__ = [
+    "PricingDict",
+    "TracingConfig",
+    "Span",
+    "InMemorySpan",
+    "NoopSpan",
+    "Tracer",
+    "NoopTracer",
+    "MultiTracer",
+    "MultiSpan",
+    "build_tracer",
+    "CostTracker",
+    "TokenUsage",
+]

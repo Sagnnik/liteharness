@@ -17,6 +17,18 @@ from liteharness.compaction import (
 from liteharness.graph.builder import build_graph
 from liteharness.graph.helpers import _effective_conversation
 from liteharness.session_context import SessionContext, set_session_context
+from liteharness.tracing.semconv import (
+    AGENT_MODE,
+    COST_USD,
+    INPUT_TOKENS,
+    OUTPUT_TOKENS,
+    THREAD_ID,
+    TURN,
+    TURN_COUNT,
+    GEN_AI_SYSTEM_VALUE,
+    GEN_AI_SYSTEM,
+    GEN_AI_OPERATION_NAME,
+)
 from liteharness.types import ApprovalHandler, RunResult, SessionEvent, UsageEvent
 
 _active_session: ContextVar["Session | None"] = ContextVar(
@@ -244,6 +256,7 @@ class Session:
             persistence=self._cfg.thread_store,
             task_prompts=self._cfg.task_prompts,
             tracer=self._cfg.tracer,
+            tracing=self._cfg.tracing,
         )
 
     async def aget_todos(self) -> list[dict[str, Any]]:
@@ -515,45 +528,63 @@ class Session:
         # set the active session context var
         token = _active_session.set(self)
 
-        try:
-            # handle mode switch and pre-flight operations before building the payload
-            if mode and mode != self.agent_mode:
-                self.set_mode(mode)
-            mode_switch = ""
-            if self._pending_act_checkpoint and self.agent_mode == "act":
-                self._pending_act_checkpoint = False
-                mode_switch = "plan->act"
-                await self._maybe_checkpoint_before_act()
-
+        tracer = self._cfg.tracer
+        with tracer.start_span(
+            TURN,
+            attributes={
+                THREAD_ID: self.thread_id,
+                AGENT_MODE: self.agent_mode,
+                GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+                GEN_AI_OPERATION_NAME: "agent",
+            },
+        ) as span:
             try:
-                # get the payload for the run and the langgraph config
-                payload, cfg = await self._build_run_payload(
-                    message, images=images, active_skills=active_skills, mode_switch=mode_switch
-                )
-            except Exception as exc:
-                yield SessionEvent("error", {"message": str(exc)}), ""
-                return
+                # handle mode switch and pre-flight operations before building the payload
+                if mode and mode != self.agent_mode:
+                    self.set_mode(mode)
+                mode_switch = ""
+                if self._pending_act_checkpoint and self.agent_mode == "act":
+                    self._pending_act_checkpoint = False
+                    mode_switch = "plan->act"
+                    await self._maybe_checkpoint_before_act()
 
-            for queued in self._drain_queue():
-                yield queued, ""
+                try:
+                    # get the payload for the run and the langgraph config
+                    payload, cfg = await self._build_run_payload(
+                        message, images=images, active_skills=active_skills, mode_switch=mode_switch
+                    )
+                except Exception as exc:
+                    span.set_status("ERROR", str(exc))
+                    yield SessionEvent("error", {"message": str(exc)}), ""
+                    return
 
-            assistant_text = ""
-            try:
-                async for ev in self.app.astream_events(payload, config=cfg, version="v2"):
-                    # first yield queued events like usage, compact, etc.
+                for queued in self._drain_queue():
+                    yield queued, ""
+
+                assistant_text = ""
+                try:
+                    async for ev in self.app.astream_events(payload, config=cfg, version="v2"):
+                        # first yield queued events like usage, compact, etc.
+                        for queued in self._drain_queue():
+                            yield queued, assistant_text
+                        # then dispatch the stream events
+                        for event, assistant_text in self._dispatch_stream_event(ev, assistant_text):
+                            yield event, assistant_text
+                    # finally yield any remaining queued events
                     for queued in self._drain_queue():
                         yield queued, assistant_text
-                    # then dispatch the stream events
-                    for event, assistant_text in self._dispatch_stream_event(ev, assistant_text):
-                        yield event, assistant_text
-                # finally yield any remaining queued events
-                for queued in self._drain_queue():
-                    yield queued, assistant_text
-            except Exception as exc:
-                yield SessionEvent("error", {"message": str(exc)}), assistant_text
-        finally:
-            # remove the active session object from memory or contextvar
-            _active_session.reset(token)
+                except Exception as exc:
+                    span.set_status("ERROR", str(exc))
+                    yield SessionEvent("error", {"message": str(exc)}), assistant_text
+            finally:
+                span.set_attribute(TURN_COUNT, self.turn_count)
+                last_usage = self._last_usage
+                if last_usage is not None:
+                    span.set_attribute(INPUT_TOKENS, last_usage.input_tokens)
+                    span.set_attribute(OUTPUT_TOKENS, last_usage.output_tokens)
+                    span.set_attribute(COST_USD, last_usage.cost_usd or 0)
+                # remove the active session object from memory or contextvar
+                _active_session.reset(token)
 
     async def run(
         self,

@@ -77,7 +77,7 @@ class PromptLayersConfig:
     l0: InstructionSource = L0_HARNESS
 
     # L1: persona slot
-    persona: str = "You are a helpful assistant."
+    persona: str = "You are an expert software engineer working inside the user's repository."
 
     include_user_memory: bool = True
     include_project_memory: bool = True

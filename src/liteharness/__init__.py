@@ -17,9 +17,13 @@ from liteharness.permissions import PermissionStore
 from liteharness.hooks import HookRunner
 from liteharness.skills import SkillLoader
 from liteharness.tools import ToolRegistry, coding_tools
-from liteharness.usage import CostTracker
-from liteharness.tracing.config import TracingConfig
-from liteharness.tracing.tracer import Tracer, NoopTracer, build_tracer, Span
+from liteharness.tracing.cost import CostTracker
+from liteharness.tracing.config import PricingDict, TracingConfig
+from liteharness.tracing.tracer import (
+    Tracer, NoopTracer, NoopSpan, InMemorySpan, MultiTracer, MultiSpan,
+    build_tracer, Span,
+)
+from liteharness.tracing.cost import TokenUsage
 from liteharness.workspace import (
     git_worktree_summary, get_project_context,
 )
@@ -32,7 +36,8 @@ __all__ = [
     "OverlayContext", "OverlayProvider", "render_overlay_delta", "wrap_system_reminder",
     "CodingOverlay", "NoOverlay", "AgentState",
     "MemoryStore", "PermissionStore", "HookRunner", "SkillLoader", "ToolRegistry", "coding_tools",
-    "CostTracker",
-    "TracingConfig", "Tracer", "NoopTracer", "build_tracer", "Span",
+    "CostTracker", "TokenUsage", "PricingDict",
+    "TracingConfig", "Tracer", "NoopTracer", "NoopSpan", "InMemorySpan",
+    "MultiTracer", "MultiSpan", "build_tracer", "Span",
     "git_worktree_summary", "get_project_context",
 ]

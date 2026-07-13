@@ -1,0 +1,1 @@
+"""Test: build_tracer dispatch + console exporter behaviour."""

@@ -1,4 +1,4 @@
-COMPACTION = """You are summarizing a coding session for an AI coding agent to continue its work. 
+COMPACTION = """You are summarizing a session for an AI agent to continue its work. 
 Be extremely concise. Focus on actionable state and facts. Discard conversational filler and raw tool outputs unless they contain errors.
 
 Format your summary using these exact sections:

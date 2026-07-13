@@ -412,6 +412,6 @@ cost_tracker = CostTracker()
 
 def make_sdk_cost_tracker():
     """SDK CostTracker wired with CLI MODEL_PRICING estimates for non-provider costs."""
-    from liteharness.usage import CostTracker as SdkCostTracker
+    from liteharness.tracing.cost import CostTracker as SdkCostTracker
 
-    return SdkCostTracker(estimate_cost=_estimate_cost)
+    return SdkCostTracker(pricing=MODEL_PRICING)

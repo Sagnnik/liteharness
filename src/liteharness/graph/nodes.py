@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio, time, warnings
+import asyncio, json, time, warnings
 from pathlib import Path
 from typing import Any, Literal, Mapping
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, BaseMessage
@@ -27,6 +27,35 @@ from liteharness.reflection import (
 )
 from liteharness.tools.todo import set_current_thread, set_thread_todos
 from liteharness.workspace.git_context import git_worktree_summary
+from liteharness.tracing.semconv import (
+    CACHE_HIT_RATE,
+    CACHE_READ_TOKENS,
+    COST_USD,
+    GEN_AI_COMPLETION,
+    GEN_AI_OPERATION_NAME,
+    GEN_AI_PROMPT,
+    GEN_AI_SYSTEM,
+    GEN_AI_SYSTEM_VALUE,
+    GEN_AI_TOOL_CALL_ARGUMENTS,
+    GEN_AI_TOOL_CALL_RESULT,
+    KIND_CLIENT,
+    INPUT_TOKENS,
+    LLM_CALL,
+    MODEL_NAME,
+    OUTPUT_TOKENS,
+    TOOL_ARGS,
+    TOOL_DURATION_MS,
+    TOOL_ERROR,
+    TOOL_EXEC,
+    TOOL_EXIT_STATUS,
+    TOOL_NAME,
+)
+from liteharness.tracing.messages import (
+    serialize_completion,
+    serialize_messages,
+    truncate_for_span,
+)
+from liteharness.tracing import TokenUsage
 from liteharness.types import UsageEvent
 from liteharness.tools.todo import render_todos
 
@@ -61,7 +90,6 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
 
     main_model = config.model
     compaction_model = config.compaction_model or config.model
-    _ = tracer
 
     async def agent_node(state: AgentState) -> AgentState:
         """The main agent node that handles the agent's logic."""
@@ -101,16 +129,17 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         token_estimate = await asyncio.to_thread(resolve_token_count, [system] + conversation, known_input_tokens=state.get("last_input_tokens") or None)
 
         compaction = await compact_messages_progressively(
-            conversation, 
-            known_input_tokens=token_estimate, 
+            conversation,
+            known_input_tokens=token_estimate,
             summary_model=compaction_model,
-            force=bool(state.get("force_compact")), 
-            model_name=model_name, 
+            force=bool(state.get("force_compact")),
+            model_name=model_name,
             thread_id=thread_id,
-            options=options, 
-            cost_tracker=cost, 
-            persistence=persist, 
-            #tracer=tracer,
+            options=options,
+            cost_tracker=cost,
+            persistence=persist,
+            tracer=tracer,
+            tracing=config.tracing,
             compaction_prompt=task_prompts.compaction
         )
         if compaction.compacted: 
@@ -166,49 +195,77 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         rt._last_sections.update(sections)
 
         bound_model = tools_reg.bind_model(main_model)
-        response: AIMessage = await bound_model.ainvoke([system] + _with_working_state_tail(conversation, overlay))
-
+        # reset some states
         updates: AgentState = {
-            "messages": [response], 
+            "messages": [],
             "approval_declined": False,
-            "force_compact": False, 
-            "activate_skills": [], 
-            "mode_switch": ""
+            "force_compact": False,
+            "activate_skills": [],
+            "mode_switch": "",
         }
+        last_input_tokens = token_estimate
+        llm_attrs = {
+            MODEL_NAME: model_name,
+            GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+            GEN_AI_OPERATION_NAME: "chat",
+        }
+        # Build the exact invoke payload once (system + working-state tail injected ephemerally).
+        invoke_messages = [system] + _with_working_state_tail(conversation, overlay)
+        
+        with tracer.start_span(LLM_CALL, attributes=llm_attrs, kind=KIND_CLIENT) as llm_span:
+
+            if config.tracing.capture_messages:
+                llm_span.set_attribute(GEN_AI_PROMPT, serialize_messages(invoke_messages))
+            
+            response: AIMessage = await bound_model.ainvoke(invoke_messages)
+            
+            # update the AgentState
+            updates["messages"] = [response]
+
+            if config.tracing.capture_messages:
+                llm_span.set_attribute(GEN_AI_COMPLETION, serialize_completion(response))
+
+            # track usage after every API call
+            # langchain clients track usage metadata for billing and analytics
+            # tracks -> input tokens, output tokens, total_tokens, input_token_details
+            # (contains cache_read), output_token_details (contains reasoning tokens)
+            if response.usage_metadata:
+                usage: TokenUsage | None = cost.add(
+                    response.usage_metadata,
+                    model_name,
+                    response.response_metadata or {},
+                )
+                if usage is not None:
+                    llm_span.set_attribute(INPUT_TOKENS, usage.input_tokens)
+                    llm_span.set_attribute(OUTPUT_TOKENS, usage.output_tokens)
+                    llm_span.set_attribute(CACHE_READ_TOKENS, usage.cached_input_tokens)
+                    llm_span.set_attribute(CACHE_HIT_RATE, usage.cache_hit_rate)
+                    if usage.cost_usd is not None:
+                        llm_span.set_attribute(COST_USD, usage.cost_usd)
+                    last_input_tokens = usage.input_tokens
+
+                usage_event: dict[str, Any] = {"kind": "usage", "model": model_name}
+                if usage is not None:
+                    usage_event.update(usage.as_dict())
+                persist.append_event(thread_id, usage_event)
+
+                if usage is not None and config.on_usage:
+                    config.on_usage(UsageEvent(
+                        model=model_name,
+                        input_tokens=usage.input_tokens,
+                        uncached_input_tokens=usage.uncached_input_tokens,
+                        cached_input_tokens=usage.cached_input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cost_usd=usage.cost_usd,
+                    ))
 
         # track conversation for auto-compaction
         if compaction.compacted:
             updates["compacted_messages"] = conversation
             updates["compaction_message_count"] = len(messages)
             updates["last_input_tokens"] = 0  # next turn re-estimates if no usage_metadata
-
-        # track usage after every API call
-        # langchain clients track usage metadata for billing and analytics
-        # tracks -> input tokens, output tokens, total tokens, input_token_details (contains cache_read), output_token_details (contains reasoning tokens)
-        if response.usage_metadata:
-            usage = cost.add(
-                response.usage_metadata, 
-                model_name, 
-                response.response_metadata or {}
-            )
-
-            usage_event = {"kind": "usage", "model": model_name}
-            if usage:
-                usage_event.update(usage)
-            persist.append_event(thread_id, usage_event)
-
-            if usage:
-                if config.on_usage:
-                    config.on_usage(UsageEvent(
-                        model=model_name,
-                        input_tokens=usage.get("input_tokens",0),
-                        uncached_input_tokens=usage.get("uncached_input_tokens",0),
-                        cached_input_tokens=usage.get("cached_input_tokens",0),
-                        output_tokens=usage.get("output_tokens",0), 
-                        cost_usd=usage.get("cost_usd")
-                    ))
-            
-            updates["last_input_tokens"] = usage.get("input_tokens") if usage else token_estimate
+        else:
+            updates["last_input_tokens"] = last_input_tokens
 
         persist.append_event(
             thread_id, {
@@ -327,21 +384,48 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
                 continue
 
             # invoke the tool
-            t0 = time.time()
             tmap = tools_reg.tool_map().get(name)
-            try:
-                # invoke the tool asynchronously if it is asynchronous or has a coroutine
-                if tmap is None:
-                    result = f"Error: unknown tool {name}"
-                elif getattr(tmap, "is_async", False) or getattr(tmap, "coroutine", None) is not None:
-                    result = await tmap.ainvoke(args)
-                else:
-                    result = await asyncio.to_thread(tmap.invoke, args)
-            except Exception as exc:
-                result = f"Error: {exc}"
+            tool_attrs: dict[str, Any] = {
+                TOOL_NAME: name,
+                GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+                GEN_AI_OPERATION_NAME: "execute_tool",
+            }
+            capture_msgs = config.tracing.capture_messages
+            if config.tracing.capture_tool_args:
+                tool_attrs[TOOL_ARGS] = str(args)[:500]
 
-            # measure the duration of the tool invocation
-            dur = int((time.time() - t0) * 1000)
+            t0 = time.monotonic()
+            with tracer.start_span(
+                TOOL_EXEC.format(name=name), attributes=tool_attrs, kind=KIND_CLIENT
+            ) as tool_span:
+                if capture_msgs:
+                    # Canonical JSON form parsed by Langfuse/Arize as tool input.
+                    tool_span.set_attribute(GEN_AI_TOOL_CALL_ARGUMENTS, json.dumps(args, default=str))
+                try:
+                    if tmap is None:
+                        result = f"Error: unknown tool {name}"
+                        tool_span.set_attribute(TOOL_EXIT_STATUS, "unknown_tool")
+                    elif getattr(tmap, "is_async", False) or getattr(tmap, "coroutine", None) is not None:
+                        result = await tmap.ainvoke(args)
+                        tool_span.set_attribute(TOOL_EXIT_STATUS, "ok")
+                    else:
+                        result = await asyncio.to_thread(tmap.invoke, args)
+                        tool_span.set_attribute(TOOL_EXIT_STATUS, "ok")
+                    tool_span.set_attribute(TOOL_ERROR, False)
+                except Exception as exc:
+                    tool_span.record_exception(exc)
+                    tool_span.set_attribute(TOOL_ERROR, True)
+                    tool_span.set_attribute(TOOL_EXIT_STATUS, "exception")
+                    result = f"Error: {exc}"
+                tool_span.set_attribute(TOOL_DURATION_MS, int((time.monotonic() - t0) * 1000))
+                if capture_msgs:
+                    # Tool results can be MBs — truncate
+                    # to keep OTLP batches under the SDK's ~5MB limit
+                    tool_span.set_attribute(
+                        GEN_AI_TOOL_CALL_RESULT,
+                        truncate_for_span(str(result), config.tracing.max_message_length),
+                    )
+            dur = int((time.monotonic() - t0) * 1000)
             content = str(result)
 
             # run the postToolUse hook
@@ -444,6 +528,7 @@ def _maybe_schedule_reflection(
             persistence=rt.cfg.thread_store,
             task_prompts=rt.cfg.task_prompts,
             tracer=rt.cfg.tracer,
+            tracing=rt.cfg.tracing,
         )
     
     task = asyncio.create_task(_bg(), name=f"reflection-{rt.thread_id}")

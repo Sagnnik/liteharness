@@ -9,13 +9,24 @@ Bullets are injected into L3 system-reminder overlay on subsequent turns.
 
 from __future__ import annotations
 
-import asyncio
+import asyncio, json
 from dataclasses import dataclass
 from typing import Any, Iterable
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 
+from liteharness.tracing.semconv import (
+    GEN_AI_COMPLETION,
+    GEN_AI_OPERATION_NAME,
+    GEN_AI_PROMPT,
+    GEN_AI_SYSTEM,
+    GEN_AI_SYSTEM_VALUE,
+    KIND_CLIENT,
+    REFLECTION,
+    THREAD_ID,
+)
+from liteharness.tracing.messages import serialize_completion_dict, serialize_messages
 from liteharness.tools.todo import render_todos
 
 _reflection_locks: dict[str, asyncio.Lock] = {}
@@ -106,17 +117,18 @@ def _log_reflection_event(
 
 
 async def run_reflection_gate(
-    thread_id: str, 
-    messages: Iterable[BaseMessage], 
-    model, 
-    user_message_count: int, 
+    thread_id: str,
+    messages: Iterable[BaseMessage],
+    model,
+    user_message_count: int,
     *,
-    last_reflected_message_index: int = 0, 
+    last_reflected_message_index: int = 0,
     todos: str = "",
-    memory=None, 
-    persistence=None, 
-    task_prompts=None, 
-    tracer=None
+    memory=None,
+    persistence=None,
+    task_prompts=None,
+    tracer=None,
+    tracing=None,
 ) -> ReflectionResult:
     """Run semantic distillation via structured output."""
 
@@ -151,9 +163,40 @@ async def run_reflection_gate(
         
         try:
             structured_model = model.with_structured_output(ReflectionStructuredOutput)
-            out: ReflectionStructuredOutput = await structured_model.ainvoke(
-                [HumanMessage(content=prompt)]
-            )
+            capture_msgs = bool(tracing and getattr(tracing, "capture_messages", False))
+            if tracer is None:
+                out: ReflectionStructuredOutput = await structured_model.ainvoke(
+                    [HumanMessage(content=prompt)]
+                )
+            else:
+                refl_attrs = {
+                    THREAD_ID: thread_id,
+                    GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+                    GEN_AI_OPERATION_NAME: "chat",
+                }
+                with tracer.start_span(
+                    REFLECTION, attributes=refl_attrs, kind=KIND_CLIENT
+                ) as span:
+                    if capture_msgs:
+                        span.set_attribute(
+                            GEN_AI_PROMPT,
+                            serialize_messages([HumanMessage(content=prompt)]),
+                        )
+                    out: ReflectionStructuredOutput = await structured_model.ainvoke(
+                        [HumanMessage(content=prompt)]
+                    )
+                    if out is not None:
+                        span.set_attribute(
+                            "reflection.bullets", len(out.new_bullet_points or [])
+                        )
+                        if capture_msgs:
+                            # Reflection uses with_structured_output, so the
+                            # completion is a parsed pydantic model (not an
+                            # AIMessage) — serialise via the dict helper.
+                            span.set_attribute(
+                                GEN_AI_COMPLETION,
+                                serialize_completion_dict(out),
+                            )
         except Exception as exc:
             res = ReflectionResult(error=str(exc))
             _log_reflection_event(
@@ -185,13 +228,14 @@ async def run_reflection_gate(
 
 # --- finalize session reflection ---
 async def finalize_session_reflection(
-    app, 
-    thread_id: str, model, 
-    *, 
-    memory=None, 
+    app,
+    thread_id: str, model,
+    *,
+    memory=None,
     persistence=None,
-    task_prompts=None, 
-    tracer=None
+    task_prompts=None,
+    tracer=None,
+    tracing=None,
 ) -> ReflectionResult:
     """Final synchronous reflection pass before session archive (option on)."""
     # get the snapshot of the thread
@@ -218,14 +262,15 @@ async def finalize_session_reflection(
     
     user_count = sum(1 for m in messages if m.type == "human")
     return await run_reflection_gate(
-        thread_id, 
-        messages, 
-        model, 
+        thread_id,
+        messages,
+        model,
         user_count,
         last_reflected_message_index=int(state.get("last_reflected_message_index", 0) or 0),
         todos=render_todos(state.get("todos", [])),
-        memory=memory, 
-        persistence=persistence, 
-        task_prompts=task_prompts, 
-        tracer=tracer
+        memory=memory,
+        persistence=persistence,
+        task_prompts=task_prompts,
+        tracer=tracer,
+        tracing=tracing,
     )

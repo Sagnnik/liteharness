@@ -21,8 +21,9 @@ from liteharness.hooks import HookRunner
 from liteharness.skills import SkillLoader
 from liteharness.tools import LOCAL_TOOLS, ToolRegistry
 from liteharness.utils import normalize_tool
-from liteharness.usage import CostTracker
-from liteharness.tracing.tracer import NoopTracer, Tracer
+from liteharness.tracing.cost import CostTracker
+from liteharness.tracing.config import TracingConfig
+from liteharness.tracing.tracer import NoopTracer, Tracer, build_tracer
 if TYPE_CHECKING:
     from liteharness.session import Session
 
@@ -99,9 +100,14 @@ class AgentSpec:
         Callable returning a langgraph ``BaseCheckpointSaver``
         (``None`` → in-memory ``MemorySaver``).
     ``cost_tracker``
-        Pricing-aware :class:`CostTracker` (optional).
+        Pricing-aware :class:`CostTracker` (optional). When ``None``,
+        resolved from ``tracing.pricing``.
     ``tracer``
-        OpenTelemetry-compatible :class:`Tracer` (optional).
+        OpenTelemetry-compatible :class:`Tracer` (optional). When
+        ``None``, resolved via :func:`build_tracer` from ``tracing``.
+    ``tracing``
+        :class:`TracingConfig` — toggles tracing, exporter selection,
+        capture options, and per-model pricing for cost estimation.
     """
 
     # required
@@ -137,6 +143,7 @@ class AgentSpec:
 
     # integrations
     checkpoint_factory: Callable[[], BaseCheckpointSaver] | None = None
+    tracing: TracingConfig = field(default_factory=TracingConfig)
     cost_tracker: CostTracker | None = None
     tracer: Tracer | None = None
 
@@ -175,6 +182,7 @@ class NessAgentConfig:
 
     # integrations
     checkpoint_factory: Callable[[], BaseCheckpointSaver] | None = None
+    tracing: TracingConfig = field(default_factory=TracingConfig)
 
     # agent backends (resolved)
     memory_store: MemoryStore | None = None
@@ -183,8 +191,8 @@ class NessAgentConfig:
     hook_runner: HookRunner | None = None
     skill_loader: SkillLoader | None = None
     tool_registry: ToolRegistry | None = None
-    cost_tracker: CostTracker | None = None
-    tracer: Tracer | None = None
+    cost_tracker: CostTracker
+    tracer: Tracer
 
     @classmethod
     def resolve(cls, spec: AgentSpec) -> "NessAgentConfig":
@@ -279,6 +287,7 @@ class NessAgentConfig:
             on_file_mutation=spec.on_file_mutation,
             on_pre_act_compact=spec.on_pre_act_compact,
             checkpoint_factory=spec.checkpoint_factory,
+            tracing=spec.tracing,
 
             memory_store=MemoryStore(spec.memory, ness_dir=ness_dir),
             thread_store=ThreadStore(
@@ -290,8 +299,8 @@ class NessAgentConfig:
             hook_runner=HookRunner(spec.hooks_config, project_root=project_root),
             skill_loader=SkillLoader(spec.skills_dir),
             tool_registry=ToolRegistry(resolved_tools),
-            cost_tracker=spec.cost_tracker or CostTracker(),
-            tracer=spec.tracer or NoopTracer(),
+            cost_tracker=spec.cost_tracker or CostTracker(pricing=spec.tracing.pricing),
+            tracer=spec.tracer or build_tracer(spec.tracing),
         )
 
 

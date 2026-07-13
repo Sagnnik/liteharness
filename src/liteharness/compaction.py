@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+
+from liteharness.tracing.semconv import (
+    COMPACTION_SUMMARIZE,
+    GEN_AI_COMPLETION,
+    GEN_AI_OPERATION_NAME,
+    GEN_AI_PROMPT,
+    GEN_AI_SYSTEM,
+    GEN_AI_SYSTEM_VALUE,
+    THREAD_ID,
+    KIND_CLIENT,
+)
+from liteharness.tracing.messages import serialize_completion, serialize_messages
 
 # --- tool output truncation ---
 _SMALL_CHARS = 900
@@ -254,16 +266,17 @@ def compaction_label(action: CompactionAction, kept_recent: int = 0) -> str:
 
 async def compact_messages_progressively(
     messages: list[BaseMessage],
-    *, 
-    known_input_tokens:int | None, 
+    *,
+    known_input_tokens:int | None,
     summary_model=None,
-    force: bool = False, 
-    model_name:str | None = None, 
-    thread_id: str | None = None, 
+    force: bool = False,
+    model_name:str | None = None,
+    thread_id: str | None = None,
     options=None,
-    persistence=None, 
-    cost_tracker=None, 
-    tracer=None, 
+    persistence=None,
+    cost_tracker=None,
+    tracer=None,
+    tracing=None,
     compaction_prompt=None,
     max_tokens=None
 ) -> CompactionResult:
@@ -332,15 +345,17 @@ async def compact_messages_progressively(
     k = min(len(rest), keep)
     older = rest[: len(rest) - k]
     summary = await summarize_history(
-        older, 
-        summary_model, 
-        thread_id=thread_id, 
+        older,
+        summary_model,
+        thread_id=thread_id,
         action=action,
-        kept_recent=k, 
-        task_prompt=compaction_prompt, 
-        persistence=persistence, 
-        cost_tracker=cost_tracker, 
-        model_name=model_name
+        kept_recent=k,
+        task_prompt=compaction_prompt,
+        persistence=persistence,
+        cost_tracker=cost_tracker,
+        model_name=model_name,
+        tracer=tracer,
+        tracing=tracing,
     )
     # add the system messages and the summary and the recent messages
     compacted = list(system) + [SystemMessage(content="COMPACTED HISTORY\n" + summary)] + (rest[-k:] if k else [])
@@ -364,19 +379,21 @@ def _fallback_summary(serialized: str) -> str:
 
 
 async def summarize_history(
-    messages: Iterable[BaseMessage], 
-    model, 
-    *, 
-    thread_id: str | None = None, 
-    action: CompactionAction = "summary", 
+    messages: Iterable[BaseMessage],
+    model,
+    *,
+    thread_id: str | None = None,
+    action: CompactionAction = "summary",
     kept_recent: int = 0,
-    task_prompt=None, 
-    persistence=None, 
-    cost_tracker=None, 
-    model_name=None
+    task_prompt=None,
+    persistence=None,
+    cost_tracker=None,
+    model_name=None,
+    tracer=None,
+    tracing=None,
 ) -> str:
     """Summarize the history of the conversation.
-    
+
     Args:
         messages: The messages to summarize.
         model: The model to use for summarization.
@@ -387,6 +404,7 @@ async def summarize_history(
         persistence: The persistence to use for summarization.
         cost_tracker: The cost tracker to use for summarization.
         model_name: The name of the model.
+        tracer: Optional tracer backend for the summarisation span.
 
     Returns:
         str -> The summary of the conversation.
@@ -395,31 +413,75 @@ async def summarize_history(
     # serialize the messages for compaction
     recent = list(messages)[-_SUMMARY_MESSAGE_LIMIT:]
     serialized = "\n\n".join(f"{m.type}: {_content_text(m.content)}" for m in recent)
-    if not serialized.strip(): 
+    if not serialized.strip():
         return ""
 
     if model is None:
         # if no model, use the fallback summary
         return _fallback_summary(serialized)
-    
+
     # build the prompt
     prompt = task_prompt.format(messages=serialized) if task_prompt else serialized
-    # invoke the model
-    try:
-        resp = await model.ainvoke([HumanMessage(content=prompt)])
-    except Exception:
-        # if the model fails, use the fallback summary
-        summary = _fallback_summary(serialized)
-        if persistence and thread_id:
-            persistence.append_event(
-                thread_id, {
-                    "kind": "compaction_llm", 
-                    "prompt": prompt,
-                    "response": summary, 
-                    "action": action, 
-                    "kept_recent": kept_recent,
-                })
-        return summary
+
+    # invoke the model (under a span when a tracer is available)
+    span_attrs: dict[str, Any] = {
+        "compaction.action": action,
+        "compaction.kept_recent": kept_recent,
+        GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+        GEN_AI_OPERATION_NAME: "chat",
+    }
+    if thread_id:
+        span_attrs[THREAD_ID] = thread_id
+    if model_name:
+        span_attrs["gen_ai.request.model"] = model_name
+
+    capture_msgs = bool(tracing and getattr(tracing, "capture_messages", False))
+
+    if tracer is None:
+        try:
+            resp = await model.ainvoke([HumanMessage(content=prompt)])
+        except Exception:
+            summary = _fallback_summary(serialized)
+            if persistence and thread_id:
+                persistence.append_event(
+                    thread_id, {
+                        "kind": "compaction_llm",
+                        "prompt": prompt,
+                        "response": summary,
+                        "action": action,
+                        "kept_recent": kept_recent,
+                    })
+            return summary
+    else:
+        with tracer.start_span(
+            COMPACTION_SUMMARIZE, attributes=span_attrs, kind=KIND_CLIENT
+        ) as span:
+            if capture_msgs:
+                # The compaction prompt is a single templated user turn, not
+                # the raw conversation — serialise it as one user message so
+                # Langfuse/Arize render it in the chat UI.
+                span.set_attribute(
+                    GEN_AI_PROMPT,
+                    serialize_messages([HumanMessage(content=prompt)]),
+                )
+            try:
+                resp = await model.ainvoke([HumanMessage(content=prompt)])
+            except Exception as exc:
+                span.record_exception(exc)
+                span.set_status("ERROR", str(exc))
+                summary = _fallback_summary(serialized)
+                if persistence and thread_id:
+                    persistence.append_event(
+                        thread_id, {
+                            "kind": "compaction_llm",
+                            "prompt": prompt,
+                            "response": summary,
+                            "action": action,
+                            "kept_recent": kept_recent,
+                        })
+                return summary
+            if capture_msgs:
+                span.set_attribute(GEN_AI_COMPLETION, serialize_completion(resp))
 
     # track the cost
     if resp.usage_metadata and cost_tracker:
@@ -429,10 +491,10 @@ async def summarize_history(
     if persistence and thread_id:
         persistence.append_event(
             thread_id, {
-                "kind": "compaction_llm", 
+                "kind": "compaction_llm",
                 "prompt": prompt,
-                "response": summary, 
-                "action": action, 
+                "response": summary,
+                "action": action,
                 "kept_recent": kept_recent,
             }
         )

@@ -16,7 +16,7 @@ from liteharness.graph.nodes import make_nodes
 from liteharness.options import NessAgentOptions
 from liteharness.persistence import ThreadStore
 from liteharness.reflection import finalize_session_reflection, run_reflection_gate
-from liteharness.usage import CostTracker
+from liteharness.tracing.cost import CostTracker
 
 
 def _agent(tmp_path: Path, **kwargs):
@@ -56,8 +56,8 @@ def test_cost_tracker_uses_estimate_when_no_provider_cost():
         response_metadata={},
     )
     assert usage is not None
-    assert usage["cost_usd"] == 1.25
-    assert usage["cost_source"] == "estimated"
+    assert usage.cost_usd == 1.25
+    assert usage.cost_source == "estimated"
 
 
 def test_cost_tracker_prefers_provider_cost():
@@ -68,15 +68,30 @@ def test_cost_tracker_prefers_provider_cost():
         response_metadata={"cost": 0.01},
     )
     assert usage is not None
-    assert usage["cost_usd"] == 0.01
-    assert usage["cost_source"] == "provider"
+    assert usage.cost_usd == 0.01
+    assert usage.cost_source == "provider"
 
 
 def test_make_sdk_cost_tracker_wires_cli_pricing():
-    from liteharness_cli.config import make_sdk_cost_tracker
+    from liteharness_cli.config import MODEL_PRICING, make_sdk_cost_tracker
 
     tracker = make_sdk_cost_tracker()
-    assert tracker.estimate_cost is not None
+    # SDK-side cost tracker exposes the pricing catalog directly so it can
+    # estimate cost without the CLI's estimate_cost closure indirection.
+    assert tracker.pricing == MODEL_PRICING
+    # Pick a known model from MODEL_PRICING and assert the estimate path works.
+    # MODEL_PRICING maps case-insensitive substrings; first key here is
+    # one shipped in the CLI catalog.
+    sample_key = next(iter(MODEL_PRICING))
+    usage = tracker.add(
+        {"input_tokens": 1_000_000, "output_tokens": 0},
+        model_name=sample_key,
+        response_metadata={},
+    )
+    assert usage is not None
+    assert usage.cost_source == "estimated"
+    expected_input_per_m = MODEL_PRICING[sample_key][0]
+    assert usage.cost_usd == expected_input_per_m
 
 
 def test_thread_store_records_default_model(tmp_path: Path):

@@ -417,3 +417,115 @@ async def handle_message(customer_id: str, message: str) -> str:
 ---
 
 Same harness across all four: turn loop, compaction, reflection, permissions, skills, tool execution. Apps differ only in tools, prompts, overlay, memory paths, approval, modes, options (including `context_window`), and subagent config.
+
+---
+
+## Tracing & cost tracking
+
+OpenTelemetry-style tracing emits one span per turn, LLM call, tool execution, compaction summarisation, and reflection gate. Token usage (input / output / cached / cache hit rate) and estimated USD cost are recorded on every LLM span and aggregated per model.
+
+- **Message content** (opt-in): set ``tracing.capture_messages=True`` to record the full conversation as ``gen_ai.prompt``, ``gen_ai.completion``, and ``gen_ai.tool.call.*`` attributes (JSON-serialised in OpenAI ``{role, content}`` format so Langfuse/Arize render a chat UI). Off by default — messages may contain PII and bloat OTLP payloads. ``tracing.max_message_length`` (default 10 000) truncates tool results.
+- **Zero config**: by default no tracer or cost tracker is enabled.
+- **Console**: set ``exporter="console"`` to print ``[trace]`` lines to stdout — handy for debugging without a collector.
+- **OTLP**: point any OTel-compatible ingest (Tempo, Jaeger, Grafana, **Langfuse**, Honeycomb, Datadog, your own collector) at ``endpoint=`` and you get full traces with zero custom code. Langfuse ships an OTLP endpoint, so no dedicated exporter is required.
+- **Cost**: provider-reported cost (when present in ``response_metadata``) wins; otherwise a ``pricing=`` dict estimates from per-1M-token USD rates. Pass your own ``estimate_cost`` callback for full control.
+
+Install the optional tracing extra for the OTLP exporter:
+```bash
+pip install 'liteharness[tracing]'
+```
+
+### SDK examples
+
+```python
+from liteharness import (
+    NessAgent, PromptLayersConfig, TracingConfig, CostTracker, MultiTracer, build_tracer,
+)
+from langchain_openai import ChatOpenAI
+
+model = ChatOpenAI(model="gpt-4o")
+
+# --- minimal: no tracing, no cost tracking --------------------------------
+agent = NessAgent(model=model, tools=None, prompt=PromptLayersConfig())
+
+# --- OTLP + cost tracking -------------------------------------------------
+agent = NessAgent(
+    model=model, tools=None, prompt=PromptLayersConfig(),
+    tracing=TracingConfig(
+        enabled=True,
+        exporter="otlp",
+        endpoint="http://localhost:4318/v1/traces",
+        pricing={"gpt-4o": (2.50, 10.00, 0.50)},   # (input, output, cache_read_ratio) per 1M tokens
+    ),
+)
+
+# --- custom cost function -------------------------------------------------
+agent = NessAgent(
+    model=model, tools=None, prompt=PromptLayersConfig(),
+    cost_tracker=CostTracker(estimate_cost=lambda m, u, c, o: 0.001),
+)
+
+# --- console exporter (debug) ----------------------------------------------
+agent = NessAgent(
+    model=model, tools=None, prompt=PromptLayersConfig(),
+    tracing=TracingConfig(enabled=True, exporter="console"),
+)
+
+# --- custom tracer ---------------------------------------------------------
+class MyTracer:
+    def start_span(self, name, attributes=None, kind=None):
+        class Span:
+            def set_attribute(self, k, v): ...
+            def add_event(self, n, a=None): ...
+            def record_exception(self, e, a=None): ...
+            def set_status(self, s, d=None): ...
+            def end(self): ...
+            def __enter__(self): return self
+            def __exit__(self, *a): ...
+        return Span()
+
+agent = NessAgent(
+    model=model, tools=None, prompt=PromptLayersConfig(),
+    tracer=MyTracer(),
+)
+
+# --- multiple backends at once ---------------------------------------------
+otel_cfg = TracingConfig(enabled=True, exporter="otlp", endpoint="http://localhost:4318/v1/traces")
+agent = NessAgent(
+    model=model, tools=None, prompt=PromptLayersConfig(),
+    tracer=MultiTracer([build_tracer(otel_cfg), MyTracer()]),
+    cost_tracker=CostTracker(pricing={"gpt-4o": (2.50, 10.00, 0.50)}),
+)
+```
+
+### Reading cost data after a run
+
+```python
+session = agent.session(thread_id="abc")
+await session.run("Hello")
+
+cost = agent.config.cost_tracker
+print(cost.for_model("gpt-4o").cost_usd)   # per model
+print(cost.total().cost_usd)               # aggregate across all models seen
+print(cost.report())                        # multi-line string breakdown
+```
+
+### Span names
+
+| Span                        | Attributes                                                                                                                                                                                                        |
+|-----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `session.turn`              | `session.thread_id`, `session.mode`, `session.turn_count`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cost_usd` (when the turn emits a usage event)                                |
+| `agent.llm_call`            | `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read_tokens`, `gen_ai.usage.cache_hit_rate`, `gen_ai.usage.cost_usd`                                       |
+|                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
+| `tool.<name>`               | `tool.name`, `tool.duration_ms`, `tool.error`, `tool.exit_status`, `tool.args` (when ``capture_tool_args=True``)                                                                                                  |
+|                             | + `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (when ``capture_messages=True``; result truncated to ``max_message_length``)                                                                          |
+| `compaction.summarize`      | `compaction.action`, `compaction.kept_recent`, `session.thread_id`, `gen_ai.request.model`, `gen_ai.operation.name`                                                                                               |
+|                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
+| `reflection.gate`           | `session.thread_id`, `gen_ai.operation.name`, `reflection.bullets`                                                                                                                                               |
+|                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
+
+All `gen_ai.*` attribute names follow the OpenTelemetry GenAI semantic conventions so OTel-compatible backends chart token usage natively.
+
+### Langfuse via OTLP
+
+No dedicated exporter is required. Point `TracingConfig.exporter="otlp"` at your Langfuse Public Ingestion endpoint and set `headers={"Authorization": "Basic <base64(public_key:secret_key)>"}` (or whatever auth header your Langfuse project expects). Each LLM call, tool execution, compaction, and reflection appears as a trace in the Langfuse UI with token usage and cost attached.
