@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from liteharness.compaction import (
@@ -29,13 +31,39 @@ from liteharness.tracing.semconv import (
     GEN_AI_SYSTEM,
     GEN_AI_OPERATION_NAME,
 )
-from liteharness.types import ApprovalHandler, RunResult, SessionEvent, UsageEvent
+from liteharness.types import (
+    ApprovalHandler,
+    InterruptHandler,
+    PlanTurnHandler,
+    RunResult,
+    SessionEvent,
+    TurnStartHandler,
+    UsageEvent,
+)
 
 _active_session: ContextVar["Session | None"] = ContextVar(
     "liteharness_active_session", default=None
 )
 
 PLAN_COMPACTION_CHECKPOINT_RATIO = 0.75
+
+# [Image #N] placeholders that the TUI inserts when the user pastes an
+# image into the input buffer. They are stripped from both the model-facing
+# text and the persisted transcript text before the turn payload is built.
+_IMAGE_PLACEHOLDER_RE = re.compile(r"\[Image #\d+\]")
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Await *value* if it is awaitable, otherwise return it unchanged.
+
+    Lets the SDK accept either a plain ``bool``/value or a coroutine from a
+    user-supplied handler (e.g. ``on_pre_act_compact``), so callers are free
+    to write either a ``def`` or an ``async def`` regardless of whether the
+    declared type alias is ``Awaitable[...]``.
+    """
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _messages_from_event(event: dict) -> list[Any]:
@@ -52,6 +80,23 @@ def _messages_from_event(event: dict) -> list[Any]:
         return list(output)
     return []
 
+
+def _extract_text_from_blocks(content: Any) -> str:
+    """Join all ``text`` blocks from a list-content message into a string.
+
+    Used by ``_strip_prior_image_blocks`` to rewrite list-content (text +
+    image_url) HumanMessages back to text-only once the attached images are
+    no longer needed for the running turn.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "\n".join(p for p in parts if p)
+    return str(content)
 
 def _ensure_config_event_bridges(cfg: Any) -> None:
     """
@@ -115,7 +160,19 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
 
 
 class Session:
-    def __init__(self, agent, *, thread_id, agent_mode="act", metadata=None, git_available=None):
+    def __init__(
+        self,
+        agent,
+        *,
+        thread_id,
+        agent_mode="act",
+        metadata=None,
+        git_available=None,
+        vision: bool | None = None,
+        on_turn_start: TurnStartHandler | None = None,
+        on_plan_turn: PlanTurnHandler | None = None,
+        on_interrupt: InterruptHandler | None = None,
+    ):
         """Create a new interaction session bound to a single thread.
 
         Args:
@@ -125,6 +182,37 @@ class Session:
             agent_mode: Initial mode (``"act"`` or ``"plan"``).
             metadata: Arbitrary key-value pairs surfaced in the system prompt.
             git_available: Whether the project has a git repo.
+            vision: Whether image attachments should be forwarded to the model.
+
+                * ``None`` — caller-built :class:`HumanMessage` content is
+                  forwarded verbatim (today's default; the SDK is shape-blind).
+                * ``True`` — image blocks are sent to the model.
+                * ``False`` — image blocks are dropped to text-only and a
+                  ``warning`` SessionEvent is emitted so the caller can surface
+                  it.
+
+                The model-name heuristic that decides this belongs to the
+                adapter; the SDK just honours the flag.
+            on_turn_start: Per-Session hook called with the about-to-be-persisted
+                user text (after ``[Image #N]`` stripping). Returns the durable
+                user-event seq that flows into the graph state as
+                ``current_user_seq``, activating ``on_file_mutation``. When
+                unset, ``current_user_seq`` stays ``None`` (subagent /
+                pure-SDK path; file-mutation tracking stays inert). Returning
+                ``0`` activates tracking (durable ``append_event`` is
+                0-based), so the first real adapter turn records mutations.
+            on_plan_turn: Per-Session hook called at the end of a successful
+                plan-mode turn with the assistant text. Fire-and-forget; used by
+                the adapter to autosave the plan file. When unset, a
+                ``plan_turn`` SessionEvent is emitted instead so the caller
+                can still observe the text. Success path only — interrupted
+                plan turns flow through ``on_interrupt`` / the ``interrupted``
+                SessionEvent instead, so there is exactly one interrupt path.
+            on_interrupt: Per-Session hook called with the captured partial
+                assistant text on interruption; returns the text to surface on
+                the ``interrupted`` SessionEvent (returning ``None``/falsy
+                keeps the original partial text). When unset, the SDK still
+                synthesises the interruption marker itself.
         """
         self.agent = agent
         self.thread_id = thread_id
@@ -138,21 +226,41 @@ class Session:
         self.turn_count = 0
         self.context_used = 0
         self.context_total = 0
-        self._event_queue: asyncio.Queue[SessionEvent] = asyncio.Queue()  # async queue to store SessionEvent objects
+        self._event_queue: asyncio.Queue[SessionEvent] = asyncio.Queue()
         self._last_usage: UsageEvent | None = None
-        
+
         self.checkpointer = (
             self._cfg.checkpoint_factory() if self._cfg.checkpoint_factory else MemorySaver()
         )
         self._skill_loader = self._cfg.skill_loader
-        
+
         _ensure_config_event_bridges(self._cfg)
-        
+
         self._app = self._build_graph()
+
+        # Per-Session runtime hooks.
+        # Stored on the Session so concurrent threads on the same NessAgent do
+        # not clobber each other via the shared NessAgentConfig.
+        self.on_turn_start = on_turn_start
+        self.on_plan_turn = on_plan_turn
+        self.on_interrupt = on_interrupt
+
+        # Vision gate
+        # explicit bool decides whether image blocks reach the model.
+        self._vision = vision
+
+        # Bootstrap messages seeded by bootstrap() and consumed once on the next turn's payload.
+        self._pending_bootstrap: list[Any] = []
+
+        # Cancellation flag for the active turn. cancel() sets it 
+        # _iter_events polls is_cancelled() between yields and then
+        # finalises partial state via _finalize_cancelled_turn. 
+        # Reset at the top of each run so a stale trigger cannot bleed into the next turn.
+        self._cancel_token: asyncio.Event = asyncio.Event()
 
     def _add_queue(self, kind: str, data: dict[str, Any] | None = None) -> None:
         # add the event to the queue; non-blocking; of type SessionEvent
-        self._event_queue.put_nowait(SessionEvent(kind, dict(data or {})))  # type: ignore[arg-type]
+        self._event_queue.put_nowait(SessionEvent(kind, dict(data or {})))
 
     def _drain_queue(self) -> list[SessionEvent]:
         # drain the queue and return a list of session events
@@ -201,6 +309,70 @@ class Session:
     def rebuild_graph(self) -> None:
         """Recompile the langgraph application (e.g. after config changes)."""
         self._app = self._build_graph()
+
+    def reset_checkpointer(self) -> None:
+        """Drop all checkpointed graph state and recompile.
+
+        Required before a :meth:`bootstrap` replay (resume / rollback): the
+        default ``MemorySaver`` keeps prior turns for this thread in memory,
+        so replaying events into a reused saver would resurrect truncated
+        messages and duplicate the replayed prefix (``add_messages`` appends
+        by fresh id). Swapping in a fresh saver makes the durable event log
+        the single source of truth for the rebuilt state.
+
+        Caveat: with a custom ``checkpoint_factory`` backed by a persistent
+        store, a new saver instance still points at the same backing store;
+        the factory should scope savers per session (or clear the thread
+        server-side) for replay-style flows.
+        """
+        self.checkpointer = (
+            self._cfg.checkpoint_factory() if self._cfg.checkpoint_factory else MemorySaver()
+        )
+        self._app = self._build_graph()
+
+    def bootstrap(self, messages: Sequence[Any]) -> None:
+        """Seed the next turn's payload with prior messages.
+
+        Consumed exactly once — the bootstrap list is prepended to the next
+        turn's ``messages`` payload alongside the new user message, then
+        cleared. This is the safe resume/rollback primitive: it mirrors the
+        proven payload-seed path (CLI ``SessionApp._bootstrap``) without
+        bypassing the graph entry via direct ``aupdate_state`` writes on a
+        fresh checkpointer that has no prior checkpoint.
+        """
+        self._pending_bootstrap = list(messages)
+
+    def cancel(self) -> None:
+        """Request a cooperative break-out of the active turn's stream loop.
+
+        ``_iter_events`` polls ``is_cancelled()`` between yields and, on a set
+        token, performs partial-state cleanup via
+        :meth:`_finalize_cancelled_turn` before returning normally. The TUI's
+        hard-escalation backstop (``asyncio.Task.cancel``) lands as
+        ``CancelledError`` and is handled by the same finaliser, shielded.
+        """
+        self._cancel_token.set()
+
+    def is_cancelled(self) -> bool:
+        """Whether :meth:`cancel` was requested for the active turn."""
+        return self._cancel_token.is_set()
+
+    def is_subagent_active(self) -> bool:
+        """Whether a child subagent run is currently in flight.
+
+        Polled lazily from :mod:`liteharness.tools.subagents` so the SDK stays
+        decoupled from the tools package at import time. Returns ``False`` if
+        the signal is unavailable, preserving today's no-suppression behavior
+        on pure-SDK usage without subagents.
+        """
+        try:
+            from liteharness.tools.subagents import subagent_runs_active
+        except ImportError:
+            return False
+        try:
+            return subagent_runs_active() > 0
+        except Exception:
+            return False
 
     def set_mode(self, mode: str) -> None:
         """Switch the session to *mode* (``"act"`` or ``"plan"``).
@@ -303,13 +475,35 @@ class Session:
 
     def _user_message(
         self, message: str, images: Sequence[str] | None
-    ) -> HumanMessage:
-        """Builds a HumanMessage object with the message and images."""
+    ) -> tuple[HumanMessage, str]:
+        """Build a HumanMessage and return ``(message, cleaned_text)``.
+
+        ``[Image #N]`` placeholders (TUI-inserted image markers) are stripped
+        from both the model text and the returned text so callers can persist
+        the clean transcript. When ``self._vision is False`` and images were
+        supplied, the blocks are dropped to text-only and a ``warning``
+        SessionEvent is queued for the caller. When ``None`` (default), the
+        caller-built content shape is forwarded verbatim — the SDK is
+        shape-blind and trusts the adapter's gating decision.
+        """
+        cleaned = _IMAGE_PLACEHOLDER_RE.sub("", message or "").strip()
         if not images:
-            return HumanMessage(content=message)
-        return HumanMessage(
-            content=[{"type": "text", "text": message}]
-            + [{"type": "image_url", "image_url": {"url": u}} for u in images]
+            return HumanMessage(content=cleaned), cleaned
+        if self._vision is False:
+            self._add_queue(
+                "warning",
+                {"message": "Session vision is disabled; sending text only."},
+            )
+            return (
+                HumanMessage(content=cleaned or "[image omitted — model is text-only]"),
+                cleaned,
+            )
+        return (
+            HumanMessage(
+                content=[{"type": "text", "text": cleaned or "Please inspect this image."}]
+                + [{"type": "image_url", "image_url": {"url": u}} for u in images]
+            ),
+            cleaned,
         )
 
     async def _maybe_checkpoint_before_act(self) -> None:
@@ -361,10 +555,6 @@ class Session:
         # if the hard threshold is reached then force a compaction
         if pressure.hard_threshold_reached:
             self._force_compact = True
-            self._cfg.thread_store.append_event(
-                self.thread_id,
-                {"kind": "compact", "content": "pre-execution hard-threshold compaction requested"},
-            )
             self._add_queue(
                 "compaction",
                 {
@@ -377,14 +567,10 @@ class Session:
         # if the user has a custom compaction handler then use it
         should_compact = False
         if self._cfg.on_pre_act_compact is not None:
-            should_compact = bool(await self._cfg.on_pre_act_compact(pressure))
+            should_compact = bool(await _maybe_await(self._cfg.on_pre_act_compact(pressure)))
         # if the user wants to compact then force a compaction
         if should_compact:
             self._force_compact = True
-            self._cfg.thread_store.append_event(
-                self.thread_id,
-                {"kind": "compact", "content": "pre-execution compaction requested"},
-            )
             # add a compaction event to the queue
             self._add_queue(
                 "compaction",
@@ -399,23 +585,33 @@ class Session:
 
     async def _build_run_payload(
         self,
-        message: str,
+        user_message: HumanMessage,
         *,
-        images: Sequence[str] | None,
         active_skills: Sequence[str] | None,
         mode_switch: str,
+        current_user_seq: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build the turn payload and run config.
 
-        skills = list(active_skills or self._pending_skills)
-
+        Takes a *pre-built* ``user_message`` (constructed by
+        :meth:`_user_message` and stripped of image placeholders by the caller
+        in :meth:`_iter_events`). Any pending bootstrap messages are prepended
+        to the payload's ``messages`` and consumed once here.
+        """
+        skills = list(active_skills if active_skills is not None else self._pending_skills)
+        if active_skills is None:
+            self._pending_skills = []
+        initial = list(self._pending_bootstrap)
+        if initial:
+            self._pending_bootstrap = []
         payload = {
-            "messages": [self._user_message(message, images)],
+            "messages": [*initial, user_message],
             "approval_declined": False,
             "agent_mode": self.agent_mode,
             "force_compact": self._consume_force_compact(),
             "activate_skills": skills,
             "mode_switch": mode_switch,
-            "current_user_seq": 0,
+            "current_user_seq": current_user_seq,
         }
         cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 75}
         return payload, cfg
@@ -453,21 +649,23 @@ class Session:
                 # add the event to the output
                 out.append((SessionEvent("assistant_delta", data), assistant_text))
             return out
-        
-        # handle the end of the agent chain
-        if ek == "on_chat_model_end" and name == "agent":
-            # add the final event to the output
-            out.append(
-                (SessionEvent("assistant_final", {"content": assistant_text}), assistant_text)
-            )
-            return out
 
-        # handle the on_chain_end event -> end of any langgraph node
-        # this handles tool_start events or the end of agent node
+        # handle the on_chain_end event for the agent node -> emits the
+        # authoritative assistant output (final text + tool calls). The agent
+        # node runs the model via a non-streaming ainvoke and returns the
+        # AIMessage; astream_events surfaces it here as the node's output
+        # messages. 
+        # on_chain_end (name "agent") carries only the agent's response message
         if ek == "on_chain_end" and name == "agent":
             for msg in _messages_from_event(ev):
                 if getattr(msg, "type", None) not in {"ai", "assistant"}:
                     continue
+                text = str(getattr(msg, "content", "") or "")
+                if text.strip():
+                    assistant_text = text
+                    out.append(
+                        (SessionEvent("assistant_final", {"content": text}), assistant_text)
+                    )
                 for tc in getattr(msg, "tool_calls", None) or []:
                     # add the tool start event to the output
                     out.append(
@@ -509,6 +707,140 @@ class Session:
 
         return out
 
+    async def _strip_prior_image_blocks(self, cfg: dict) -> None:
+        """Rewrite prior list-content HumanMessages to text-only (by id).
+
+        Walks the checkpointer state; for each ``HumanMessage`` whose
+        ``.content`` is a list (i.e. carries image_url blocks) AND that is
+        followed by an ``AIMessage`` (i.e. the turn was answered), replaces it
+        with a text-only :class:`HumanMessage` carrying the same id so the
+        ``add_messages`` reducer swaps it in-place. The trailing image message
+        from a resumed crashed turn (no following AIMessage) is left intact so
+        the model can still see the image.
+
+        Called once per turn at the top of :meth:`_iter_events`, before the
+        payload is built — so large base64 payloads are not re-sent on every
+        turn after the image was first answered.
+        """
+        try:
+            snapshot = await self.app.aget_state(cfg)
+        except Exception:
+            return
+        messages = (snapshot.values or {}).get("messages") or []
+        if not messages:
+            return
+        answered_image_ids: list[tuple[str, str]] = []
+        for i, msg in enumerate(messages):
+            if (
+                getattr(msg, "type", None) == "human"
+                and isinstance(getattr(msg, "content", None), list)
+            ):
+                followed_by_ai = any(
+                    getattr(messages[j], "type", None) in ("ai", "assistant")
+                    for j in range(i + 1, len(messages))
+                )
+                if followed_by_ai and msg.id:
+                    text_block = _extract_text_from_blocks(msg.content)
+                    answered_image_ids.append((msg.id, text_block))
+        if not answered_image_ids:
+            return
+        replacements = [
+            HumanMessage(content=text, id=mid) for mid, text in answered_image_ids
+        ]
+        try:
+            await self.app.aupdate_state(cfg, {"messages": replacements})
+        except Exception:
+            # The image blocks only cost extra tokens if
+            # the swap silently fails — the turn still proceeds.
+            pass
+
+    async def _finalize_cancelled_turn(self, assistant_text: str, cfg: dict) -> None:
+        """Flush partial state after a cooperative or hard cancel.
+
+        Pure graph-mutation (no ``render``): synthesises a *failed*
+        ``ToolMessage`` for every pending tool call so the checkpoint stays
+        consistent, and when neither partial text nor pending tool calls exist,
+        injects an ``AIMessage`` interruption marker so the model does not
+        silently resume the abandoned request next turn. Emits an
+        ``interrupted`` SessionEvent so the caller can surface it.
+
+        The marker is an ``AIMessage`` (not ``HumanMessage``) to preserve
+        strict user/assistant alternation — the last checkpoint message may be
+        a ``HumanMessage`` (empty-stream turn) or a ``ToolMessage`` (just
+        completed tools), and an ``AIMessage`` cap is valid in both cases,
+        while a second ``HumanMessage`` risks back-to-back humans that some
+        providers reject.
+        """
+        recorded_text = bool(assistant_text and assistant_text.strip())
+
+        synthetic: list[Any] = []
+        has_pending = False
+        try:
+            snapshot = await self.app.aget_state(cfg)
+        except Exception:
+            snapshot = None
+        if snapshot is not None:
+            messages = list((snapshot.values or {}).get("messages", []))
+            # find and get the answered tool call ids
+            answered_ids = {
+                getattr(m, "tool_call_id", None)
+                for m in messages
+                if isinstance(m, ToolMessage)
+            }
+            # Find the last AIMessage and its tool calls
+            for msg in reversed(messages):
+                if not isinstance(msg, AIMessage):
+                    continue
+                # iterate over the tool calls
+                for tc in (msg.tool_calls or []):
+                    call_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if not call_id or str(call_id) in answered_ids:
+                        continue
+                    has_pending = True
+                    tool_name = (
+                        tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "tool")
+                    )
+                    # add synthetic tool message
+                    synthetic.append(
+                        ToolMessage(
+                            tool_call_id=str(call_id),
+                            name=str(tool_name or "tool"),
+                            content="Tool execution interrupted",
+                        )
+                    )
+                break
+
+        if not recorded_text and not has_pending:
+            # add interruption marker if there is no assistant text and no pending tool calls
+            # Cancel during a pure LLM call before any tokens streamed.
+            # Cancel after tools finished but before the model answered again 
+            # (last message might be ToolMessage, not partial AI text in assistant_text).
+            synthetic.append(
+                AIMessage(content=self._cfg.options.interruption_marker)
+            )
+
+        if synthetic:
+            # update the state with the synthetic messages
+            try:
+                await self.app.aupdate_state(cfg, {"messages": synthetic})
+            except Exception:
+                # the checkpoint may be left dirty but the next turn will still proceed.
+                pass
+
+        interrupted_surface = assistant_text
+        if self.on_interrupt is not None:
+            try:
+                interrupted_surface = self.on_interrupt(assistant_text) or assistant_text
+            except Exception:
+                pass
+
+        self._add_queue("interrupted", {"partial_text": interrupted_surface})
+        # NOTE: interrupted plan turns are NOT routed through ``on_plan_turn``
+        # here — that hook is the success-path contract (see ``_iter_events``).
+        # The partial text reaches the caller exactly once, via the
+        # ``on_interrupt`` hook above and the ``interrupted`` SessionEvent, so
+        # an adapter that archives plan text has a single place to do it.
+
     async def _iter_events(
         self,
         message: str,
@@ -518,11 +850,14 @@ class Session:
         mode: str | None = None,
     ) -> AsyncIterator[tuple[SessionEvent, str]]:
         """Yield (event, assistant_text_so_far) pairs from the graph stream."""
-        
+
         # sets up a runtime context for this session
         self._install_session_runtime()
         # reset the last usage
         self._last_usage = None
+        # reset the cooperative cancel token — a stale trigger from a prior
+        # turn must not abort this one.
+        self._cancel_token.clear()
         # drain the queue and return a list of session events
         self._drain_queue()
         # set the active session context var
@@ -539,8 +874,13 @@ class Session:
             },
         ) as span:
             try:
-                # handle mode switch and pre-flight operations before building the payload
-                if mode and mode != self.agent_mode:
+                # Mode override is documented as "this turn only", so snapshot
+                # the prior mode and restore it in the ``finally`` below via a
+                # direct assignment (NOT ``set_mode`` — that would schedule a
+                # spurious plan->act compaction checkpoint on the next turn).
+                prior_mode = self.agent_mode
+                mode_overridden = bool(mode and mode != self.agent_mode)
+                if mode_overridden:
                     self.set_mode(mode)
                 mode_switch = ""
                 if self._pending_act_checkpoint and self.agent_mode == "act":
@@ -548,11 +888,49 @@ class Session:
                     mode_switch = "plan->act"
                     await self._maybe_checkpoint_before_act()
 
+                # build the user message (vision gate + image-strip) and the
+                # pre-cleaned text used for the per-turn hook.
                 try:
-                    # get the payload for the run and the langgraph config
-                    payload, cfg = await self._build_run_payload(
-                        message, images=images, active_skills=active_skills, mode_switch=mode_switch
+                    user_message, _cleaned = self._user_message(message, images)
+                except Exception as exc:
+                    span.set_status("ERROR", str(exc))
+                    yield SessionEvent("error", {"message": str(exc)}), ""
+                    return
+
+                # Per-Session on_turn_start hook: returns the durable user-event
+                # seq that flows into the graph as ``current_user_seq`` and
+                # activates ``on_file_mutation`` in the tools node. When unset
+                # (subagent / pure-SDK usage), the seq stays ``None`` and
+                # file-mutation tracking stays inert — today's default
+                # behavior. A real adapter-backed first turn returns ``0``
+                # (durable append_event is 0-based), which is NOT inert: the
+                # tools node gates on ``is not None``, not truthiness, so the
+                # first turn's mutations are recorded.
+                user_seq: int | None = None
+                if self.on_turn_start is not None:
+                    try:
+                        result = await _maybe_await(self.on_turn_start(_cleaned))
+                        user_seq = int(result) if result is not None else None
+                    except Exception as exc:
+                        span.set_status("ERROR", str(exc))
+                        yield SessionEvent("error", {"message": str(exc)}), ""
+                        return
+
+                # Strip answered image blocks from prior turns so the large
+                # base64 payloads aren't re-sent. The new turn's user_message
+                # (carrying this turn's images, unstripped) is built above and
+                # not touched here.
+                cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 75}
+                await self._strip_prior_image_blocks(cfg)
+
+                try:
+                    payload, cfg_payload = await self._build_run_payload(
+                        user_message,
+                        active_skills=active_skills,
+                        mode_switch=mode_switch,
+                        current_user_seq=user_seq,
                     )
+                    cfg = cfg_payload
                 except Exception as exc:
                     span.set_status("ERROR", str(exc))
                     yield SessionEvent("error", {"message": str(exc)}), ""
@@ -562,21 +940,89 @@ class Session:
                     yield queued, ""
 
                 assistant_text = ""
+                cancelled = False
                 try:
-                    async for ev in self.app.astream_events(payload, config=cfg, version="v2"):
+                    async for ev in self.app.astream_events(
+                        payload, config=cfg, version="v2"
+                    ):
+                        # subagent suppression: when child runs are pending,
+                        # drop all events so the caller's spinner isn't fed
+                        # spurious assistant/tool stream from the child branch.
+                        if self.is_subagent_active():
+                            continue
                         # first yield queued events like usage, compact, etc.
                         for queued in self._drain_queue():
                             yield queued, assistant_text
                         # then dispatch the stream events
-                        for event, assistant_text in self._dispatch_stream_event(ev, assistant_text):
+                        for event, assistant_text in self._dispatch_stream_event(
+                            ev, assistant_text
+                        ):
                             yield event, assistant_text
+                        # cooperative cancel: break out between events so the
+                        # post-loop cleanup can flush partial state cleanly.
+                        if self._cancel_token.is_set():
+                            cancelled = True
+                            break
+                    # also catch a cancel that arrived during the last
+                    # event's downstream processing (between the final yield
+                    # and the loop's natural exit): without this, a late
+                    # cancel lands silently instead of finalizing.
+                    if not cancelled and self._cancel_token.is_set():
+                        cancelled = True
                     # finally yield any remaining queued events
                     for queued in self._drain_queue():
                         yield queued, assistant_text
+                except asyncio.CancelledError:
+                    # Hard-escalation path: the cooperative cancel token failed
+                    # to break the stream loop within the backstop window.
+                    # Best-effort finalisation before re-raising so the task is
+                    # still properly cancelled.
+                    try:
+                        await asyncio.shield(
+                            self._finalize_cancelled_turn(assistant_text, cfg)
+                        )
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                    final_events: list[SessionEvent] = []
+                    try:
+                        final_events = self._drain_queue()
+                    except Exception:
+                        final_events = []
+                    for queued in final_events:
+                        yield queued, assistant_text
+                    raise
                 except Exception as exc:
                     span.set_status("ERROR", str(exc))
                     yield SessionEvent("error", {"message": str(exc)}), assistant_text
+                    return
+
+                if cancelled:
+                    await self._finalize_cancelled_turn(assistant_text, cfg)
+                    # drain any events queued during finalize (interrupted,
+                    # and any warnings) and yield them after the model stream
+                    # has ended.
+                    for queued in self._drain_queue():
+                        yield queued, assistant_text
+                elif self.agent_mode == "plan":
+                    # Plan-turn emission: when an adapter hook is installed, it
+                    # takes the text directly; otherwise emit a ``plan_turn``
+                    # SessionEvent so the caller can still observe the text.
+                    if assistant_text.strip():
+                        if self.on_plan_turn is not None:
+                            try:
+                                self.on_plan_turn(assistant_text)
+                            except Exception:
+                                pass
+                        else:
+                            yield SessionEvent("plan_turn", {"text": assistant_text}), assistant_text
             finally:
+                # Restore the session mode when a one-turn override was applied
+                # (see ``mode`` kwarg docstring). Direct assignment avoids
+                # ``set_mode``'s plan->act checkpoint side effect.
+                if mode_overridden and self.agent_mode != prior_mode:
+                    self.agent_mode = prior_mode
                 span.set_attribute(TURN_COUNT, self.turn_count)
                 last_usage = self._last_usage
                 if last_usage is not None:

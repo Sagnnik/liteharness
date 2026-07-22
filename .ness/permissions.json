@@ -16,7 +16,9 @@
     "shell:run:git diff*",
     "shell:run:git log*",
     "shell:run:git show*",
-    "shell:run:cd*"
+    "shell:run:cd*",
+    "shell:run:pwd*",
+    "shell:run:nl*"
   ],
   "deny": [
     "shell:run:rm*",

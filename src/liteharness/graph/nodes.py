@@ -351,7 +351,8 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         # store tool results in a list of ToolMessage objects
         results: list[ToolMessage] = []
         cur_mode = (state.get("agent_mode") or rt.resolved_mode).lower()
-        user_seq = int(state.get("current_user_seq") or 0)
+        raw_user_seq = state.get("current_user_seq")
+        user_seq = int(raw_user_seq) if raw_user_seq is not None else None
         newly_loaded_names: set[str] = set()
 
         for name, args, call_id in calls:
@@ -438,9 +439,10 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
 
             # Record mutated paths for rollback (surgical file restore).
             # Only run on a non-error result so we don't pollute the checkpoint
-            # with paths the tool never touched. current_user_seq==0 means we
-            # are inside a subagent (no live user turn in state) -> skip.
-            if user_seq and config.on_file_mutation and not str(content).startswith("Error:"):
+            # with paths the tool never touched. ``current_user_seq is None``
+            # means there is no live user turn in state (subagent / pure-SDK
+            # path) -> skip.
+            if user_seq is not None and config.on_file_mutation and not str(content).startswith("Error:"):
                 config.on_file_mutation(thread_id, user_seq, name, args)
 
             # Track skills loaded via skill_view for the L3 overlay

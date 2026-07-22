@@ -20,6 +20,10 @@ class NessAgentOptions:
     exa_api_key: str | None = None
     project_root: Path | None = None
     ness_dir: Path | None = None
+    # AIMessage cap text injected on a pure-LLM cancel with no partial text or
+    # pending tool calls, so the model does not silently resume the abandoned
+    # request next turn
+    interruption_marker: str = ("… [turn interrupted by user] ")
 
 
 @dataclass

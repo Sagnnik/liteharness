@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from liteharness import NessAgent, PromptLayers, PromptLayersConfig
+from liteharness import NessAgent, PromptLayers, PromptLayersConfig, SessionEvent
 from liteharness.context.overlay import OverlayContext
 from liteharness.graph.helpers import _with_working_state_tail
 from liteharness.graph.nodes import make_nodes
@@ -88,14 +89,20 @@ def test_plan_act_mode_switch_consumed_once():
     assert session._pending_act_checkpoint is True
 
     async def _run():
-        # _build_run_payload now takes a pre-computed mode_switch
+        # _build_run_payload now takes a pre-built HumanMessage and a
+        # pre-computed mode_switch; it no longer synthesises the user message
+        # or strips images (that lives in _iter_events via _user_message).
         payload, _ = await session._build_run_payload(
-            "go", images=None, active_skills=None, mode_switch="plan->act"
+            HumanMessage(content="go"),
+            active_skills=None,
+            mode_switch="plan->act",
         )
         assert payload["mode_switch"] == "plan->act"
         assert session._pending_act_checkpoint is True  # not consumed by payload builder
         payload2, _ = await session._build_run_payload(
-            "again", images=None, active_skills=None, mode_switch=""
+            HumanMessage(content="again"),
+            active_skills=None,
+            mode_switch="",
         )
         assert payload2["mode_switch"] == ""
 
@@ -254,3 +261,640 @@ def test_smoke_still_passes_import():
     assert NoopTracer is not None
     assert Session is not None
     assert PreActCompactHandler is not None
+
+
+# ---------------------------------------------------------------------------
+# Per-Session runtime hooks, bootstrap, cancel, finalize
+# (Phase 1d additions — domain-agnostic SDK Session behaviour)
+# ---------------------------------------------------------------------------
+
+
+class _FakeApp:
+    """Stand-in compiled graph for SDK Session stream/cancel tests.
+
+    Yields a fixed stream of astream_events chunks; triggers the Session's
+    cancel token after a configurable number of events; and records any
+    aupdate_state calls so the cancel-finalize path is observable without
+    requiring a real langgraph run.
+    """
+
+    def __init__(
+        self,
+        events: list[dict],
+        *,
+        trigger_cancel_after: int | None = None,
+        session: "Session | None" = None,
+        snapshot_messages: list | None = None,
+    ) -> None:
+        self._events = list(events)
+        self._trigger_after = trigger_cancel_after
+        self._session = session
+        self._snapshot_messages = snapshot_messages or []
+        self.updates: list[dict] = []
+        self.last_payload: dict | None = None
+
+    async def astream_events(self, payload, *, config=None, version="v2"):
+        self.last_payload = payload
+        if self._trigger_after == 0 and self._session is not None:
+            self._session.cancel()
+        for index, event in enumerate(self._events):
+            yield event
+            if (
+                self._trigger_after is not None
+                and self._session is not None
+                and index + 1 >= self._trigger_after
+            ):
+                self._session.cancel()
+
+    async def aget_state(self, config):
+        return type(
+            "Snapshot",
+            (),
+            {"values": {"messages": list(self._snapshot_messages)}},
+        )()
+
+    async def aupdate_state(self, config, updates):
+        self.updates.append(updates)
+
+
+def _stream_session(session, message="hi", **kwargs):
+    async def _run():
+        events = []
+        async for ev in session.stream(message, **kwargs):
+            events.append(ev)
+        return events
+
+    return asyncio.run(_run())
+
+
+def test_bootstrap_seeds_next_payload():
+    agent = _agent()
+    session = agent.session(thread_id="t-boot")
+    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
+    session._app = fake
+
+    session.bootstrap([HumanMessage(content="seed")])
+    _stream_session(session)
+
+    assert fake.last_payload is not None
+    msgs = fake.last_payload["messages"]
+    assert any(getattr(m, "content", None) == "seed" for m in msgs)
+
+
+def test_bootstrap_cleared_after_one_turn():
+    agent = _agent()
+    session = agent.session(thread_id="t-boot2")
+    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
+    session._app = fake
+
+    session.bootstrap([HumanMessage(content="seed")])
+    _stream_session(session)
+    # Bootstrap should be consumed; a second turn has no seeding.
+    fake.last_payload = None
+    _stream_session(session)
+    msgs = fake.last_payload["messages"]
+    assert not any(getattr(m, "content", None) == "seed" for m in msgs)
+
+
+def test_on_turn_start_feeds_user_seq():
+    agent = _agent()
+    captured = {}
+
+    async def hook(_text):
+        return 42
+
+    session = agent.session(thread_id="t-seq", on_turn_start=hook)
+    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
+    session._app = fake
+
+    _stream_session(session)
+
+    assert fake.last_payload is not None
+    assert fake.last_payload["current_user_seq"] == 42
+
+
+def test_on_turn_start_default_is_none():
+    # When no on_turn_start hook is installed (pure-SDK / subagent path), the
+    # seq stays None — the inert sentinel, distinct from a real first turn
+    # whose durable append_event seq is 0. The tools node gates on
+    # ``is not None``, not truthiness, so 0 activates tracking and None does not.
+    agent = _agent()
+    session = agent.session(thread_id="t-seq-default")
+    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
+    session._app = fake
+
+    _stream_session(session)
+
+    assert fake.last_payload["current_user_seq"] is None
+
+
+def test_on_turn_start_first_turn_seq_zero_is_not_inert():
+    # The adapter's first real turn returns durable seq 0 (append_event is
+    # 0-based). That must NOT be treated as inert — it activates
+    # on_file_mutation. Previously the gate used truthiness, dropping the
+    # first turn's mutations.
+    agent = _agent()
+    captured = {}
+
+    async def hook(_text):
+        return 0
+
+    session = agent.session(thread_id="t-seq-first", on_turn_start=hook)
+    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
+    session._app = fake
+
+    async def _run():
+        async for _ in session.stream("hi"):
+            pass
+    asyncio.run(_run())
+
+    assert fake.last_payload["current_user_seq"] == 0
+
+
+def test_on_plan_turn_invoked_on_plan_mode():
+    agent = _agent()
+    seen = {}
+
+    def hook(text):
+        seen["text"] = text
+
+    session = agent.session(thread_id="t-plan", on_plan_turn=hook)
+    session.set_mode("plan")
+    # Fake a model that emits assistant text via on_chat_model_end with name=agent.
+    fake = _FakeApp(
+        [
+            {
+                "event": "on_chat_model_end",
+                "name": "agent",
+                "data": {"output": {"messages": []}},
+            },
+        ]
+    )
+    session._app = fake
+
+    # Patch _dispatch_stream_event to feed fixed assistant text, since the
+    # FakeListChatModel backing the agent won't emit "PLAN OK" through the
+    # fake app's static event list.
+    original_dispatch = session._dispatch_stream_event
+
+    def fake_dispatch(ev, assistant_text):
+        # Drive assistant_text forward as if a token chunk landed.
+        if ev.get("event") == "on_chat_model_end" and ev.get("name") == "agent":
+            return [(SessionEvent("assistant_final", {"content": "PLAN OK"}), "PLAN OK")]
+        return original_dispatch(ev, assistant_text)
+
+    session._dispatch_stream_event = fake_dispatch
+    _stream_session(session)
+
+    assert seen.get("text") == "PLAN OK"
+
+
+def test_plan_turn_event_emitted_when_no_hook():
+    agent = _agent()
+    session = agent.session(thread_id="t-plan-evt")
+    session.set_mode("plan")
+    fake = _FakeApp(
+        [
+            {
+                "event": "on_chat_model_end",
+                "name": "agent",
+                "data": {"output": {"messages": []}},
+            },
+        ]
+    )
+    session._app = fake
+
+    original_dispatch = session._dispatch_stream_event
+
+    def fake_dispatch(ev, assistant_text):
+        if ev.get("event") == "on_chat_model_end" and ev.get("name") == "agent":
+            return [(SessionEvent("assistant_final", {"content": "plan text"}), "plan text")]
+        return original_dispatch(ev, assistant_text)
+
+    session._dispatch_stream_event = fake_dispatch
+    events = _stream_session(session)
+
+    kinds = [ev.kind for ev in events]
+    assert "plan_turn" in kinds
+
+
+def test_session_cancel_synthesises_failed_toolmessage():
+    agent = _agent()
+    session = agent.session(thread_id="t-cancel-tools")
+    # The snapshot the finalize path will read: an AIMessage with a pending
+    # tool_call and no matching ToolMessage → must synthesise one.
+    pending_ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "ping", "args": {}, "id": "c1", "type": "tool_call"}],
+    )
+    fake = _FakeApp(
+        [
+            {
+                "event": "on_chat_model_end",
+                "name": "agent",
+                "data": {
+                    "output": {
+                        "messages": [pending_ai],
+                    }
+                },
+            },
+        ],
+        trigger_cancel_after=1,
+        session=session,
+        snapshot_messages=[pending_ai],
+    )
+    session._app = fake
+
+    events = _stream_session(session)
+
+    assert any(ev.kind == "interrupted" for ev in events)
+    # The synthetic failed ToolMessage must have been written back.
+    assert fake.updates, "aupdate_state was not called by finalize"
+    flat = []
+    for upd in fake.updates:
+        flat.extend(upd.get("messages", []))
+    synth = [m for m in flat if isinstance(m, ToolMessage)]
+    assert synth, "no synthetic ToolMessage was written"
+    assert synth[0].tool_call_id == "c1"
+    assert "interrupted" in str(synth[0].content).lower()
+
+
+def test_interruption_marker_on_empty_cancel():
+    agent = _agent()
+    session = agent.session(thread_id="t-cancel-empty")
+    fake = _FakeApp(
+        [
+            {"event": "on_chat_model_start", "name": "agent"},
+        ],
+        trigger_cancel_after=1,
+        session=session,
+        snapshot_messages=[],
+    )
+    session._app = fake
+
+    events = _stream_session(session)
+
+    assert any(ev.kind == "interrupted" for ev in events)
+    # No partial text and no pending tools → marker AIMessage written.
+    flat = []
+    for upd in fake.updates:
+        flat.extend(upd.get("messages", []))
+    markers = [m for m in flat if isinstance(m, AIMessage)]
+    assert markers, "interruption marker AIMessage was not written"
+    assert session._cfg.options.interruption_marker in str(markers[-1].content)
+
+
+def test_strip_prior_image_blocks_rewrites_answered_image_message():
+    agent = _agent()
+    session = agent.session(thread_id="t-imgstrip", vision=True)
+
+    # Prior checkpoint: a list-content HumanMessage (image) followed by an
+    # AIMessage → should be rewritten to text-only with the same id.
+    prior_human = HumanMessage(
+        content=[
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+        ],
+        id="img-1",
+    )
+    prior_ai = AIMessage(content="got it")
+
+    class _StripFakeApp:
+        def __init__(self):
+            self.updates = []
+            self.last_payload = None
+            self._messages = [prior_human, prior_ai]
+
+        async def astream_events(self, payload, *, config=None, version="v2"):
+            self.last_payload = payload
+            yield {
+                "event": "on_chain_end",
+                "name": "agent",
+                "data": {"output": {"messages": []}},
+            }
+
+        async def aget_state(self, config):
+            return type(
+                "Snapshot",
+                (),
+                {"values": {"messages": list(self._messages)}},
+            )()
+
+        async def aupdate_state(self, config, updates):
+            self.updates.append(updates)
+            # Subsequent aget_state calls reflect the replacement.
+            for m in updates.get("messages", []):
+                if getattr(m, "id", None) == "img-1":
+                    self._messages[0] = m
+
+    fake = _StripFakeApp()
+    session._app = fake
+
+    _stream_session(session, "next turn")
+
+    # The replacement must target id=img-1 and be text-only.
+    assert fake.updates, "strip did not call aupdate_state"
+    flat = []
+    for upd in fake.updates:
+        flat.extend(upd.get("messages", []))
+    replaced = [m for m in flat if getattr(m, "id", None) == "img-1"]
+    assert replaced, "no replacement HumanMessage targeting id=img-1"
+    assert isinstance(replaced[0].content, str)
+    assert "look at this" in replaced[0].content
+
+
+def test_vision_disabled_emits_warning_and_drops_images():
+    agent = _agent()
+    session = agent.session(thread_id="t-vision-off", vision=False)
+    fake = _FakeApp(
+        [{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}]
+    )
+    session._app = fake
+
+    events = _stream_session(session, "see this [Image #1]", images=["data:image/png;base64,zz"])
+
+    assert any(ev.kind == "warning" for ev in events)
+    # The payload message is text-only (no image_url blocks).
+    msgs = fake.last_payload["messages"]
+    user_msg = msgs[-1]
+    assert isinstance(user_msg.content, str)
+    assert "[Image #1]" not in user_msg.content
+
+
+def test_no_durable_compaction_append_in_sdk(tmp_path: Path):
+    agent = _agent(
+        options=NessAgentOptions(
+            project_root=tmp_path,
+            ness_dir=tmp_path / ".ness",
+            auto_save_threads=True,
+        )
+    )
+    cfg = agent.config
+    cfg.thread_store.auto_save = True
+    session = agent.session(thread_id="t-no-durable-compact")
+    # No on_pre_act_compact handler installed → the soft branch always emits
+    # the ``compaction`` SessionEvent with ask=True. We can force a hard
+    # threshold path by setting the pending flag and patching pressure.
+    session._pending_act_checkpoint = True
+    session.set_mode("act")
+
+    # Patch _maybe_checkpoint_before_act to simulate a hard-threshold hit
+    # without needing real context pressure maths.
+    async def _fake_maybe():
+        session._force_compact = True
+        session._add_queue(
+            "compaction",
+            {"reason": "pre_act_hard_threshold", "info": "fake", "forced": True},
+        )
+
+    session._maybe_checkpoint_before_act = _fake_maybe  # type: ignore[assignment]
+    fake = _FakeApp(
+        [{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}]
+    )
+    session._app = fake
+
+    events = _stream_session(session, "go")
+
+    # The compaction SessionEvent must reach the caller...
+    assert any(ev.kind == "compaction" for ev in events)
+    # ...but the SDK must NOT have written a durable ``compact`` event row.
+    durable = [e for e in cfg.thread_store.load_thread_events(session.thread_id) if e.get("kind") == "compact"]
+    assert durable == [], "SDK wrote a durable compact row; the adapter should own that"
+
+
+def test_is_subagent_active_drops_events_when_active():
+    agent = _agent()
+    session = agent.session(thread_id="t-sub")
+    fake = _FakeApp(
+        [
+            {
+                "event": "on_chat_model_end",
+                "name": "agent",
+                "data": {"output": {"messages": []}},
+            },
+        ]
+    )
+    session._app = fake
+
+    # With the SDK signal reporting active subagent runs, the dispatcher must
+    # skip every event from the child branch.
+    with patch.object(session, "is_subagent_active", return_value=True):
+        events = _stream_session(session, "go")
+
+    assert all(ev.kind != "assistant_final" for ev in events)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the independent reviewer's findings.
+# ---------------------------------------------------------------------------
+
+
+class _BindableFakeModel:
+    """Duck-typed chat model whose ``bind_tools`` works (unlike
+    ``FakeListChatModel``) so a real langgraph run can complete. Returns a
+    fixed ``AIMessage`` so the agent node's ``on_chain_end`` output carries
+    it and the SDK can emit ``assistant_final``.
+    """
+
+    def __init__(self, text: str = "FINAL-ANSWER") -> None:
+        self.text = text
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        return self
+
+    async def ainvoke(self, messages, **kwargs):
+        self.calls += 1
+        return AIMessage(content=self.text)
+
+    @property
+    def model(self):
+        return "bindfake"
+
+
+def _bindable_agent(tmp_path: Path, text: str = "FINAL-ANSWER"):
+    @tool
+    def ping() -> str:
+        """Return pong."""
+        return "pong"
+
+    from liteharness.options import NessAgentOptions
+
+    return NessAgent(
+        model=_BindableFakeModel(text),
+        tools=[ping],
+        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
+        options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
+    )
+
+
+def test_assistant_final_emitted_for_real_graph_run(tmp_path: Path):
+    """Finding 2: ``assistant_final`` was never emitted because the SDK
+    filtered ``on_chat_model_end`` by ``name == "agent"`` (real model events
+    carry the model runnable name). Emitting it from ``on_chain_end`` (agent)
+    — which carries only the agent response message — restores it and
+    excludes the compaction summarizer that runs in the same node.
+    """
+    agent = _bindable_agent(tmp_path, "FINAL-ANSWER")
+    session = agent.session(thread_id="t-final")
+
+    async def _run():
+        kinds, finals = [], []
+        async for ev in session.stream("hi"):
+            kinds.append(ev.kind)
+            if ev.kind == "assistant_final":
+                finals.append(ev.data.get("content"))
+        return kinds, finals
+
+    kinds, finals = asyncio.run(_run())
+    assert "assistant_final" in kinds, f"assistant_final missing: {kinds}"
+    assert finals[-1] == "FINAL-ANSWER"
+
+
+def test_mode_override_is_turn_only_and_restores(tmp_path: Path):
+    """Finding 9: the ``mode`` kwarg docstring promises "this turn only", but
+    ``set_mode`` permanently mutated session mode. After the override turn the
+    session must return to its prior mode (and must not schedule a spurious
+    plan->act compaction checkpoint for the next turn).
+    """
+    agent = _bindable_agent(tmp_path, "plan text")
+    session = agent.session(thread_id="t-mode", agent_mode="act")
+    assert session.agent_mode == "act"
+
+    async def _run():
+        async for _ in session.stream("hi", mode="plan"):
+            pass
+
+    asyncio.run(_run())
+
+    # Restore: the override was this-turn-only.
+    assert session.agent_mode == "act", "mode override leaked across turns"
+    # And no plan->act compaction checkpoint was scheduled as a side effect.
+    assert session._pending_act_checkpoint is False
+
+
+def test_pending_skills_consumed_and_cleared_after_turn():
+    """Finding 7: ``_pending_skills`` was never cleared, so skills activated
+    once stayed active on every subsequent turn. After a turn that falls back
+    to pending, the stash must be empty.
+    """
+    agent = _agent()
+    session = agent.session(thread_id="t-skills")
+    session.active_skills(["stale-skill"])
+
+    payload, _cfg = asyncio.run(
+        session._build_run_payload(
+            HumanMessage(content="hi"),
+            active_skills=None,
+            mode_switch="",
+        )
+    )
+    assert payload["activate_skills"] == ["stale-skill"]
+    # Consumed and cleared.
+    assert session._pending_skills == []
+
+    # Next turn falls back to the (now empty) pending list — no leak.
+    payload2, _cfg2 = asyncio.run(
+        session._build_run_payload(
+            HumanMessage(content="again"),
+            active_skills=None,
+            mode_switch="",
+        )
+    )
+    assert payload2["activate_skills"] == []
+
+
+def test_explicit_active_skills_does_not_consume_pending():
+    """Passing ``active_skills`` explicitly overrides + does not touch the
+    pending stash (the one-shot stash is only consumed on the fallback path).
+    """
+    agent = _agent()
+    session = agent.session(thread_id="t-skills2")
+    session.active_skills(["pending"])
+
+    payload, _cfg = asyncio.run(
+        session._build_run_payload(
+            HumanMessage(content="hi"),
+            active_skills=["explicit"],
+            mode_switch="",
+        )
+    )
+    assert payload["activate_skills"] == ["explicit"]
+    assert session._pending_skills == ["pending"]
+
+
+def test_sync_pre_act_compact_handler_is_awaited(tmp_path: Path):
+    """Finding 1: the SDK awaited ``on_pre_act_compact`` but a plain ``def``
+    handler returns a ``bool`` (not awaitable) → ``TypeError``. The SDK now
+    tolerates both sync and async handlers.
+    """
+    agent = _agent()
+    session = agent.session(thread_id="t-sync-compact")
+
+    calls = {"n": 0}
+
+    def sync_handler(pressure):
+        calls["n"] += 1
+        return True  # plain bool, not a coroutine
+
+    agent.config.on_pre_act_compact = sync_handler
+
+    # Drive _maybe_checkpoint_before_act with a stubbed pressure path that
+    # crosses the PLAN_COMPACTION_CHECKPOINT_RATIO gate.
+    class _P:
+        ratio = 0.9
+        token_count = 9000
+        usable_budget = 10000
+        action = "summarize"
+        keep_recent = 6
+        hard_threshold_reached = False
+
+    async def _stub_state(cfg):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            values={"messages": [HumanMessage(content="hi")], "last_input_tokens": 0}
+        )
+
+    session.app.aget_state = _stub_state
+    import liteharness.session as sm
+
+    with patch.object(sm, "calculate_context_pressure", return_value=_P()):
+        asyncio.run(session._maybe_checkpoint_before_act())
+
+    assert calls["n"] == 1
+    assert session._force_compact is True
+
+
+def test_async_pre_act_compact_handler_still_supported(tmp_path: Path):
+    agent = _agent()
+    session = agent.session(thread_id="t-async-compact")
+
+    async def async_handler(pressure):
+        return False
+
+    agent.config.on_pre_act_compact = async_handler
+
+    class _P:
+        ratio = 0.9
+        token_count = 9000
+        usable_budget = 10000
+        action = "summarize"
+        keep_recent = 6
+        hard_threshold_reached = False
+
+    async def _stub_state(cfg):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(values={"messages": [HumanMessage(content="hi")]})
+
+    session.app.aget_state = _stub_state
+    import liteharness.session as sm
+
+    with patch.object(sm, "calculate_context_pressure", return_value=_P()):
+        asyncio.run(session._maybe_checkpoint_before_act())
+
+    # async handler returned False → no force compact, but the ask-event path
+    # ran (no crash). The important assertion is that it returned without
+    # raising.
+    assert session._force_compact is False

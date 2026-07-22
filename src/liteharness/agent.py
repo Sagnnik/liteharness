@@ -26,6 +26,11 @@ from liteharness.tracing.config import TracingConfig
 from liteharness.tracing.tracer import NoopTracer, Tracer, build_tracer
 if TYPE_CHECKING:
     from liteharness.session import Session
+    from liteharness.types import (
+        InterruptHandler,
+        PlanTurnHandler,
+        TurnStartHandler,
+    )
 
 
 @dataclass(kw_only=True)
@@ -384,6 +389,10 @@ class NessAgent:
         agent_mode: str | None = None,
         metadata: Mapping[str, Any] | None = None,
         git_available: bool | None = None,
+        vision: bool | None = None,
+        on_turn_start: "TurnStartHandler | None" = None,
+        on_plan_turn: "PlanTurnHandler | None" = None,
+        on_interrupt: "InterruptHandler | None" = None,
     ) -> Session:
         """Create a runnable :class:`~liteharness.session.Session` for one thread.
 
@@ -401,6 +410,16 @@ class NessAgent:
         git_available : bool, optional
             Whether the project has a git repo. Auto-detected when
             ``None``.
+        vision : bool, optional
+            Forwards image attachments to the model when ``True``; drops
+            to text-only and emits a ``warning`` SessionEvent when ``False``;
+            shape-blind (forwards verbatim) when ``None``. See
+            :class:`~liteharness.session.Session`.
+        on_turn_start, on_plan_turn, on_interrupt
+            Per-Session runtime hooks. Stored on the :class:`Session` instance
+            (not the shared :class:`NessAgentConfig`) so concurrent threads on
+            one agent never clobber each other. See :mod:`liteharness.types`
+            for the handler signatures.
         """
         from liteharness.session import Session
 
@@ -412,6 +431,10 @@ class NessAgent:
             agent_mode=mode,
             metadata=dict(metadata or {}),
             git_available=git_available,
+            vision=vision,
+            on_turn_start=on_turn_start,
+            on_plan_turn=on_plan_turn,
+            on_interrupt=on_interrupt,
         )
 
     def new_thread_id(self, prefix: str = "session") -> str:
