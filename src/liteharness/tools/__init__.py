@@ -97,6 +97,21 @@ def tool_names_for_session() -> list[str]:
     return list(FULL_TOOL_SET | set(ACTIVE_MCP_TOOLS))
 
 
+def register_dynamic_tools(tools: Iterable[BaseTool]) -> None:
+    """Register dynamically loaded tools (e.g. MCP) into the module-level map.
+
+    Lets the model-facing ``search_tools`` / ``add_tools`` discover tools —
+    which run on these module globals until Phase B — find and activate
+    dynamically loaded tools. Session ``ToolRegistry`` instances are wired
+    separately via :meth:`ToolRegistry.register_dynamic`.
+    """
+    for t in tools:
+        if t.name not in TOOL_MAP:
+            ALL_TOOLS.append(t)
+        TOOL_MAP[t.name] = t
+    TOOL_NAMES[:] = list(TOOL_MAP)
+
+
 class ToolRegistry:
     """Bound tool set with optional MCP hot-rebind."""
 
@@ -129,7 +144,13 @@ class ToolRegistry:
         if self._include is not None:
             active = [t for t in self._all_tools if t.name in self._include]
         else:
-            active = [t for t in self._all_tools if t.name in FULL_TOOL_SET]
+            # Built-in full set plus this session's activated MCP tools. The
+            # module-level ACTIVE_MCP_TOOLS bridge keeps the model-facing
+            # add_tools discover path (which still runs on module globals —
+            # see discover.py) effective for this session until Phase B makes
+            # the session registry the sole source of truth.
+            wanted = FULL_TOOL_SET | self.active_mcp_tools | ACTIVE_MCP_TOOLS
+            active = [t for t in self._all_tools if t.name in wanted]
         active = self._dedupe(active)
         self.runtime["active_tools"] = active
         self.runtime["tool_map"] = {t.name: t for t in active}
@@ -212,14 +233,16 @@ class ToolRegistry:
     def register_dynamic(self, tools: Iterable[BaseTool]) -> None:
         """Register dynamically loaded tool instances (e.g. from MCP servers).
 
-        New tools are added to the full pool and automatically activated.
+        New tools join the pool as *known but inactive* — activation is a
+        separate step (:meth:`activate_mcp`, or the model-facing add_tools
+        discover tool via the module-level bridge in ``_sync``), so startup
+        can register every MCP tool without binding them all into the
+        model's active set.
         """
         for t in tools:
-            self._tool_map[t.name] = t
-            if t.name not in self._all_tools:
+            if t.name not in self._tool_map:
                 self._all_tools.append(t)
-            if t.name.startswith("mcp__"):
-                self.active_mcp_tools.add(t.name)
+            self._tool_map[t.name] = t
         self.bump_generation()
 
     def activate_mcp(self, names: Iterable[str]) -> tuple[list[str], list[str]]:
@@ -238,7 +261,12 @@ class ToolRegistry:
                 added.append(name)
 
         if added:
-            self._include = (self._include or set()) | set(added)
+            # With an explicit include list, activation must extend it; with
+            # the default (None) set, ``_sync`` already honours
+            # ``active_mcp_tools`` and clobbering it with a small include
+            # list would unbind every local tool.
+            if self._include is not None:
+                self._include |= set(added)
             self.bump_generation()
 
         return added, unknown

@@ -217,99 +217,27 @@ def reload_settings() -> None:
     reset_provider()
 
 
-class CostTracker:
-    """Tracks token usage and cache-aware cost for the active process."""
+def make_sdk_cost_tracker():
+    """SDK CostTracker wired with CLI MODEL_PRICING estimates for non-provider costs."""
+    from liteharness.tracing.cost import CostTracker
 
-    def __init__(self) -> None:
-        self.input_tokens = 0
-        self.uncached_input_tokens = 0
-        self.cached_input_tokens = 0
-        self.output_tokens = 0
-        self.calls = 0
-        self.cost_usd = 0.0
-        self.model_name: str | None = None
-
-    def add(
-        self,
-        usage: Any,
-        model_name: str | None = None,
-        response_metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        if not usage:
-            return None
-
-        model = model_name or self.model_name or settings.model_name
-        self.model_name = model
-
-        input_tokens = _usage_value(usage, "input_tokens", "prompt_tokens")
-        output_tokens = _usage_value(usage, "output_tokens", "completion_tokens")
-        total_tokens = _usage_value(usage, "total_tokens") or input_tokens + output_tokens
-        cache_read = _detail_value(usage, "input_token_details", "cache_read", "cached_tokens")
-        uncached_input = max(input_tokens - cache_read, 0)
-        provider_cost = _provider_cost(response_metadata or {})
-        estimated_cost = _estimate_cost(model, uncached_input, cache_read, output_tokens)
-        cost_usd = provider_cost if provider_cost is not None else estimated_cost
-        cost_source = "provider" if provider_cost is not None else "estimated"
-
-        self.input_tokens += input_tokens
-        self.uncached_input_tokens += uncached_input
-        self.cached_input_tokens += cache_read
-        self.output_tokens += output_tokens
-        self.calls += 1
-        if cost_usd is not None:
-            self.cost_usd += cost_usd
-
-        return {
-            "model": model,
-            "input_tokens": input_tokens,
-            "uncached_input_tokens": uncached_input,
-            "cached_input_tokens": cache_read,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cost_usd": cost_usd,
-            "cost_source": cost_source,
-            "cache_hit_rate": cache_read / input_tokens if input_tokens else 0.0,
-        }
-
-    @property
-    def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
-
-    @property
-    def cache_hit_rate(self) -> float:
-        if self.input_tokens <= 0:
-            return 0.0
-        return self.cached_input_tokens / self.input_tokens
-
-    @property
-    def total_cost_usd(self) -> float | None:
-        return self.cost_usd if self.cost_usd > 0 else None
-
-    def report(self, session_id: str | None = None, *, resume_thread_id: str | None = None) -> str:
-        cost_str = f"${self.cost_usd:.4f}" if self.cost_usd > 0 else "unknown"
-        lines: list[str] = []
-        if session_id is not None:
-            lines.append(f"OpenRouter session: {session_id or 'not set'}")
-        lines.extend(
-            [
-                f"Calls: {self.calls}",
-                f"Input tokens: {self.input_tokens:,}",
-                f"Uncached input: {self.uncached_input_tokens:,}",
-                f"Cached read: {self.cached_input_tokens:,}",
-                f"Output tokens: {self.output_tokens:,}",
-                f"Total tokens: {self.total_tokens:,}",
-                f"Cache hit rate: {self.cache_hit_rate:.1%}",
-                f"Cost: {cost_str}",
-            ]
-        )
-        if resume_thread_id:
-            lines.append(f"Resume:  liteharness --resume {resume_thread_id}")
-        return "\n".join(lines)
+    return CostTracker(pricing=MODEL_PRICING)
 
 
 def resolve_model_key(model_name: str, catalog: dict[str, Any]) -> str | None:
     model = model_name.lower()
     return next((candidate for candidate in catalog if candidate in model), None)
+
+
+def context_window_for(model_name: str) -> int | None:
+    """Context window for *model_name* from the CLI catalog, if known.
+
+    Fed into ``NessAgentOptions.context_window`` so the SDK's usable-budget
+    resolution (window − reserves) applies instead of the flat
+    ``compaction_token_budget`` fallback.
+    """
+    key = resolve_model_key(model_name, MODEL_CONTEXT_WINDOWS)
+    return MODEL_CONTEXT_WINDOWS[key] if key is not None else None
 
 
 def _reasoning_entry(model_name: str) -> dict[str, Any] | None:
@@ -352,66 +280,3 @@ def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
     if effort and effort in efforts:
         return effort
     return default_reasoning_effort_for_model(model_name)
-
-
-def _estimate_cost(
-    model_name: str,
-    uncached_input_tokens: int,
-    cached_input_tokens: int,
-    output_tokens: int,
-) -> float | None:
-    key = resolve_model_key(model_name, MODEL_PRICING)
-    if key is None:
-        return None
-    input_per_m, output_per_m, read_ratio = MODEL_PRICING[key]
-    return (
-        uncached_input_tokens * input_per_m
-        + cached_input_tokens * input_per_m * read_ratio
-        + output_tokens * output_per_m
-    ) / 1_000_000
-
-
-def _usage_value(usage: Any, *names: str) -> int:
-    for name in names:
-        value = _value(usage, name)
-        if value is not None:
-            return int(value or 0)
-    return 0
-
-
-def _detail_value(usage: Any, details_key: str, *names: str) -> int:
-    details = _value(usage, details_key) or {}
-    for name in names:
-        value = _value(details, name)
-        if value is not None:
-            return int(value or 0)
-    return 0
-
-
-def _value(obj: Any, name: str) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(name)
-    return getattr(obj, name, None)
-
-
-def _provider_cost(metadata: dict[str, Any]) -> float | None:
-    for key in ("cost", "total_cost", "cache_discount"):
-        value = metadata.get(key)
-        if value is not None and key != "cache_discount":
-            return float(value)
-    cost_details = metadata.get("cost_details") or {}
-    for key in ("total", "total_cost", "cost"):
-        value = cost_details.get(key)
-        if value is not None:
-            return float(value)
-    return None
-
-
-cost_tracker = CostTracker()
-
-
-def make_sdk_cost_tracker():
-    """SDK CostTracker wired with CLI MODEL_PRICING estimates for non-provider costs."""
-    from liteharness.tracing.cost import CostTracker as SdkCostTracker
-
-    return SdkCostTracker(pricing=MODEL_PRICING)

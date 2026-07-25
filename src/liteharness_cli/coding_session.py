@@ -1,29 +1,3 @@
-"""Coding-domain adapter over the SDK :class:`~liteharness.Session`.
-
-This is the second layer of the three-tier split:
-
-1. :class:`liteharness.Session` — graph lifecycle, turn loop, cancel, vision
-   gate, image strip, compaction decision, reflection, todos. Domain-agnostic.
-2. :class:`CodingSession` (this module) — coding adapter wrapping a
-   :class:`Session`. Owns per-turn checkpoint orchestration
-   (``append_event`` + ``save_checkpoint`` + ``read_mem_file``), resume / reset
-   / rollback, ``events_to_messages`` reconstruction, ``restore_cost_from_events``,
-   ``_restore_rollback_files`` / ``_restore_rollback_memory``,
-   ``_autosave_plan_turn`` / ``_save_plan``, ``expand_documents`` (@file
-   mentions), subagent-result enrichment, durable compaction logging
-   (``append_event({kind: compact})`` consumed from the SDK ``compaction``
-   SessionEvent).
-3. ``cli.SessionApp`` — pure TUI renderer over a :class:`CodingSession`. All
-   ``render.*`` calls, ``AssistantStream``, ``ask_*`` prompts, keybindings,
-   the ``CancelToken`` trigger → :meth:`CodingSession.cancel`,
-   ``_replay_events_to_transcript``, ``prompt_queue``, header rendering.
-
-The adapter imports only from :mod:`liteharness` and its
-:mod:`liteharness_cli` siblings (:mod:`~liteharness_cli.mentions`,
-:mod:`~liteharness_cli.events`, :mod:`~liteharness_cli.rollback`,
-:mod:`~liteharness_cli.config`). It never imports ``cli.*`` or ``render``.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from liteharness.types import ContextPressure, SessionEvent
+from liteharness.types import SessionEvent
 
 from liteharness_cli.events import (
     events_to_messages,
@@ -50,14 +24,13 @@ from liteharness_cli.rollback import (
 
 
 # Per-turn suffix appended to partial plan text on an interrupt so the
-# autosaved plan file reads naturally. The CLI used the same convention.
+# autosaved plan file reads naturally.
 _INTERRUPTED_SUFFIX = " … [interrupted]"
 
 # ``[Image #N]`` placeholders the TUI's input buffer inserts on image paste.
 # Stripped from the user text BEFORE @mention expansion and persistence so
 # the durable transcript stays clean and file contents that happen to contain
-# the marker survive expansion untouched. Mirrors the SDK-side safety net in
-# :mod:`liteharness.session`.
+# the marker survive expansion untouched.
 _IMAGE_PLACEHOLDER_RE = re.compile(r"\[Image #\d+\]")
 
 
@@ -74,10 +47,12 @@ class CodingSession:
         async for ev in coding.run_turn("add a rate limiter"):
             ...
 
-    The per-Session runtime hooks (``on_turn_start``, ``on_plan_turn``,
-    ``on_interrupt``) are installed on the underlying :class:`Session` instance
-    rather than the shared :class:`~liteharness.NessAgentConfig` so concurrent
-    threads on one :class:`NessAgent` never clobber each other's hooks.
+    The per-Session runtime hooks (``on_plan_turn``, ``on_interrupt``) are
+    installed on the underlying :class:`Session` instance rather than the
+    shared :class:`~liteharness.NessAgentConfig` so concurrent threads on one
+    :class:`NessAgent` never clobber each other's hooks. Rollback mutation
+    tracking is adapter-owned: :meth:`run_turn` replays the durable tool log
+    after each turn (see :meth:`_record_turn_mutations`).
     """
 
     def __init__(
@@ -97,58 +72,29 @@ class CodingSession:
 
         self.ness_dir = Path(self.cfg.options.ness_dir or Path.cwd() / ".ness")
         self.project_root = Path(self.cfg.options.project_root or Path.cwd())
+
         self.thread_store = self.cfg.thread_store
         self.cost_tracker = self.cfg.cost_tracker
         self.perms = self.cfg.permission_store
 
-        # Build the underlying SDK Session and install the per-Session hooks.
-        # ``on_pre_act_compact`` and ``on_file_mutation`` stay config-level
-        # because the graph nodes read them from there today. The adapter just
-        # binds them (once per agent — these are idempotent assignments, so
-        # even a shared config is safe).
+        # (/memory, /user, /init, /hooks, /skill, /mcp).
+        self.memory_store = self.cfg.memory_store
+        self.hook_runner = self.cfg.hook_runner
+        self.skill_loader = self.cfg.skill_loader
+        self.tool_registry = self.cfg.tool_registry
+
+        # Build the underlying SDK Session and install the per-Session hooks (on_plan_turn and on_interrupt).
         self._session = agent.session(
             thread_id=thread_id,
             agent_mode=agent_mode,
             metadata=metadata,
             git_available=git_available,
             vision=vision,
-            on_turn_start=self._on_turn_start,
             on_plan_turn=self._on_plan_turn,
             on_interrupt=self._on_interrupt,
         )
-        # Back-reference so the config-level ``on_file_mutation`` trampoline can
-        # dispatch to the *active* adapter (not whichever one was constructed
-        # first) when several ``CodingSession`` share one ``NessAgent``.
-        self._session._coding_adapter = self
-        if self.cfg.on_pre_act_compact is None:
-            self.cfg.on_pre_act_compact = self._ask_compact
-        if self.cfg.on_file_mutation is None:
-            from liteharness.session import _active_session
 
-            def _dispatch_file_mutation(
-                thread_id: str, user_seq: int, name: str, args: dict
-            ) -> None:
-                sess = _active_session.get()
-                if sess is None:
-                    return
-                adapter = getattr(sess, "_coding_adapter", None)
-                if adapter is None:
-                    return
-                adapter._on_file_mutation(thread_id, user_seq, name, args)
-
-            self.cfg.on_file_mutation = _dispatch_file_mutation
-
-        # Per-turn orchestration state. ``_pending_user_seq`` is stashed by
-        # ``run_turn`` and read by ``_on_turn_start`` so the SDK's turn loop
-        # flows the durable user-event seq into the graph's
-        # ``current_user_seq`` (which in turn activates ``on_file_mutation``
-        # in the tools node).
-        self._pending_user_seq: int = 0
-
-        # Per-turn plan text accumulator, mirrored from the CLI's
-        # ``SessionApp._plan_turn_texts``. Success-path (``_on_plan_turn``)
-        # and interrupt-path (``_on_interrupt``) both feed into
-        # ``_autosave_plan_turn`` — each exactly once per turn.
+        # Per-turn plan text accumulator
         self._plan_turn_texts: list[str] = []
 
     # ----------------------------------------------------------------------
@@ -167,22 +113,27 @@ class CodingSession:
 
     @property
     def mode(self) -> str:
+        """The current agent mode."""
         return self._session.mode
 
     @property
     def turn_count(self) -> int:
+        """The number of turns run in this session."""
         return self._session.turn_count
 
     @property
     def context_used(self) -> int:
+        """The number of tokens used in this session."""
         return self._session.context_used
 
     @property
     def context_total(self) -> int:
+        """The total number of tokens available in this session."""
         return self._session.context_total
 
     @property
     def last_usage(self) -> dict[str, Any] | None:
+        """The last usage of the active model."""
         usage = self._session._last_usage
         if usage is None:
             return None
@@ -221,6 +172,34 @@ class CodingSession:
 
     def rebuild_graph(self) -> None:
         self._session.rebuild_graph()
+
+    def reload_model(self) -> None:
+        """Rebind the chat models after a /config model or reasoning switch.
+
+        ``set_active_model`` / ``set_active_reasoning_effort`` update the
+        shared overrides in :mod:`liteharness_cli.chat_model`; the graph
+        nodes capture ``cfg.model`` at build time, so the models are
+        recreated from the factory and the graph recompiled.
+        """
+        from liteharness_cli.chat_model import (
+            active_model_name,
+            create_compaction_model,
+            create_model,
+            create_reflection_model,
+        )
+        from liteharness_cli.config import context_window_for
+
+        self.cfg.model = create_model(self.thread_id)
+        self.cfg.compaction_model = create_compaction_model(self.thread_id)
+        self.cfg.reflection_model = create_reflection_model(self.thread_id)
+        window = context_window_for(active_model_name())
+        if window:
+            self.cfg.options.context_window = window
+        self._session.rebuild_graph()
+
+    def save_thread(self) -> str:
+        """Archive the current thread (the CLI's /save)."""
+        return self.thread_store.archive_thread(self.thread_id)
 
     def cancel(self) -> None:
         self._session.cancel()
@@ -261,16 +240,16 @@ class CodingSession:
            the expansion is what the model sees.
         3. Snapshot files (``create_file_checkpoint``) + the per-thread
            session-memory file (``read_mem_file``) BEFORE the agent acts.
-        4. Persist the user event (``append_event``), then key the checkpoint
-           row by that seq (``save_checkpoint``).
-        5. Stash the seq so ``_on_turn_start`` returns it to the SDK, flowing
-           it into the graph's ``current_user_seq``.
+        4. Persist the user event (``append_event``), then key the rollback
+           checkpoint row by that seq (``save_checkpoint``).
 
         During the stream, ``compaction`` events become durable
         ``append_event({kind: compact})`` rows (caveat-1 relocation). Plan
         autosave is driven by the per-Session hooks (``_on_plan_turn`` /
         ``_on_interrupt``), not by re-consuming events here — each plan text
-        is captured exactly once.
+        is captured exactly once. After the stream, the turn's mutated paths
+        are recorded on the checkpoint row from the durable tool log
+        (``_record_turn_mutations``).
         """
         self._plan_turn_texts = []
         cleaned = _IMAGE_PLACEHOLDER_RE.sub("", user_text or "").strip()
@@ -286,8 +265,7 @@ class CodingSession:
         )
 
         # Persist the user event and key the checkpoint by its seq. The
-        # subsequent ``_on_turn_start`` callback returns this seq to the SDK.
-        # The persisted text is the placeholder-stripped (but still @tagged)
+        # persisted text is the placeholder-stripped (but still @tagged)
         # prose — matching the original CLI's ``persist_text``.
         user_event: dict[str, Any] = {"kind": "user", "content": cleaned}
         if images:
@@ -299,7 +277,6 @@ class CodingSession:
             self.thread_store.save_checkpoint(
                 self.thread_id, user_seq, git_hash, mem_snapshot
             )
-        self._pending_user_seq = user_seq
 
         try:
             async for ev in self._session.stream(
@@ -323,6 +300,13 @@ class CodingSession:
             # End-of-turn plan autosave from the hook-fed accumulator. Runs
             # even when a caller breaks the stream.
             self._autosave_plan_turn()
+            # Rollback bookkeeping: key the turn's mutated paths onto its
+            # checkpoint row, replayed from the durable tool log. Best-effort
+            # — a miss degrades rollback to a full-tree restore, never worse.
+            try:
+                self._record_turn_mutations(user_seq)
+            except Exception:
+                pass
             # Snapshot context for the TUI header.
             try:
                 await self.refresh_context_snapshot()
@@ -332,18 +316,6 @@ class CodingSession:
     # ----------------------------------------------------------------------
     # Per-Session runtime hooks (installed on the underlying Session)
     # ----------------------------------------------------------------------
-
-    async def _on_turn_start(self, cleaned_text: str) -> int:
-        """Return the durable user-event seq for this turn.
-
-        Called by the SDK just before building the turn payload. The returned
-        seq flows into the graph state as ``current_user_seq``, which
-        activates ``on_file_mutation`` in the tools node. ``cleaned_text`` is
-        the expanded model-facing text (run_turn expands @mentions before
-        delegating to the SDK); the seq was keyed to the cleaned-but-unexpanded
-        persisted user event, so the seq mapping is stable regardless.
-        """
-        return self._pending_user_seq
 
     def _on_plan_turn(self, text: str) -> None:
         """Per-Session plan-turn hook (success path): accumulate for autosave."""
@@ -368,36 +340,33 @@ class CodingSession:
             self._handle_plan_turn_text(partial_text + _INTERRUPTED_SUFFIX)
         return partial_text
 
-    @staticmethod
-    def _ask_compact(pressure: ContextPressure) -> bool:
-        """Default ``on_pre_act_compact`` impl: auto-compact at hard threshold.
+    def _record_turn_mutations(self, user_seq: int) -> None:
+        """Key the turn's mutated paths onto its rollback checkpoint row.
 
-        The interactive ``y/N`` prompt is a TUI concern; the future slimmed
-        ``SessionApp`` replaces this handler with a render-injected one. Until
-        then, the adapter only force-compacts when the SDK signals a hard
-        threshold and never asks soft — a safe default for non-interactive
-        usage (SDK consumers, tests). Static so installing it on the shared
-        config never pins a ``CodingSession`` instance.
+        The SDK durably logs every tool call (``kind == "tool"``) with its
+        args and an ``exit`` classification, so mutation tracking needs no
+        SDK hook: this replays the log entries appended after the user event
+        at ``user_seq`` (events are seq-ordered and contiguous per thread)
+        and set-unions the mutated paths onto the checkpoint row written
+        before the turn ran. Skips mirror the graph's own gates — plan-mode
+        gating (``mode_gated``), permission/hook denies (``denied``), and
+        tool exceptions (``Error:`` prefix) never touched the filesystem.
+        Failed *shell commands* (``status=error``) ARE recorded: a
+        half-failed command may still have mutated the tree. Approval-
+        declined calls persist no ``tool`` row at all, so they are skipped
+        for free. Idempotent (``add_modified_path`` set-unions and the ``*``
+        sentinel short-circuits), so re-draining is harmless.
         """
-        return bool(getattr(pressure, "hard_threshold_reached", False))
-
-    def _on_file_mutation(
-        self, thread_id: str, user_seq: int, name: str, args: dict
-    ) -> None:
-        """``on_file_mutation`` impl: record mutated paths for rollback.
-
-        Extracts the path(s) the tool mutated from ``args`` (tool-name aware)
-        and persists them via :meth:`ThreadStore.add_modified_path` so
-        ``rollback_to`` can surgically restore from the per-turn git snapshot.
-        ``shell`` is a wildcard: mutated paths cannot be enumerated, so we set
-        the ``"*"`` full-tree sentinel. Persists against the passed
-        ``thread_id`` (which the tools node re-passes and which matches the
-        active session), so multiple ``CodingSession`` sharing one agent
-        dispatch correctly. The tools node already guarantees a non-None
-        ``user_seq`` (it gates on ``is not None``).
-        """
-        for p in _extract_mutated_paths(name, args):
-            self.thread_store.add_modified_path(thread_id, user_seq, p)
+        events = self.thread_store.load_thread_events(self.thread_id)
+        for ev in events[user_seq + 1:]:
+            if ev.get("kind") != "tool":
+                continue
+            if ev.get("exit") in ("denied", "mode_gated"):
+                continue
+            if str(ev.get("result") or "").startswith("Error:"):
+                continue
+            for p in _extract_mutated_paths(ev.get("tool"), ev.get("args") or {}):
+                self.thread_store.add_modified_path(self.thread_id, user_seq, p)
 
     # ----------------------------------------------------------------------
     # Plan autosave

@@ -6,8 +6,12 @@ import yaml
 class SkillLoader:
     def __init__(self, skills_dir: Path | None = None) -> None:
         self.skills_dir = skills_dir
+        # Warnings from the most recent ``load`` (unreadable / invalid skill
+        # files). Surfaced by the CLI's /skill command; reset on every load.
+        self.errors: list[str] = []
 
     def load(self) -> dict[str, dict[str, Any]]:
+        self.errors = []
         if self.skills_dir is None or not self.skills_dir.exists():
             return {}
 
@@ -55,10 +59,12 @@ class SkillLoader:
 
             raw_name = meta.get("name")
             if not raw_name or not str(raw_name).strip():
+                self.errors.append(f"{path}: missing 'name' frontmatter")
                 return None
 
             raw_description = meta.get("description")
             if not raw_description or not str(raw_description).strip():
+                self.errors.append(f"{path}: missing 'description' frontmatter")
                 return None
 
             return {
@@ -70,5 +76,6 @@ class SkillLoader:
                 "body": body.strip(),
                 "source": str(path),
             }
-        except Exception:
+        except Exception as exc:
+            self.errors.append(f"{path}: {exc}")
             return None

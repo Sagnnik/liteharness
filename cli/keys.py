@@ -31,7 +31,7 @@ def build_key_bindings(ui) -> KeyBindings:
     def _toggle_mode(event) -> None:
         if ui._prompt_kind or ui._form_kind:
             return
-        ui.session.toggle_mode()
+        ui.toggle_mode()
         event.app.invalidate()
 
     @kb.add("down", filter=ui._menu_navigation_open)
@@ -233,7 +233,7 @@ def build_key_bindings(ui) -> KeyBindings:
         if ui._cancel_active_task():
             event.app.invalidate()
             return
-        cleared = ui.session.clear_prompt_queue()
+        cleared = ui.clear_prompt_queue()
         if cleared:
             ui.append_notice("queue", f"cleared {cleared} queued prompt(s)")
             event.app.invalidate()

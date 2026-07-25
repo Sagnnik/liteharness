@@ -8,7 +8,7 @@ from pathlib import Path
 import memory
 import session
 from config import settings
-from cli.session_app import _events_to_messages_full, _maybe_enrich_spawn_subagent_result
+from liteharness_cli.events import _maybe_enrich_spawn_subagent_result, events_to_messages
 
 
 class SessionStorageTests(unittest.TestCase):
@@ -205,7 +205,7 @@ class ResumeReplayTests(unittest.TestCase):
             },
             {"kind": "assistant", "content": "done"},
         ]
-        messages = _events_to_messages_full(events)
+        messages = events_to_messages(events)
         self.assertEqual(len(messages), 4)
         self.assertEqual(messages[1].tool_calls[0]["id"], "call-1")
         self.assertEqual(messages[2].tool_call_id, "call-1")

@@ -241,7 +241,7 @@ def _question_token(args: dict[str, Any]) -> str:
 
 
 def _mcp_arg_names(full_name: str) -> list[str]:
-    from tools import mcp_catalog
+    from liteharness.tools import mcp_catalog
 
     for info in mcp_catalog().values():
         for entry in info.get("tools", []):

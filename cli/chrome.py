@@ -17,8 +17,7 @@ from cli.constants import (
 from cli.formatting import _format_duration, worked_fragments, working_fragments
 from cli.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
 from cli.widgets import TranscriptViewportControl
-from config import cost_tracker
-from model import active_model_name, active_reasoning_effort
+from liteharness_cli.chat_model import active_model_name, active_reasoning_effort
 
 
 class ChromeMixin:
@@ -131,10 +130,10 @@ class ChromeMixin:
         return self._working_active or bool(self._worked_label)
 
     def _queue_line_visible(self) -> bool:
-        return bool(self.session.prompt_queue)
+        return bool(self.prompt_queue)
 
     def _queue_fragments(self):
-        queue = self.session.prompt_queue
+        queue = self.prompt_queue
         if not queue:
             return []
         width = term_width()
@@ -200,7 +199,7 @@ class ChromeMixin:
             return
 
     def _prompt_prefix(self):
-        mode = self.session.agent_mode
+        mode = self.agent_mode
         style = "class:prompt.mode.plan" if mode == "plan" else "class:prompt.mode"
         return [(style, f"{mode} "), ("class:prompt", "> ")]
 
@@ -273,28 +272,29 @@ class ChromeMixin:
 
     def _stats_line(self):
         width = term_width()
-        used = int(self.session.context_used or 0)
-        total = int(self.session.context_total or 0)
+        used = int(self.context_used or 0)
+        total = int(self.context_total or 0)
+        tracker = self.coding.cost_tracker
         cache_key = (
             width,
-            cost_tracker.input_tokens,
-            cost_tracker.output_tokens,
-            cost_tracker.cost_usd,
+            tracker.input_tokens,
+            tracker.output_tokens,
+            tracker.cost_usd,
             used,
             total,
         )
         if cache_key == self._stats_line_cache_key:
             return self._stats_line_cache
         bar = context_bar(used, total)
-        cost = f"${cost_tracker.cost_usd:.4f}" if cost_tracker.cost_usd > 0 else "$0.0000"
-        left = f"↑ {cost_tracker.input_tokens:,}  ↓ {cost_tracker.output_tokens:,}  {cost}"
+        cost = f"${tracker.cost_usd:.4f}" if tracker.cost_usd > 0 else "$0.0000"
+        left = f"↑ {tracker.input_tokens:,}  ↓ {tracker.output_tokens:,}  {cost}"
         right = f"context {used // 1000}k/{total // 1000}k used {bar}"
         gap = max(1, width - len(left) - len(right))
         fragments = [
             ("class:chrome.stats.key", "↑ "),
-            ("class:chrome.stats.value", f"{cost_tracker.input_tokens:,}"),
+            ("class:chrome.stats.value", f"{tracker.input_tokens:,}"),
             ("class:chrome.stats.key", "  ↓ "),
-            ("class:chrome.stats.value", f"{cost_tracker.output_tokens:,}  {cost}"),
+            ("class:chrome.stats.value", f"{tracker.output_tokens:,}  {cost}"),
             ("class:chrome.stats.key", " " * gap),
             ("class:chrome.stats.key", "context "),
             ("class:chrome.stats.value", f"{used // 1000}k/{total // 1000}k used "),

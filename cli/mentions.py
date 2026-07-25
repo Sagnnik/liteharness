@@ -1,41 +1,28 @@
-"""@-mention support for the CLI input buffer.
+"""@-mention menu support for the CLI input buffer.
 
 Typing ``@`` in the input opens a file-completion menu (driven by the
-existing MenuMixin chrome). Selecting a file inserts a visible
-``@<relative/path>`` token in the buffer. On submit, ``expand_documents``
-reads each mentioned file (validated through ``permissions.validate_path``)
-and prepends one ``<document>`` block per file before the user's prose:
-
-    <document>
-      <document_content>
-      [file contents]
-      </document_content>
-      <source>relative/path</source>
-    </document>
-
-The raw ``@``-tagged text is what gets persisted to the events table; the
-expansion happens fresh on every ``run_turn`` and again on resume/rollback
-replay so file content always reflects current disk (see the symmetric
-branch in ``_events_to_messages_full``).
+MenuMixin chrome). Selecting a file inserts a visible ``@<relative/path>``
+token in the buffer. This module only ships the menu primitives
+(``index_files`` / ``filter_files``); the actual ``@file`` expansion into
+``<document>`` blocks lives on the adapter side in
+:mod:`liteharness_cli.mentions` and runs inside ``CodingSession.run_turn``
+(and again on resume/rollback replay), so file content always reflects
+current disk.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import permissions
-from permissions import validate_path
-
 if TYPE_CHECKING:
     from cli.models import MenuItem
 
-# A mention is ``@`` not preceded by a word char, followed by one or more
-# path-safe chars.
-_MENTION_TOKEN_RE = re.compile(r"(?<![\w])@([\w./\-]+)")
+# Project root for path resolution (the CLI process cwd after any worktree
+# bootstrap chdir). Mirrors the old root-level permissions.PROJECT_ROOT.
+_PROJECT_ROOT = Path.cwd().resolve()
 
 # Skip these directory names for the non-git walk fallback. The git path
 # underneath already respects .gitignore via ``git ls-files``.
@@ -56,10 +43,6 @@ _WALK_SKIP_DIRS = frozenset(
     }
 )
 
-# Files larger than this are not inlined as a <document> block; an inline note
-# tells the model the file is large and to use the read tool with an offset.
-MAX_INLINE_FILE_BYTES = 256 * 1024
-
 # Cap on the number of paths surfaced from index_files so the menu and the
 # in-memory cached list stay manageable in huge repos.
 _INDEX_LIMIT = 2000
@@ -69,75 +52,8 @@ _INDEX_LIMIT = 2000
 _index_cache: dict[str, object] = {}
 
 
-def extract_mentions(text: str) -> tuple[str, list[str]]:
-    """Return ``(text_unchanged, list_of_mention_paths)``.
-
-    The text is returned as-is so callers (buffer rendering, transcript
-    persistence) keep the visible ``@token``; the path list is in the order
-    the mentions appear, duplicates preserved.
-    """
-    paths: list[str] = []
-    for match in _MENTION_TOKEN_RE.finditer(text or ""):
-        paths.append(match.group(1))
-    return text or "", paths
-
-
-def expand_documents(text: str) -> str:
-    """Prepend ``<document>`` blocks for each @mention and return the augmented text.
-
-    The user's original text (with its ``@tokens``) is preserved verbatim
-    after the block preamble. Failed reads (missing, outside root, binary,
-    oversized) become inline ``Error: ...`` notes — the run still proceeds
-    so the rest of the prompt reaches the model.
-    """
-    if not text:
-        return text
-    mentions = extract_mentions(text)[1]
-    if not mentions:
-        return text
-
-    blocks: list[str] = []
-    for rel in mentions:
-        blocks.append(_render_document_block(rel))
-
-    preamble = "\n\n".join(blocks)
-    if not preamble.strip():
-        return text
-    return preamble + "\n\n" + text
-
-
-def _render_document_block(rel: str) -> str:
-    """Wrap one mentioned file in the <document> XML block, or an error note."""
-    try:
-        abs_path = validate_path(rel)
-    except Exception as exc:
-        return f"<document>\n  <document_content>\n  Error: {exc}\n  </document_content>\n  <source>{rel}</source>\n</document>"
-
-    p = Path(abs_path)
-    try:
-        if not p.exists():
-            return f"<document>\n  <document_content>\n  Error: {rel} does not exist\n  </document_content>\n  <source>{rel}</source>\n</document>"
-        if p.is_dir():
-            return f"<document>\n  <document_content>\n  Error: {rel} is a directory\n  </document_content>\n  <source>{rel}</source>\n</document>"
-        size = p.stat().st_size
-        if size > MAX_INLINE_FILE_BYTES:
-            return (
-                f"<document>\n  <document_content>\n  Error: {rel} is too large ({size} bytes) to inline "
-                f"as a mention; use the read tool with an offset to inspect it.\n  </document_content>\n  <source>{rel}</source>\n</document>"
-            )
-        content = p.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return (
-            f"<document>\n  <document_content>\n  Error: {rel} is not valid UTF-8 (likely binary)\n  </document_content>\n  <source>{rel}</source>\n</document>"
-        )
-    except Exception as exc:
-        return f"<document>\n  <document_content>\n  Error: {exc}\n  </document_content>\n  <source>{rel}</source>\n</document>"
-
-    return f"<document>\n  <document_content>\n  {content}\n  </document_content>\n  <source>{rel}</source>\n</document>"
-
-
 def index_files(limit: int = _INDEX_LIMIT) -> list[Path]:
-    """Return up to ``limit`` candidate file paths under ``PROJECT_ROOT``.
+    """Return up to ``limit`` candidate file paths under the project root.
 
     In a git repo: ``git ls-files`` (fast, respects .gitignore, no extra deps).
     Otherwise: a filtered os.walk that skips the convention dirs in
@@ -147,9 +63,9 @@ def index_files(limit: int = _INDEX_LIMIT) -> list[Path]:
     """
     import time
 
-    git_dir = permissions.PROJECT_ROOT / ".git"
+    git_dir = _PROJECT_ROOT / ".git"
     cache_key = (
-        str(permissions.PROJECT_ROOT),
+        str(_PROJECT_ROOT),
         git_dir.stat().st_mtime_ns if git_dir.exists() else 0,
         bool(git_dir.exists()),
     )
@@ -171,7 +87,7 @@ def _git_ls_files(limit: int) -> list[Path]:
     try:
         result = subprocess.run(
             ["git", "ls-files", "-z"],
-            cwd=str(permissions.PROJECT_ROOT),
+            cwd=str(_PROJECT_ROOT),
             capture_output=True,
             text=False,
             timeout=10,
@@ -189,7 +105,7 @@ def _git_ls_files(limit: int) -> list[Path]:
         rel = entry.decode("utf-8", errors="replace").strip()
         if not rel:
             continue
-        out.append(permissions.PROJECT_ROOT / rel)
+        out.append(_PROJECT_ROOT / rel)
         if len(out) >= limit:
             break
     return out
@@ -197,7 +113,7 @@ def _git_ls_files(limit: int) -> list[Path]:
 
 def _walk_files(limit: int) -> list[Path]:
     out: list[Path] = []
-    for dirpath, dirs, names in os.walk(permissions.PROJECT_ROOT):
+    for dirpath, dirs, names in os.walk(_PROJECT_ROOT):
         dirs[:] = [d for d in dirs if d not in _WALK_SKIP_DIRS and not d.startswith(".")]
         for name in names:
             out.append(Path(dirpath) / name)
@@ -265,7 +181,7 @@ def _mtime_or_zero(p: Path) -> float:
 
 def _relative_posix(p: Path) -> str:
     try:
-        rel = p.relative_to(permissions.PROJECT_ROOT)
+        rel = p.relative_to(_PROJECT_ROOT)
     except ValueError:
         return ""
     return rel.as_posix()
@@ -273,7 +189,7 @@ def _relative_posix(p: Path) -> str:
 
 def _parent_dir(p: Path) -> str:
     try:
-        rel = p.relative_to(permissions.PROJECT_ROOT)
+        rel = p.relative_to(_PROJECT_ROOT)
     except ValueError:
         return ""
     parent = rel.parent

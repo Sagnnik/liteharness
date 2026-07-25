@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from permissions import PROJECT_ROOT
+from pathlib import Path
 
 MENU_MAX_ROWS = 6
 MENU_DESC_COL = 28
@@ -18,4 +18,5 @@ FORM_LABELS = {
     "exa_key": "Exa API Key",
     "base_url": "Base URL",
 }
-ENV_PATH = PROJECT_ROOT / ".env"
+# Project .env (the CLI process cwd after any worktree bootstrap chdir).
+ENV_PATH = Path.cwd() / ".env"

@@ -170,20 +170,23 @@ def restore_cost_from_events(events: list[dict], cost_tracker: Any) -> None:
     resume in a different process picks up where the persisted events left
     off. Writing into a shared cost tracker is the one sanctioned mutable-seam;
     the ``conv_events_to_messages`` path above does not mutate anything.
+
+    Each persisted usage row is fed back through :meth:`CostTracker.add` with
+    the recorded token counts (``cache_read`` via ``input_token_details``) and
+    the recorded cost passed as provider metadata, so the replayed totals
+    reproduce the persisted ones exactly rather than being re-estimated.
     """
     for event in events:
         if event.get("kind") != "usage":
             continue
-        cost_tracker.input_tokens += int(event.get("input_tokens", 0) or 0)
-        cost_tracker.uncached_input_tokens += int(
-            event.get("uncached_input_tokens", 0) or 0
-        )
-        cost_tracker.cached_input_tokens += int(
-            event.get("cached_input_tokens", 0) or 0
-        )
-        cost_tracker.output_tokens += int(event.get("output_tokens", 0) or 0)
-        cost_tracker.cost_usd += float(event.get("cost_usd", 0.0) or 0.0)
-        cost_tracker.calls += 1
-        model = event.get("model")
-        if model:
-            cost_tracker.model_name = model
+        model = str(event.get("model") or "")
+        usage = {
+            "input_tokens": int(event.get("input_tokens", 0) or 0),
+            "output_tokens": int(event.get("output_tokens", 0) or 0),
+            "input_token_details": {
+                "cache_read": int(event.get("cached_input_tokens", 0) or 0)
+            },
+        }
+        recorded_cost = float(event.get("cost_usd", 0.0) or 0.0)
+        metadata = {"cost": recorded_cost} if recorded_cost > 0 else {}
+        cost_tracker.add(usage, model, metadata)

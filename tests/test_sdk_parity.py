@@ -9,7 +9,14 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from liteharness import NessAgent, PromptLayers, PromptLayersConfig, SessionEvent
+from liteharness import (
+    CodingOverlay,
+    NessAgent,
+    PromptLayers,
+    PromptLayersConfig,
+    Session,
+    SessionEvent,
+)
 from liteharness.context.overlay import OverlayContext
 from liteharness.graph.helpers import _with_working_state_tail
 from liteharness.graph.nodes import make_nodes
@@ -34,8 +41,6 @@ def _agent(**kwargs):
 
 
 def test_coding_overlay_mode_switch_uses_act_template():
-    from liteharness_cli.overlay import CodingOverlay
-
     overlay = CodingOverlay(act_mode_template="MODE SWITCH\nDo the work.")
     ctx = OverlayContext(
         thread_id="t1",
@@ -54,8 +59,6 @@ def test_coding_overlay_mode_switch_uses_act_template():
 
 
 def test_coding_overlay_no_persistent_act_mode():
-    from liteharness_cli.overlay import CodingOverlay
-
     overlay = CodingOverlay(act_mode_template="should not appear every turn")
     ctx = OverlayContext(
         thread_id="t1",
@@ -188,7 +191,7 @@ def test_tools_node_returns_todos():
             tool_calls=[{"name": "todo", "args": {}, "id": "t1"}],
         )
         out = await rt.tools_node(
-            {"messages": [ai], "todos": [], "agent_mode": "act", "current_user_seq": 1}
+            {"messages": [ai], "todos": [], "agent_mode": "act"}
         )
         assert "todos" in out
         assert out["todos"][0]["status"] == "completed"
@@ -255,12 +258,11 @@ def test_session_emits_assistant_events():
 
 
 def test_smoke_still_passes_import():
-    from liteharness import CostTracker, NoopTracer, PreActCompactHandler, Session
+    from liteharness import CostTracker, NoopTracer, Session
 
     assert CostTracker is not None
     assert NoopTracer is not None
     assert Session is not None
-    assert PreActCompactHandler is not None
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +285,7 @@ class _FakeApp:
         events: list[dict],
         *,
         trigger_cancel_after: int | None = None,
-        session: "Session | None" = None,
+        session: Session | None = None,
         snapshot_messages: list | None = None,
     ) -> None:
         self._events = list(events)
@@ -354,61 +356,6 @@ def test_bootstrap_cleared_after_one_turn():
     _stream_session(session)
     msgs = fake.last_payload["messages"]
     assert not any(getattr(m, "content", None) == "seed" for m in msgs)
-
-
-def test_on_turn_start_feeds_user_seq():
-    agent = _agent()
-    captured = {}
-
-    async def hook(_text):
-        return 42
-
-    session = agent.session(thread_id="t-seq", on_turn_start=hook)
-    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
-    session._app = fake
-
-    _stream_session(session)
-
-    assert fake.last_payload is not None
-    assert fake.last_payload["current_user_seq"] == 42
-
-
-def test_on_turn_start_default_is_none():
-    # When no on_turn_start hook is installed (pure-SDK / subagent path), the
-    # seq stays None — the inert sentinel, distinct from a real first turn
-    # whose durable append_event seq is 0. The tools node gates on
-    # ``is not None``, not truthiness, so 0 activates tracking and None does not.
-    agent = _agent()
-    session = agent.session(thread_id="t-seq-default")
-    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
-    session._app = fake
-
-    _stream_session(session)
-
-    assert fake.last_payload["current_user_seq"] is None
-
-
-def test_on_turn_start_first_turn_seq_zero_is_not_inert():
-    # The adapter's first real turn returns durable seq 0 (append_event is
-    # 0-based). That must NOT be treated as inert — it activates
-    # on_file_mutation. Previously the gate used truthiness, dropping the
-    # first turn's mutations.
-    agent = _agent()
-    captured = {}
-
-    async def hook(_text):
-        return 0
-
-    session = agent.session(thread_id="t-seq-first", on_turn_start=hook)
-    fake = _FakeApp([{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}])
-    session._app = fake
-
-    async def _run():
-        async for _ in session.stream("hi"):
-            pass
-    asyncio.run(_run())
-
-    assert fake.last_payload["current_user_seq"] == 0
 
 
 def test_on_plan_turn_invoked_on_plan_mode():
@@ -632,9 +579,9 @@ def test_no_durable_compaction_append_in_sdk(tmp_path: Path):
     cfg = agent.config
     cfg.thread_store.auto_save = True
     session = agent.session(thread_id="t-no-durable-compact")
-    # No on_pre_act_compact handler installed → the soft branch always emits
-    # the ``compaction`` SessionEvent with ask=True. We can force a hard
-    # threshold path by setting the pending flag and patching pressure.
+    # The soft plan→act checkpoint always emits the passive ``compaction``
+    # SessionEvent with ask=True (no interactive handler exists). We force a
+    # hard threshold path here by setting the pending flag and patching pressure.
     session._pending_act_checkpoint = True
     session.set_mode("act")
 
@@ -823,24 +770,13 @@ def test_explicit_active_skills_does_not_consume_pending():
     assert session._pending_skills == ["pending"]
 
 
-def test_sync_pre_act_compact_handler_is_awaited(tmp_path: Path):
-    """Finding 1: the SDK awaited ``on_pre_act_compact`` but a plain ``def``
-    handler returns a ``bool`` (not awaitable) → ``TypeError``. The SDK now
-    tolerates both sync and async handlers.
-    """
+def test_soft_pre_act_checkpoint_emits_passive_ask_event(tmp_path: Path):
+    """The soft plan→act checkpoint consults no handler: it always emits a
+    passive ``ask=True`` notice (the user can /compact if they want) and never
+    force-compacts."""
     agent = _agent()
-    session = agent.session(thread_id="t-sync-compact")
+    session = agent.session(thread_id="t-soft-checkpoint")
 
-    calls = {"n": 0}
-
-    def sync_handler(pressure):
-        calls["n"] += 1
-        return True  # plain bool, not a coroutine
-
-    agent.config.on_pre_act_compact = sync_handler
-
-    # Drive _maybe_checkpoint_before_act with a stubbed pressure path that
-    # crosses the PLAN_COMPACTION_CHECKPOINT_RATIO gate.
     class _P:
         ratio = 0.9
         token_count = 9000
@@ -862,31 +798,34 @@ def test_sync_pre_act_compact_handler_is_awaited(tmp_path: Path):
     with patch.object(sm, "calculate_context_pressure", return_value=_P()):
         asyncio.run(session._maybe_checkpoint_before_act())
 
-    assert calls["n"] == 1
-    assert session._force_compact is True
+    assert session._force_compact is False
+    asks = [ev for ev in session._drain_queue() if ev.kind == "compaction"]
+    assert len(asks) == 1
+    assert asks[0].data["reason"] == "pre_act_checkpoint"
+    assert asks[0].data["ask"] is True
+    assert asks[0].data["forced"] is False
 
 
-def test_async_pre_act_compact_handler_still_supported(tmp_path: Path):
+def test_hard_pre_act_checkpoint_force_compacts_autonomously(tmp_path: Path):
+    """The hard threshold needs no handler either: the SDK force-compacts on
+    its own and emits a forced event with reason ``pre_act_hard_threshold``."""
     agent = _agent()
-    session = agent.session(thread_id="t-async-compact")
-
-    async def async_handler(pressure):
-        return False
-
-    agent.config.on_pre_act_compact = async_handler
+    session = agent.session(thread_id="t-hard-checkpoint")
 
     class _P:
-        ratio = 0.9
-        token_count = 9000
+        ratio = 0.98
+        token_count = 9800
         usable_budget = 10000
         action = "summarize"
         keep_recent = 6
-        hard_threshold_reached = False
+        hard_threshold_reached = True
 
     async def _stub_state(cfg):
         from types import SimpleNamespace
 
-        return SimpleNamespace(values={"messages": [HumanMessage(content="hi")]})
+        return SimpleNamespace(
+            values={"messages": [HumanMessage(content="hi")], "last_input_tokens": 0}
+        )
 
     session.app.aget_state = _stub_state
     import liteharness.session as sm
@@ -894,7 +833,8 @@ def test_async_pre_act_compact_handler_still_supported(tmp_path: Path):
     with patch.object(sm, "calculate_context_pressure", return_value=_P()):
         asyncio.run(session._maybe_checkpoint_before_act())
 
-    # async handler returned False → no force compact, but the ask-event path
-    # ran (no crash). The important assertion is that it returned without
-    # raising.
-    assert session._force_compact is False
+    assert session._force_compact is True
+    events = [ev for ev in session._drain_queue() if ev.kind == "compaction"]
+    assert len(events) == 1
+    assert events[0].data["reason"] == "pre_act_hard_threshold"
+    assert events[0].data["forced"] is True

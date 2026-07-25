@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
@@ -14,6 +15,10 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.layout import VSplit, Window
 from prompt_toolkit.styles import Style
 
+from liteharness.types import SessionEvent
+from liteharness_cli.chat_model import active_model_name
+from liteharness_cli.config import settings
+
 from cli import render
 from cli.commands import dispatch
 from cli.config_flow import ConfigResult
@@ -26,31 +31,51 @@ from cli.pickers import MenuMixin
 from cli.models import MenuItem, TranscriptLine
 from cli.prompts import PromptMixin
 from cli.transcript import TranscriptMixin
+from cli.turn_renderer import TurnRenderer
 from cli.utils import display_cwd
 from cli.widgets import TranscriptStore, TranscriptViewportControl
 
 if TYPE_CHECKING:
-    from cli.session_app import SessionApp
+    from liteharness.mcp import MCPManager
+    from liteharness_cli import CodingSession
 
-CommandDispatcher = Callable[["SessionApp", str], Awaitable[None]]
+CommandDispatcher = Callable[["TuiApp", str], Awaitable[None]]
+
+
+def _new_thread_id() -> str:
+    return f"session-{uuid.uuid4().hex[:8]}"
 
 
 class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMixin):
-    """Full-screen prompt_toolkit UI with transcript above and input chrome pinned at the bottom."""
+    """Full-screen prompt_toolkit UI with transcript above and input chrome pinned at the bottom.
+
+    Wired directly to a :class:`~liteharness_cli.CodingSession`: the SDK
+    owns the turn loop, cancel finalisation, and thread state; this class
+    owns the TUI-side session state (prompt queue, exit flag, staged skills,
+    assistant history for /copy) and renders the SessionEvent stream.
+    """
 
     def __init__(
         self,
-        session: SessionApp,
+        coding: CodingSession,
         *,
         history_path: Path,
+        mcp: MCPManager | None = None,
         command_dispatcher: CommandDispatcher = dispatch,
     ) -> None:
-        self.session = session
+        self.coding = coding
+        self.mcp = mcp
         self._dispatch = command_dispatcher
+        # TUI-owned session state (formerly SessionApp): input queue, exit
+        # flag, skills staged via /skill, assistant text history for /copy.
+        self.should_exit = False
+        self.prompt_queue: list[str] = []
+        self.pending_skills: list[str] = []
+        self.assistant_history: list[str] = []
         self._cwd_line = display_cwd()
         history_path.parent.mkdir(parents=True, exist_ok=True)
         # The startup header (gradient logo + dashboard panel + hints) is
-        # appended via ``session.render_header()`` once the transcript pane's
+        # appended via ``self.render_header()`` once the transcript pane's
         # real width is known (see ``_start_initial_header_task``), so the
         # pre-wrapped TranscriptLines aren't built against a stale fallback
         # width and re-wrap into a half-screen artifact on first render.
@@ -251,8 +276,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             if text.startswith(("/", "!")):
                 self._app.create_background_task(self._busy_dispatch(text))
             else:
-                self.session.enqueue_prompt(text)
-                count = len(self.session.prompt_queue)
+                self.enqueue_prompt(text)
+                count = len(self.prompt_queue)
                 preview = text.strip().splitlines()[0][:48]
                 if len(text.strip().splitlines()[0]) > 48:
                     preview += "..."
@@ -267,7 +292,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             if text.startswith("!"):
                 await self._run_shell(text[1:])
             else:
-                await self._dispatch(self.session, text, busy=True)
+                await self._dispatch(self, text, busy=True)
         except Exception as exc:
             self.append_error(f"{type(exc).__name__}: {exc}")
         finally:
@@ -335,28 +360,25 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             if not is_slash and not is_shell:
                 self.append_user(text)
             if is_slash:
-                await self._dispatch(self.session, text, busy=False)
+                await self._dispatch(self, text, busy=False)
             elif is_shell:
                 await self._run_shell(text[1:])
             else:
-                await self.session.run_turn(text, list(self._pending_images))
-            while not self.session.should_exit:
-                queued = self.session.dequeue_prompt()
+                await self._run_turn(text, list(self._pending_images))
+            while not self.should_exit:
+                queued = self.dequeue_prompt()
                 if queued is None:
                     break
                 self.append_user(queued)
-                await self.session.run_turn(queued, [])
-            if self.session.should_exit:
-                self._app.exit()
-            if self.session.should_exit:
+                await self._run_turn(queued, [])
+            if self.should_exit:
                 self._app.exit()
         except asyncio.CancelledError:
-            # Hard-escalation path: the cooperative cancel token failed to
-            # break the stream loop within the backstop window, so the TUI
-            # fell back to asyncio.Task.cancel(). ``run_turn``'s own
-            # ``except CancelledError`` handler already finalised the turn
-            # and rendered the "Turn interrupted by user." banner, so there's
-            # nothing to surface here — just let the cancellation propagate.
+            # Hard-escalation path: the cooperative cancel failed to break
+            # the stream loop within the backstop window, so the TUI fell
+            # back to asyncio.Task.cancel(). ``_run_turn`` already rendered
+            # the interrupt banner and the SDK finalised the checkpoint, so
+            # there's nothing to surface here — just let it propagate.
             raise
         except Exception as exc:
             self.append_error(f"{type(exc).__name__}: {exc}")
@@ -424,11 +446,11 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
     def _cancel_active_task(self) -> bool:
         if self._submit_task is not None and not self._submit_task.done():
-            cleared = self.session.clear_prompt_queue()
-            # Cooperative cancel preferred: lets run_turn break out at the next
-            # event boundary and flush partial state. A 2s call_later backstop
-            # is scheduled so a stuck call still gets hard-cancelled.
-            self.session.cancel_token.trigger()
+            cleared = self.clear_prompt_queue()
+            # Cooperative cancel preferred: lets the SDK break out at the
+            # next event boundary and flush partial state. A call_later
+            # backstop is scheduled so a stuck call still gets hard-cancelled.
+            self.coding.cancel()
             self._schedule_hard_cancel_backstop()
             if cleared:
                 self.append_notice("queue", f"cleared {cleared} queued prompt(s)")
@@ -436,7 +458,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         return False
 
     async def run_async(self, *, resume_thread_id: str | None = None) -> None:
-        await self.session.refresh_context_snapshot()
+        await self.coding.refresh_context_snapshot()
         render.set_sink(self)
         self._configure_escape_timeouts(self._app)
         self._start_initial_header_task()
@@ -463,7 +485,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         async def _resume() -> None:
             await self._transcript_ready.wait()
-            await self.session.resume_thread(thread_id)
+            await self.resume_thread(thread_id)
 
         self._app.create_background_task(_resume())
 
@@ -484,6 +506,196 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         async def _header() -> None:
             await self._transcript_ready.wait()
-            self.session.render_header()
+            self.render_header()
 
         self._app.create_background_task(_header())
+
+    # ------------------------------------------------------------------
+    # Session facade: queue, mode/header, thread management, the turn
+    # ------------------------------------------------------------------
+    # These used to live on SessionApp; with the TUI wired directly to
+    # CodingSession they live here so the mixins (chrome/keys) and slash
+    # commands keep one obvious ``app`` surface. Pure pass-throughs delegate
+    # to ``self.coding``; anything with TUI side effects (queue, transcript,
+    # history) is owned here.
+
+    # --- prompt queue ----------------------------------------------------
+    def enqueue_prompt(self, text: str) -> None:
+        if text:
+            self.prompt_queue.append(text)
+
+    def dequeue_prompt(self) -> str | None:
+        if self.prompt_queue:
+            return self.prompt_queue.pop(0)
+        return None
+
+    def clear_prompt_queue(self) -> int:
+        count = len(self.prompt_queue)
+        self.prompt_queue.clear()
+        return count
+
+    @property
+    def queued_prompt(self) -> str:
+        return self.prompt_queue[-1] if self.prompt_queue else ""
+
+    @queued_prompt.setter
+    def queued_prompt(self, value: str) -> None:
+        if value:
+            self.prompt_queue = [value]
+        else:
+            self.prompt_queue.clear()
+
+    # --- CodingSession pass-throughs --------------------------------------
+    @property
+    def thread_id(self) -> str:
+        return self.coding.thread_id
+
+    @property
+    def agent_mode(self) -> str:
+        return self.coding.mode
+
+    @property
+    def turn_count(self) -> int:
+        return self.coding.turn_count
+
+    @property
+    def context_used(self) -> int:
+        return self.coding.context_used
+
+    @property
+    def context_total(self) -> int:
+        return self.coding.context_total
+
+    @property
+    def model(self):
+        """The raw chat model (used by /init's one-shot NESS.md generation)."""
+        return self.coding.agent.config.model
+
+    def toggle_mode(self) -> None:
+        self.coding.toggle_mode()
+
+    def render_header(self) -> None:
+        render.render_header(
+            mode=self.coding.mode,
+            model=active_model_name(),
+            approval=settings.enable_approval,
+            autosave=settings.auto_save_threads,
+            session_end_reflection=settings.session_end_reflection,
+        )
+
+    async def refresh_context_snapshot(self) -> None:
+        await self.coding.refresh_context_snapshot()
+
+    def rebuild_graph(self) -> None:
+        """/config model or reasoning switch: rebind models + recompile."""
+        self.coding.reload_model()
+
+    def save_thread(self) -> str:
+        return self.coding.save_thread()
+
+    def request_compact(self) -> None:
+        self.coding.request_compact()
+
+    # --- thread management -------------------------------------------------
+    async def reset_thread(self) -> None:
+        """Archive the current thread and start a fresh one (``/new``)."""
+        await self.coding.reset(_new_thread_id())
+        self.assistant_history.clear()
+        self.pending_skills.clear()
+
+    async def resume_thread(self, thread_id: str) -> None:
+        """Resume a saved thread: replay its transcript, then rebuild state.
+
+        The visible transcript is cleared and re-rendered from the durable
+        events first (no stale messages from the abandoned thread); the
+        adapter then rebuilds the live graph from the same events.
+        """
+        events = self.coding.thread_store.load_thread_events(thread_id)
+        if not events:
+            render.render_error(f"No saved thread: {thread_id}")
+            return
+        render.clear_transcript()
+        self._replay_events_to_transcript(events)
+        if not await self.coding.resume(thread_id):
+            render.render_error(f"No saved thread: {thread_id}")
+            return
+        self.assistant_history = [
+            str(event.get("content"))
+            for event in events
+            if event.get("kind") == "assistant" and event.get("content")
+        ]
+        render.render_notice(f"Resumed thread {thread_id}.", title="resume")
+
+    async def rollback_to(self, user_seq: int) -> None:
+        """Roll the thread back to checkpoint ``user_seq`` (``/rollback``)."""
+        status = await self.coding.rollback_to(user_seq)
+        if status.startswith(("Invalid", "No checkpoint")):
+            render.render_error(status)
+        else:
+            render.render_notice(status, title="rollback")
+
+    def _replay_events_to_transcript(self, events: list[dict]) -> None:
+        """Render a saved event stream into the live transcript on resume.
+
+        Mirrors the live-turn render path: user echoes, assistant panels,
+        and tool call/result rows in order. Usage events are skipped (costs
+        are replayed into the tracker by the adapter's resume).
+        """
+        for event in events:
+            kind = event.get("kind")
+            if kind == "user":
+                content = event.get("content", "")
+                text = content if isinstance(content, str) else str(content)
+                if text.strip():
+                    render.render_user_echo(text)
+            elif kind == "assistant":
+                tool_calls_raw = event.get("tool_calls") or []
+                if tool_calls_raw:
+                    calls = [
+                        {
+                            "name": tc.get("name"),
+                            "args": tc.get("args", {}),
+                            "id": tc.get("id"),
+                            "type": tc.get("type", "tool_call"),
+                        }
+                        for tc in tool_calls_raw
+                    ]
+                    render.render_tool_calls(calls)
+                content = event.get("content")
+                text = "" if content is None else str(content)
+                if text.strip():
+                    render.render_assistant_panel(text)
+            elif kind == "tool":
+                tool_name = str(event.get("tool") or "")
+                result = str(event.get("result") or "")
+                if tool_name:
+                    render.render_tool_result(tool_name, result)
+
+    # --- the turn -----------------------------------------------------------
+    async def _run_turn(self, text: str, images: list[str]) -> None:
+        """Drive one CodingSession turn, rendering its SessionEvent stream."""
+        renderer = TurnRenderer()
+        active_skills = self.pending_skills
+        self.pending_skills = []
+        render.begin_turn()
+        try:
+            async for ev in self.coding.run_turn(
+                text,
+                images=images or None,
+                active_skills=active_skills or None,
+            ):
+                renderer.feed(ev)
+        except asyncio.CancelledError:
+            # Hard-escalation path: the cooperative cancel didn't break the
+            # stream in time and the submit task was cancelled. The SDK has
+            # already finalised checkpoint state; render the interrupt UX
+            # here since no ``interrupted`` event will be consumed now.
+            if not renderer.interrupted:
+                renderer.feed(SessionEvent("interrupted", {"partial_text": ""}))
+            raise
+        finally:
+            render.finish_turn()
+        self.assistant_history.extend(renderer.assistant_texts)
+        if not renderer.interrupted:
+            render.render_usage_footer(renderer.usage)
+            render.render_todos(await self.coding.aget_todos())

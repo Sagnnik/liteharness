@@ -249,8 +249,9 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
                     usage_event.update(usage.as_dict())
                 persist.append_event(thread_id, usage_event)
 
-                if usage is not None and config.on_usage:
-                    config.on_usage(UsageEvent(
+                usage_bridge = getattr(config, "_usage_bridge", None)
+                if usage is not None and usage_bridge is not None:
+                    usage_bridge(UsageEvent(
                         model=model_name,
                         input_tokens=usage.input_tokens,
                         uncached_input_tokens=usage.uncached_input_tokens,
@@ -351,8 +352,6 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         # store tool results in a list of ToolMessage objects
         results: list[ToolMessage] = []
         cur_mode = (state.get("agent_mode") or rt.resolved_mode).lower()
-        raw_user_seq = state.get("current_user_seq")
-        user_seq = int(raw_user_seq) if raw_user_seq is not None else None
         newly_loaded_names: set[str] = set()
 
         for name, args, call_id in calls:
@@ -436,14 +435,6 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             results.append(ToolMessage(tool_call_id=call_id, name=name, content=content))
             # append the ToolMessage to the results list and append the event to the event log
             persist.append_event(thread_id, _tool_event(name, args, content, dur, call_id=call_id))
-
-            # Record mutated paths for rollback (surgical file restore).
-            # Only run on a non-error result so we don't pollute the checkpoint
-            # with paths the tool never touched. ``current_user_seq is None``
-            # means there is no live user turn in state (subagent / pure-SDK
-            # path) -> skip.
-            if user_seq is not None and config.on_file_mutation and not str(content).startswith("Error:"):
-                config.on_file_mutation(thread_id, user_seq, name, args)
 
             # Track skills loaded via skill_view for the L3 overlay
             if name == "skill_view" and not str(content).startswith("Error:"):

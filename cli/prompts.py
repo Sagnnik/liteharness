@@ -6,7 +6,7 @@ from typing import Any
 
 from cli.models import MenuItem
 from cli.utils import term_width
-from utils import preview_diff
+from liteharness.utils import preview_diff
 
 
 def default_question_index(options: list[dict]) -> int:

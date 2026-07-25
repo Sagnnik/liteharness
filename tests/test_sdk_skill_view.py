@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from liteharness.context.overlay import OverlayContext, OverlayProvider, render_overlay_delta, wrap_system_reminder
 from liteharness.skills import SkillLoader
-from liteharness_cli.overlay import CodingOverlay
+from liteharness import CodingOverlay
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ from liteharness.options import (
 )
 from liteharness.context.layers import PromptLayers, PromptLayersConfig, TaskPrompts
 from liteharness.context.overlay import OverlayProvider
-from liteharness.types import ApprovalHandler, QuestionHandler, OnFileMutation, UsageCallback, PreActCompactHandler
+from liteharness.types import ApprovalHandler, QuestionHandler
 from liteharness.memory import MemoryStore
 from liteharness.persistence import ThreadStore
 from liteharness.permissions import PermissionStore
@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from liteharness.types import (
         InterruptHandler,
         PlanTurnHandler,
-        TurnStartHandler,
     )
 
 
@@ -94,10 +93,8 @@ class AgentSpec:
 
     **Runtime hooks**
 
-    ``approval_handler``, ``question_handler``, ``on_usage``,
-    ``on_file_mutation``, ``on_pre_act_compact``
-        Callbacks for destructive-tool approval, user questions, usage
-        telemetry, file mutation tracking, and plan→act compaction.
+    ``approval_handler``, ``question_handler``
+        Callbacks for destructive-tool approval and user questions.
 
     **Integrations**
 
@@ -142,9 +139,6 @@ class AgentSpec:
     # runtime hooks
     approval_handler: ApprovalHandler | None = None
     question_handler: QuestionHandler | None = None
-    on_usage: UsageCallback | None = None
-    on_file_mutation: OnFileMutation | None = None
-    on_pre_act_compact: PreActCompactHandler | None = None
 
     # integrations
     checkpoint_factory: Callable[[], BaseCheckpointSaver] | None = None
@@ -181,9 +175,6 @@ class NessAgentConfig:
     # runtime hooks
     approval_handler: ApprovalHandler | None = None
     question_handler: QuestionHandler | None = None
-    on_usage: UsageCallback | None = None
-    on_file_mutation: OnFileMutation | None = None
-    on_pre_act_compact: PreActCompactHandler | None = None
 
     # integrations
     checkpoint_factory: Callable[[], BaseCheckpointSaver] | None = None
@@ -288,9 +279,6 @@ class NessAgentConfig:
 
             approval_handler=spec.approval_handler,
             question_handler=spec.question_handler,
-            on_usage=spec.on_usage,
-            on_file_mutation=spec.on_file_mutation,
-            on_pre_act_compact=spec.on_pre_act_compact,
             checkpoint_factory=spec.checkpoint_factory,
             tracing=spec.tracing,
 
@@ -390,7 +378,6 @@ class NessAgent:
         metadata: Mapping[str, Any] | None = None,
         git_available: bool | None = None,
         vision: bool | None = None,
-        on_turn_start: "TurnStartHandler | None" = None,
         on_plan_turn: "PlanTurnHandler | None" = None,
         on_interrupt: "InterruptHandler | None" = None,
     ) -> Session:
@@ -415,7 +402,7 @@ class NessAgent:
             to text-only and emits a ``warning`` SessionEvent when ``False``;
             shape-blind (forwards verbatim) when ``None``. See
             :class:`~liteharness.session.Session`.
-        on_turn_start, on_plan_turn, on_interrupt
+        on_plan_turn, on_interrupt
             Per-Session runtime hooks. Stored on the :class:`Session` instance
             (not the shared :class:`NessAgentConfig`) so concurrent threads on
             one agent never clobber each other. See :mod:`liteharness.types`
@@ -432,7 +419,6 @@ class NessAgent:
             metadata=dict(metadata or {}),
             git_available=git_available,
             vision=vision,
-            on_turn_start=on_turn_start,
             on_plan_turn=on_plan_turn,
             on_interrupt=on_interrupt,
         )

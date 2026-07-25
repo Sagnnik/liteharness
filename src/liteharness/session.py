@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextvars import ContextVar
@@ -37,7 +36,6 @@ from liteharness.types import (
     PlanTurnHandler,
     RunResult,
     SessionEvent,
-    TurnStartHandler,
     UsageEvent,
 )
 
@@ -51,19 +49,6 @@ PLAN_COMPACTION_CHECKPOINT_RATIO = 0.75
 # image into the input buffer. They are stripped from both the model-facing
 # text and the persisted transcript text before the turn payload is built.
 _IMAGE_PLACEHOLDER_RE = re.compile(r"\[Image #\d+\]")
-
-
-async def _maybe_await(value: Any) -> Any:
-    """Await *value* if it is awaitable, otherwise return it unchanged.
-
-    Lets the SDK accept either a plain ``bool``/value or a coroutine from a
-    user-supplied handler (e.g. ``on_pre_act_compact``), so callers are free
-    to write either a ``def`` or an ``async def`` regardless of whether the
-    declared type alias is ``Awaitable[...]``.
-    """
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 def _messages_from_event(event: dict) -> list[Any]:
@@ -100,7 +85,7 @@ def _extract_text_from_blocks(content: Any) -> str:
 
 def _ensure_config_event_bridges(cfg: Any) -> None:
     """
-    It installs one-time wrapper callbacks on the config object that bridge async events 
+    It installs one-time wrapper callbacks on the config object that bridge async events
     (approval requests, questions, usage) into the active Session's event queue.
     """
     # skip if already installed
@@ -110,9 +95,8 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
     # get the original handlers
     original_approval = cfg.approval_handler
     original_question = cfg.question_handler
-    original_usage = cfg.on_usage
 
-    # Wraps approval_handler -> when called, emits an approval_required event 
+    # Wraps approval_handler -> when called, emits an approval_required event
     # into the active session's queue, then delegates to the original.
     if original_approval is not None:
         class _ApprovalHandler(ApprovalHandler):
@@ -133,8 +117,12 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
         # store the wrapped approval handler so langgraph can use this
         cfg.question_handler = _question
 
-    # Wraps on_usage -> stores _last_usage on the session, 
-    # emits a usage event with token/cost details, then calls the original handler.
+    # Internal usage channel: the agent node reports per-call token/cost
+    # usage here; the bridge stores ``_last_usage`` on the active session
+    # (feeding ``RunResult.usage`` / tracing spans) and queues a ``usage``
+    # SessionEvent for the caller. Not a user-facing hook — the same data
+    # already reaches consumers via the SessionEvent stream, the durable
+    # ``usage`` log, and the cost tracker.
     def _usage(event: UsageEvent) -> None:
         sess = _active_session.get()
         if sess is not None:
@@ -150,11 +138,9 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
                     "cost_usd": event.cost_usd,
                 },
             )
-        if original_usage is not None:
-            original_usage(event)
 
-    # store the wrapped usage handler so langgraph can use this
-    cfg.on_usage = _usage
+    # store the usage bridge so the agent node can use this
+    cfg._usage_bridge = _usage
     # mark as installed to avoid re-wrappings
     cfg._event_bridges_installed = True
 
@@ -169,7 +155,6 @@ class Session:
         metadata=None,
         git_available=None,
         vision: bool | None = None,
-        on_turn_start: TurnStartHandler | None = None,
         on_plan_turn: PlanTurnHandler | None = None,
         on_interrupt: InterruptHandler | None = None,
     ):
@@ -193,14 +178,6 @@ class Session:
 
                 The model-name heuristic that decides this belongs to the
                 adapter; the SDK just honours the flag.
-            on_turn_start: Per-Session hook called with the about-to-be-persisted
-                user text (after ``[Image #N]`` stripping). Returns the durable
-                user-event seq that flows into the graph state as
-                ``current_user_seq``, activating ``on_file_mutation``. When
-                unset, ``current_user_seq`` stays ``None`` (subagent /
-                pure-SDK path; file-mutation tracking stays inert). Returning
-                ``0`` activates tracking (durable ``append_event`` is
-                0-based), so the first real adapter turn records mutations.
             on_plan_turn: Per-Session hook called at the end of a successful
                 plan-mode turn with the assistant text. Fire-and-forget; used by
                 the adapter to autosave the plan file. When unset, a
@@ -241,7 +218,6 @@ class Session:
         # Per-Session runtime hooks.
         # Stored on the Session so concurrent threads on the same NessAgent do
         # not clobber each other via the shared NessAgentConfig.
-        self.on_turn_start = on_turn_start
         self.on_plan_turn = on_plan_turn
         self.on_interrupt = on_interrupt
 
@@ -564,24 +540,13 @@ class Session:
                 },
             )
             return
-        # if the user has a custom compaction handler then use it
-        should_compact = False
-        if self._cfg.on_pre_act_compact is not None:
-            should_compact = bool(await _maybe_await(self._cfg.on_pre_act_compact(pressure)))
-        # if the user wants to compact then force a compaction
-        if should_compact:
-            self._force_compact = True
-            # add a compaction event to the queue
-            self._add_queue(
-                "compaction",
-                {"reason": "pre_act_user", "info": info, "forced": True},
-            )
-        else:
-            # if the user does not want to compact then add a compaction event to the queue
-            self._add_queue(
-                "compaction",
-                {"reason": "pre_act_checkpoint", "info": info, "forced": False, "ask": True},
-            )
+        # Soft checkpoint: no interactive ask — emit a passive notice so the
+        # caller can surface "context is filling up" and the user can run
+        # /compact before execution if they want.
+        self._add_queue(
+            "compaction",
+            {"reason": "pre_act_checkpoint", "info": info, "forced": False, "ask": True},
+        )
 
     async def _build_run_payload(
         self,
@@ -589,7 +554,6 @@ class Session:
         *,
         active_skills: Sequence[str] | None,
         mode_switch: str,
-        current_user_seq: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Build the turn payload and run config.
 
@@ -611,7 +575,6 @@ class Session:
             "force_compact": self._consume_force_compact(),
             "activate_skills": skills,
             "mode_switch": mode_switch,
-            "current_user_seq": current_user_seq,
         }
         cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 75}
         return payload, cfg
@@ -888,33 +851,13 @@ class Session:
                     mode_switch = "plan->act"
                     await self._maybe_checkpoint_before_act()
 
-                # build the user message (vision gate + image-strip) and the
-                # pre-cleaned text used for the per-turn hook.
+                # build the user message (vision gate + image-strip).
                 try:
                     user_message, _cleaned = self._user_message(message, images)
                 except Exception as exc:
                     span.set_status("ERROR", str(exc))
                     yield SessionEvent("error", {"message": str(exc)}), ""
                     return
-
-                # Per-Session on_turn_start hook: returns the durable user-event
-                # seq that flows into the graph as ``current_user_seq`` and
-                # activates ``on_file_mutation`` in the tools node. When unset
-                # (subagent / pure-SDK usage), the seq stays ``None`` and
-                # file-mutation tracking stays inert — today's default
-                # behavior. A real adapter-backed first turn returns ``0``
-                # (durable append_event is 0-based), which is NOT inert: the
-                # tools node gates on ``is not None``, not truthiness, so the
-                # first turn's mutations are recorded.
-                user_seq: int | None = None
-                if self.on_turn_start is not None:
-                    try:
-                        result = await _maybe_await(self.on_turn_start(_cleaned))
-                        user_seq = int(result) if result is not None else None
-                    except Exception as exc:
-                        span.set_status("ERROR", str(exc))
-                        yield SessionEvent("error", {"message": str(exc)}), ""
-                        return
 
                 # Strip answered image blocks from prior turns so the large
                 # base64 payloads aren't re-sent. The new turn's user_message
@@ -928,7 +871,6 @@ class Session:
                         user_message,
                         active_skills=active_skills,
                         mode_switch=mode_switch,
-                        current_user_seq=user_seq,
                     )
                     cfg = cfg_payload
                 except Exception as exc:

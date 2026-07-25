@@ -18,4 +18,3 @@ class AgentState(TypedDict, total=False):
     force_compact: bool
     last_input_tokens: int
     mode_switch: str
-    current_user_seq: int | None

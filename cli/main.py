@@ -5,6 +5,12 @@ A clean, scrollable Rich + prompt_toolkit CLI. Run with:
     uv run python -m cli.main
     # or
     uv run python cli/main.py
+
+The TUI is wired directly to the SDK stack: a
+:class:`~liteharness_cli.CodingSession` built via
+:func:`liteharness_cli.factory.build_coding_session`, an SDK
+:class:`~liteharness.mcp.MCPManager`, and the SDK tool registry. The old
+root-level monolith modules are no longer imported here.
 """
 
 from __future__ import annotations
@@ -12,10 +18,11 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import uuid
 from pathlib import Path
 
 # Allow running both as `python -m cli.main` and `python cli/main.py` by making
-# sure the project root (which holds agent.py, config.py, ...) is importable.
+# sure the project root (which holds the cli package) is importable.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -31,7 +38,7 @@ def _bootstrap_worktree() -> None:
             name = arg.split("=", 1)[1]
     if not name:
         return
-    from worktree import WorktreeError, ensure_worktree
+    from liteharness_cli.worktree import WorktreeError, ensure_worktree
 
     try:
         path = ensure_worktree(name)
@@ -47,15 +54,18 @@ _bootstrap_worktree()
 
 import typer
 
-from config import REASONING_EFFORTS, cost_tracker, settings
-from memory import check_ness_health
-from mcp_client import mcp_manager
-from model import ModelOverrides, configure_model, validate_reasoning_effort_for_model
-from permissions import clear_session_rules
-from tools import is_git_repo, register_dynamic_tools, set_mcp_catalog
+from liteharness.compaction import resolve_token_count
+from liteharness.mcp import MCPManager
+from liteharness.tools import is_git_repo, register_dynamic_tools, set_mcp_catalog
+from liteharness_cli.chat_model import (
+    ModelOverrides,
+    configure_model,
+    validate_reasoning_effort_for_model,
+)
+from liteharness_cli.config import REASONING_EFFORTS, settings
+from liteharness_cli.factory import build_coding_session
 
 from cli import render
-from cli.session_app import SessionApp
 from cli.app import TuiApp
 from cli.theme import build_console
 
@@ -127,8 +137,8 @@ def run(
     asyncio.run(_main(resume_thread_id=resume or None))
 
 
-def _render_mcp_startup() -> None:
-    message, level = mcp_manager.startup_summary()
+def _render_mcp_startup(mcp: MCPManager) -> None:
+    message, level = mcp.startup_summary()
     if level != "warn":
         return
     render.render_warning(message + "  (/mcp for details)")
@@ -137,31 +147,21 @@ def _render_mcp_startup() -> None:
 _STATIC_PREFIX_TOKEN_TARGET = 7000
 
 
-def _check_prompt_budget(git_available: bool) -> str | None:
+def _check_prompt_budget(coding, git_available: bool) -> str | None:
     """Soft-warn when the cached static prefix (L0+L1+L2) exceeds the token target."""
     from langchain_core.messages import SystemMessage
 
-    from compaction import resolve_token_count
-    from context import (
-        DEFAULT_PERSONA,
-        build_l0,
-        build_l1,
-        build_project_context_block,
-    )
-    from memory import load_ness_memory, load_repo_context, load_user_memory
-    from skill_loader import load_skills, render_skill_catalog
-    from tools import select_tools_for_session
-
-    tools = select_tools_for_session()
-    catalog = render_skill_catalog(load_skills())
-    prefix = "\n\n".join(
-        [
-            build_l0(tools),
-            build_l1(
-                DEFAULT_PERSONA, tools, load_user_memory(), load_ness_memory(), catalog
-            ),
-            build_project_context_block(load_repo_context(), [], git_available),
-        ]
+    cfg = coding.agent.config
+    prefix = cfg.prompts.build_stable_prefix(
+        cfg.tool_registry.active_tools,
+        user_memory=cfg.memory_store.load_user(),
+        project_memory=cfg.memory_store.load_project(),
+        skill_catalog=cfg.skill_loader.render_catalog(cfg.skill_loader.load()),
+        git_available=git_available,
+        metadata={},
+        tool_catalog_groups=cfg.tool_registry.tool_catalog_groups(),
+        mcp_catalog=cfg.tool_registry.mcp_catalog(),
+        deferred_mcp=cfg.tool_registry.deferred_mcp_summary(),
     ).strip()
     tokens = resolve_token_count(
         [SystemMessage(content=prefix)], known_input_tokens=None
@@ -177,17 +177,32 @@ def _check_prompt_budget(git_available: bool) -> str | None:
 
 async def _main(*, resume_thread_id: str | None = None) -> None:
     git_available = is_git_repo()
-    clear_session_rules()
 
-    await mcp_manager.start()
-    # Register MCP tools as known (so they can be activated later) but leave them
-    # deferred: nothing is bound until search_tools/add_tools or /mcp loads them.
-    register_dynamic_tools(mcp_manager.tools.values())
-    set_mcp_catalog(mcp_manager.catalog())
+    mcp = MCPManager(project_root=Path.cwd())
+    await mcp.start()
 
-    session = SessionApp(git_available=git_available)
+    thread_id = f"session-{uuid.uuid4().hex[:8]}"
+    coding = build_coding_session(
+        thread_id=thread_id,
+        vision=settings.supports_vision,
+        git_available=git_available,
+        approval_handler=render.ask_approval,
+        question_handler=render.ask_questions,
+    )
+    coding.perms.clear_session_rules()
+
+    # Register MCP tools as known but deferred: nothing is bound until
+    # /mcp (session registry) or the model-facing add_tools (module-level
+    # bridge) activates them.
+    mcp_tools = list(mcp.tools.values())
+    coding.tool_registry.register_dynamic(mcp_tools)
+    coding.tool_registry.set_mcp_catalog(mcp.catalog())
+    register_dynamic_tools(mcp_tools)
+    set_mcp_catalog(mcp.catalog())
+
     ui = TuiApp(
-        session,
+        coding,
+        mcp=mcp,
         history_path=Path(settings.ness_dir) / "cli_history",
     )
     render.set_sink(ui)
@@ -204,29 +219,29 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
             title="worktree",
         )
 
-    warning = check_ness_health()
+    warning = coding.memory_store.check_health()
     if warning:
         render.render_warning(warning)
-    budget_warning = _check_prompt_budget(git_available)
+    budget_warning = _check_prompt_budget(coding, git_available)
     if budget_warning:
         render.render_warning(budget_warning)
-    _render_mcp_startup()
+    _render_mcp_startup(mcp)
 
     try:
         await ui.run_async(resume_thread_id=resume_thread_id)
     finally:
         resume_thread_id = None
         try:
-            await session.finalize_reflection()
+            await coding.finalize_reflection()
             resume_thread_id = (
-                session.thread_id
-                if (settings.auto_save_threads and session.turn_count > 0)
+                coding.thread_id
+                if (settings.auto_save_threads and coding.turn_count > 0)
                 else None
             )
-            session.save_thread()
+            coding.save_thread()
         except Exception as exc:
             render.render_warning(f"Archive skipped: {exc}")
-        await mcp_manager.stop()
+        await mcp.stop()
         render.set_sink(None)
         # The fullscreen Textual TUI has exited, so the transcript sink is no
         # longer on screen. Print the session summary straight to stdout via
@@ -234,9 +249,12 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
         # in-app transcript widget, otherwise it is silently dropped.
         from rich.panel import Panel
 
+        report = coding.cost_tracker.report()
+        if resume_thread_id:
+            report += f"\nResume:  liteharness --resume {resume_thread_id}"
         build_console(file=sys.stdout).print(
             Panel(
-                cost_tracker.report(resume_thread_id=resume_thread_id),
+                report,
                 title="session summary",
                 style="usage.value",
                 border_style="usage.value",

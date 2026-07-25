@@ -164,7 +164,7 @@ class _HeaderHarness(TranscriptMixin):
 def _patch_addon_helpers() -> None:
     """Pin the lazy project/addons/version helpers to deterministic values."""
     transcript_module._header_project = lambda: "~/projects/liteharness"
-    transcript_module._header_addons_summary = lambda: "0 MCPs, 1 Skills"
+    transcript_module._header_addons_summary = lambda *args: "0 MCPs, 1 Skills"
     transcript_module._header_version = lambda: "0.1.0"
 
 

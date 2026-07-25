@@ -103,10 +103,11 @@ class AssistantStream:
     def __init__(self) -> None:
         self._stream = _active_sink().start_assistant_stream()
         self._buffer: list[str] = []
-        # Per-LLM-call reasoning state. The facade owns it (not SessionApp) so
-        # the live assistant-stream inner object and the reasoning slot sit
-        # next to each other and the cancel path can drain partial reasoning
-        # via ``reasoning_state`` before ``stop()`` finalises the assistant text.
+        # Per-LLM-call reasoning state. The facade owns it (not the turn
+        # driver) so the live assistant-stream inner object and the reasoning
+        # slot sit next to each other and the cancel path can drain partial
+        # reasoning via ``reasoning_state`` before ``stop()`` finalises the
+        # assistant text.
         self._reasoning: list[str] = []
         self._reasoning_started_at: float | None = None
         self._reasoning_slot: dict | None = None

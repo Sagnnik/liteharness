@@ -40,33 +40,32 @@ def _header_project() -> str:
     return display_cwd()
 
 
-def _header_addons_summary() -> str:
+def _header_addons_summary(mcp, skill_loader) -> str:
     """Summarize active MCP servers + skills for the header's Add-ons cell.
 
-    Lazy imports keep the transcript module importable in headless test paths
-    where mcp_client / skill_loader would otherwise drag in heavy deps.
+    Reads the TuiApp-held MCPManager and the coding session's SkillLoader;
+    both are optional so headless/test paths (no MCP, no skills dir) render
+    an empty summary instead of failing.
     """
     parts: list[str] = []
     try:
-        from mcp_client import mcp_manager
-
-        server_names = sorted(
-            name
-            for name, info in mcp_manager.servers.items()
-            if info.get("status") != "error"
-        )
-        n_mcp = len(server_names)
-        if n_mcp:
-            names = ", ".join(server_names[:3])
-            if len(server_names) > 3:
-                names += ", …"
-            parts.append(f"{n_mcp} MCPs ({names})" if names else f"{n_mcp} MCPs")
+        if mcp is not None:
+            server_names = sorted(
+                name
+                for name, info in mcp.servers.items()
+                if info.get("status") != "error"
+            )
+            n_mcp = len(server_names)
+            if n_mcp:
+                names = ", ".join(server_names[:3])
+                if len(server_names) > 3:
+                    names += ", …"
+                parts.append(f"{n_mcp} MCPs ({names})" if names else f"{n_mcp} MCPs")
     except Exception:
         pass
     try:
-        from skill_loader import load_skills
-
-        parts.append(f"{len(load_skills())} Skills")
+        if skill_loader is not None:
+            parts.append(f"{len(skill_loader.load())} Skills")
     except Exception:
         pass
     return ", ".join(parts)
@@ -131,7 +130,12 @@ class TranscriptMixin:
             "model": model,
             "approval": approval,
             "project": _header_project(),
-            "addons_summary": _header_addons_summary(),
+            # getattr chains: bare TranscriptMixin harnesses (tests) have no
+            # mcp/coding wired; both summary inputs degrade to empty.
+            "addons_summary": _header_addons_summary(
+                getattr(self, "mcp", None),
+                getattr(getattr(self, "coding", None), "skill_loader", None),
+            ),
             "version": _header_version(),
         }
         rows = header_lines(width=width, show_logo=width >= 96, **source)
@@ -386,7 +390,7 @@ class TranscriptMixin:
     ) -> dict:
         """Insert a ``Thinking…`` placeholder above the live assistant stream.
 
-        Called from ``SessionApp.run_turn`` on the first reasoning chunk of
+        Called from the turn renderer on the first reasoning chunk of
         an LLM call. The placeholder sits before ``before_stream._line_start``
         (if the assistant stream already reserved its slot) or at the current
         end of the transcript otherwise; ``before_stream._line_start`` is

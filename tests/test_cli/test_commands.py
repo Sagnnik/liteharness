@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+from liteharness_cli.config import settings
+
 from cli import render
 from cli.commands import dispatch
-from config import settings
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
     render.set_sink(app)
     try:
-        await dispatch(app.session, command)
+        await dispatch(app, command)
     finally:
         render.set_sink(None)
 
@@ -33,7 +34,7 @@ def test_help_command_lists_supported_commands(make_app):
 def test_dispatch_exit_sets_session_flag(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/exit"))
-    assert app.session.should_exit is True
+    assert app.should_exit is True
 
 
 def test_status_command_shows_session_summary(make_app):
@@ -63,11 +64,11 @@ def test_config_action_can_update_persisted_setting(make_app):
 def test_rollback_command_with_numeric_arg_calls_rollback_to(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/rollback 5"))
-    assert app.session.rolled_back_seq == 5
+    assert app.coding.rolled_back_seq == 5
 
 
 def test_rollback_command_no_turns_warns(make_app):
     app = make_app()
-    with patch("cli.commands.list_user_turns", return_value=[]):
+    with patch.object(app.coding.thread_store, "list_user_turns", return_value=[]):
         asyncio.run(_dispatch_with_sink(app, "/rollback"))
-    assert app.session.rolled_back_seq is None
+    assert app.coding.rolled_back_seq is None

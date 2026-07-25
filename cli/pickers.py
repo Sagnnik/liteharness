@@ -15,8 +15,8 @@ from cli.constants import (
 )
 from cli.models import MenuItem
 from cli.utils import term_width
-from config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
-from model import active_model_name, active_reasoning_effort
+from liteharness_cli.chat_model import active_model_name, active_reasoning_effort
+from liteharness_cli.config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
 
 # Characters allowed inside an @mention token after the `@`.
 _PATH_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./_-")

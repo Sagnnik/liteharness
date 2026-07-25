@@ -6,13 +6,13 @@ from dataclasses import dataclass, field
 from cli import render
 from cli.constants import FORM_LABELS
 from cli.utils import write_env
-from config import reasoning_efforts_for_model, reload_settings, settings
-from model import (
+from liteharness_cli.chat_model import (
     active_model_name,
     active_reasoning_effort,
     set_active_model,
     set_active_reasoning_effort,
 )
+from liteharness_cli.config import reasoning_efforts_for_model, reload_settings, settings
 
 
 # --- shared /config data + delegator ---------------------------------------

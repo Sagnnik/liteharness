@@ -4,7 +4,7 @@ Integration tests use a real :class:`NessAgent` + ``FakeListChatModel`` against
 a temp project root, so the per-turn checkpoint orchestration (thread_store
 writes, save_checkpoint calls) is exercised end-to-end. Targeted unit tests
 mock the underlying SDK ``Session`` to test the durable-compaction relocation
-and the on_file_mutation adapter-hook without the langgraph run.
+and the adapter-owned rollback mutation tracking without the langgraph run.
 """
 
 from __future__ import annotations
@@ -186,11 +186,39 @@ def test_compaction_event_durable_logged_by_adapter(coding):
     assert "[forced]" in compacts[0].get("content", "")
 
 
-def test_on_file_mutation_records_paths(coding):
-    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "x"})
-    coding.thread_store.save_checkpoint(coding.thread_id, 1, "HEAD", "")
+def _seed_tool_turn(coding, user_seq: int, tool_events: list[dict]) -> None:
+    """Persist a user event + checkpoint at ``user_seq``, then durable tool rows.
 
-    coding._on_file_mutation(coding.thread_id, 1, "write", {"path": "src/app.py"})
+    Mirrors what a real turn writes: the user event lands at ``user_seq``
+    (tests pad with filler events when ``user_seq > 0``) and the graph's
+    tools node appends ``_tool_event``-shaped rows after it.
+    """
+    for i in range(user_seq):
+        coding.thread_store.append_event(
+            coding.thread_id, {"kind": "filler", "content": str(i)}
+        )
+    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "x"})
+    coding.thread_store.save_checkpoint(coding.thread_id, user_seq, "HEAD", "")
+    for ev in tool_events:
+        coding.thread_store.append_event(coding.thread_id, ev)
+
+
+def _tool_event(tool: str, args: dict, *, result: str = "ok", exit: str = "ok") -> dict:
+    return {
+        "kind": "tool",
+        "tool": tool,
+        "args": args,
+        "result": result,
+        "call_id": "c1",
+        "duration_ms": 1,
+        "exit": exit,
+    }
+
+
+def test_record_turn_mutations_records_paths(coding):
+    _seed_tool_turn(coding, 1, [_tool_event("write", {"path": "src/app.py"})])
+
+    coding._record_turn_mutations(1)
 
     cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
     assert cp is not None
@@ -198,11 +226,10 @@ def test_on_file_mutation_records_paths(coding):
     assert "src/app.py" in paths
 
 
-def test_on_file_mutation_shell_is_full_tree_sentinel(coding):
-    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "x"})
-    coding.thread_store.save_checkpoint(coding.thread_id, 1, "HEAD", "")
+def test_record_turn_mutations_shell_is_full_tree_sentinel(coding):
+    _seed_tool_turn(coding, 1, [_tool_event("shell", {"command": "rm -rf build/"})])
 
-    coding._on_file_mutation(coding.thread_id, 1, "shell", {"command": "rm -rf build/"})
+    coding._record_turn_mutations(1)
 
     cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
     assert cp is not None
@@ -210,15 +237,72 @@ def test_on_file_mutation_shell_is_full_tree_sentinel(coding):
     assert '"*"' in paths
 
 
-def test_on_file_mutation_read_only_tool_no_op(coding):
-    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "x"})
-    coding.thread_store.save_checkpoint(coding.thread_id, 1, "HEAD", "")
+def test_record_turn_mutations_read_only_tool_no_op(coding):
+    _seed_tool_turn(coding, 1, [_tool_event("read", {"path": "src/app.py"})])
 
-    coding._on_file_mutation(coding.thread_id, 1, "read", {"path": "src/app.py"})
+    coding._record_turn_mutations(1)
 
     cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
     assert cp is not None
     assert (cp.get("modified_paths") or "") in ("", "[]")
+
+
+def test_record_turn_mutations_skips_denied_mode_gated_and_tool_errors(coding):
+    """The skips mirror the graph's own gates: permission/hook denies and
+    plan-mode gating never executed, and a tool that raised (``Error:``
+    prefix) touched nothing."""
+    _seed_tool_turn(
+        coding,
+        1,
+        [
+            _tool_event("write", {"path": "denied.py"}, exit="denied"),
+            _tool_event("write", {"path": "gated.py"}, exit="mode_gated"),
+            _tool_event("edit", {"path": "boom.py"}, result="Error: disk full", exit="error"),
+        ],
+    )
+
+    coding._record_turn_mutations(1)
+
+    cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
+    assert cp is not None
+    assert (cp.get("modified_paths") or "") in ("", "[]")
+
+
+def test_record_turn_mutations_failed_shell_still_recorded(coding):
+    """A failed shell command (``status=error`` result, no ``Error:`` prefix)
+    may have half-mutated the tree, so the full-tree sentinel is still
+    recorded — same conservatism as the old in-graph gate."""
+    result = "status=error\nexit_code=1\noutput:\nmake: *** [install] Error 1"
+    _seed_tool_turn(coding, 1, [_tool_event("shell", {"command": "make install"}, result=result, exit="error")])
+
+    coding._record_turn_mutations(1)
+
+    cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
+    assert cp is not None
+    assert '"*"' in (cp.get("modified_paths") or "")
+
+
+def test_record_turn_mutations_ignores_prior_turns(coding):
+    """Only tool rows appended AFTER the checkpoint's user event are drained;
+    a prior turn's rows (at or before ``user_seq``) must not leak in."""
+    # Turn 1 tail: user at seq 0, then a prior-turn tool row at seq 1.
+    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "t1"})
+    coding.thread_store.append_event(
+        coding.thread_id, _tool_event("write", {"path": "prior_turn.py"})
+    )
+    # Turn 2: user at seq 2 with its checkpoint, then this turn's tool row.
+    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "t2"})
+    coding.thread_store.save_checkpoint(coding.thread_id, 2, "HEAD", "")
+    coding.thread_store.append_event(
+        coding.thread_id, _tool_event("write", {"path": "this_turn.py"})
+    )
+
+    coding._record_turn_mutations(2)
+
+    cp = coding.thread_store.get_checkpoint(coding.thread_id, 2)
+    paths = cp.get("modified_paths") or "[]"
+    assert "this_turn.py" in paths
+    assert "prior_turn.py" not in paths
 
 
 def test_expand_documents_on_send_and_replay(tmp_path: Path):
@@ -268,25 +352,6 @@ def test_vision_flag_forwarded_to_session(tmp_path: Path):
     assert codingoff.session._vision is False
 
 
-def test_ask_compact_default_only_at_hard_threshold(coding):
-    """The default _ask_compact impl auto-compacts at hard threshold only.
-
-    Pure-SDK consumers / non-interactive tests get a safe default that never
-    asks soft; the TUI replaces this handler with a render-injected one.
-    """
-
-    class _P:
-        hard_threshold_reached = True
-
-    class _PSoft:
-        hard_threshold_reached = False
-
-    assert coding._ask_compact(_P()) is True
-    # Soft / no-hard-threshold path: DEFAULT handler declines so the SDK
-    # emits the ``compaction`` SessionEvent with ask=True (non-forced).
-    assert coding._ask_compact(_PSoft()) is False
-
-
 def test_plan_autosave_writes_plan_file(coding, tmp_path: Path):
     """Success-path plan text accumulates and autosaves to <plans>/."""
     coding.set_mode("plan")
@@ -327,52 +392,45 @@ async def _collect(agen):
 
 def test_first_turn_seq_zero_records_mutation(tmp_path: Path):
     """Finding 3: durable append_event is 0-based, so the first real turn has
-    user_seq 0. The mutation gate used truthiness (``if user_seq``) which
-    dropped the first turn's mutations. The gate now uses ``is None``.
+    user_seq 0. The drain slices ``events[user_seq + 1:]`` — seq 0 is a real
+    turn whose tail must be drained, not an inert sentinel.
     """
     coding = CodingSession(
         _make_agent(tmp_path), thread_id="t-seqzero", agent_mode="act"
     )
     coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "x"})
     coding.thread_store.save_checkpoint(coding.thread_id, 0, "HEAD", "")
-    coding._session._coding_adapter = coding  # back-ref is normally set in __init__
-    # Simulate the first-turn mutation (seq 0).
-    coding._on_file_mutation(coding.thread_id, 0, "write", {"path": "src/app.py"})
+    coding.thread_store.append_event(
+        coding.thread_id, _tool_event("write", {"path": "src/app.py"})
+    )
+
+    coding._record_turn_mutations(0)
 
     cp = coding.thread_store.get_checkpoint(coding.thread_id, 0)
     paths = cp.get("modified_paths") or "[]"
     assert "src/app.py" in paths
 
 
-def test_shared_agent_dispatches_file_mutation_to_active_session(tmp_path: Path):
-    """Finding 4: with two CodingSession sharing one NessAgent, the
-    config-level on_file_mutation was bound to the first session and wrote
-    mutations against its thread_id. The trampoline now dispatches via the
-    active session's back-ref.
+def test_shared_agent_sessions_record_own_thread_mutations(tmp_path: Path):
+    """Finding 4 (restructured): two CodingSession sharing one NessAgent used
+    to need a config-level trampoline to dispatch mutations to the active
+    session. The drain is per-instance on ``self.thread_id``, so each session
+    records only its own thread's tool rows with no dispatch machinery.
     """
     agent = _make_agent(tmp_path)
     a = CodingSession(agent, thread_id="thread-A", agent_mode="act")
     b = CodingSession(agent, thread_id="thread-B", agent_mode="act")
 
-    # The config-level handler is installed once (by the first session); the
-    # second session must still dispatch correctly via the active session.
-    assert agent.config.on_file_mutation is not None
+    for sess, path in ((a, "a_file.py"), (b, "b_file.py")):
+        sess.thread_store.append_event(sess.thread_id, {"kind": "user", "content": "x"})
+        sess.thread_store.save_checkpoint(sess.thread_id, 0, "HEAD", "")
+        sess.thread_store.append_event(
+            sess.thread_id, _tool_event("write", {"path": path})
+        )
 
-    from liteharness.session import _active_session
+    # Draining B must not touch A's checkpoint (and vice versa).
+    b._record_turn_mutations(0)
 
-    # Arm B's turn as the active session, then fire a mutation for thread B.
-    # append_event first so the thread row exists (FK), then save_checkpoint.
-    a.thread_store.append_event(a.thread_id, {"kind": "user", "content": "a"})
-    b.thread_store.append_event(b.thread_id, {"kind": "user", "content": "b"})
-    a.thread_store.save_checkpoint(a.thread_id, 0, "HEAD", "")
-    b.thread_store.save_checkpoint(b.thread_id, 0, "HEAD", "")
-    token = _active_session.set(b._session)
-    try:
-        agent.config.on_file_mutation(b.thread_id, 0, "write", {"path": "b_file.py"})
-    finally:
-        _active_session.reset(token)
-
-    # B recorded the path; A did not.
     cp_b = b.thread_store.get_checkpoint(b.thread_id, 0)
     assert cp_b is not None
     assert "b_file.py" in (cp_b.get("modified_paths") or "[]")
@@ -381,6 +439,43 @@ def test_shared_agent_dispatches_file_mutation_to_active_session(tmp_path: Path)
     assert (cp_a.get("modified_paths") or "") in ("", "[]"), (
         "mutation for thread B leaked into session A"
     )
+
+
+def test_run_turn_records_mutations_from_tool_log(tmp_path: Path):
+    """End-to-end wiring: a tool row durably persisted mid-stream is keyed
+    onto the turn's checkpoint by the drain in ``run_turn``'s finally block —
+    even though the adapter only sees the stream, not the graph internals.
+    """
+    coding = CodingSession(
+        _make_agent(tmp_path), thread_id="t-drain-e2e", agent_mode="act"
+    )
+
+    async def _fake_stream(*a, **k):
+        # Mirror real graph timing: the tools node persists the tool event
+        # BEFORE the stream surfaces the turn's later events.
+        coding.thread_store.append_event(
+            coding.thread_id, _tool_event("edit", {"path": "src/e2e.py"})
+        )
+        yield SessionEvent("assistant_final", {"content": "done"})
+
+    coding._session.stream = lambda *a, **k: _fake_stream()
+
+    async def _noop_refresh():
+        return {}
+
+    coding.refresh_context_snapshot = _noop_refresh
+
+    async def _run():
+        async for _ in coding.run_turn("change e2e"):
+            pass
+
+    asyncio.run(_run())
+
+    # The user event is the first durable row (seq 0); the checkpoint is keyed
+    # to it and must now carry the edit path.
+    cp = coding.thread_store.get_checkpoint(coding.thread_id, 0)
+    assert cp is not None
+    assert "src/e2e.py" in (cp.get("modified_paths") or "[]")
 
 
 def test_act_mode_interrupted_turn_writes_no_plan_file(tmp_path: Path, monkeypatch):
