@@ -2,8 +2,8 @@
 plus an activation tool. Both are always bound so the agent can find and load
 deferred MCP tools on demand without bloating the prefix until needed.
 
-These tools import the registry lazily (inside the functions) to avoid a circular
-import with tools/__init__.py, which imports search_tools/add_tools at module load.
+Catalog and activation are owned by the session :class:`ToolRegistry`
+(resolved via :func:`~liteharness.session_context.get_session_context`).
 """
 
 from __future__ import annotations
@@ -11,9 +11,12 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import tool
+
+if TYPE_CHECKING:
+    from liteharness.tools import ToolRegistry
 
 # Loaded-tool soft cap: warn the model/user once the bound set gets large enough
 # to hurt tool-selection accuracy.
@@ -26,16 +29,31 @@ def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(str(text).lower())
 
 
+def _tool_registry() -> ToolRegistry:
+    """Resolve the active session's ToolRegistry (sole MCP source of truth)."""
+    from liteharness.session_context import get_session_context
+
+    ctx = get_session_context()
+    reg = getattr(ctx.agent_config, "tool_registry", None) if ctx.agent_config else None
+    if reg is None:
+        raise RuntimeError(
+            "No ToolRegistry on agent_config. Create a Session (or set_session_context "
+            "with a wired NessAgentConfig) before invoking search_tools / add_tools."
+        )
+    return reg
+
+
 def _catalog_documents() -> list[dict[str, Any]]:
     """Flatten the MCP catalog into searchable documents (one per deferred tool)."""
-    from liteharness.tools import ACTIVE_MCP_TOOLS, mcp_catalog
+    reg = _tool_registry()
+    active = reg.active_mcp_tools
 
     docs: list[dict[str, Any]] = []
-    for server, info in mcp_catalog().items():
+    for server, info in reg.mcp_catalog().items():
         server_desc = str(info.get("description") or "")
         for entry in info.get("tools", []):
             name = str(entry.get("name") or "")
-            if not name or name in ACTIVE_MCP_TOOLS:
+            if not name or name in active:
                 continue
             short = str(entry.get("tool") or "")
             description = str(entry.get("description") or "")
@@ -140,14 +158,11 @@ def add_tools(names: list[str]) -> str:
     become callable. Find names first with search_tools. Loading is sticky for the
     rest of the session.
     """
-    from liteharness.tools import activate_mcp_tools, tool_names_for_session
-
     if not names:
         return "Error: add_tools requires at least one tool name"
-    if isinstance(names, str):
-        names = [names]
 
-    added, unknown = activate_mcp_tools(names)
+    reg = _tool_registry()
+    added, unknown = reg.activate_mcp(names)
 
     parts: list[str] = []
     if added:
@@ -158,7 +173,7 @@ def add_tools(names: list[str]) -> str:
     if unknown:
         parts.append(f"Unknown (not in catalog): {', '.join(sorted(set(unknown)))}")
 
-    total = len(tool_names_for_session())
+    total = len(reg.tool_names())
     if total > TOOL_COUNT_WARN_THRESHOLD:
         parts.append(
             f"Warning: {total} tools now loaded (> {TOOL_COUNT_WARN_THRESHOLD}); "

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,8 +17,6 @@ from liteharness_cli.events import (
 from liteharness_cli.mentions import expand_documents
 from liteharness_cli.rollback import (
     create_file_checkpoint,
-    read_mem_file,
-    restore_mem_file,
     restore_paths,
 )
 
@@ -159,6 +157,9 @@ class CodingSession:
     def active_skills(self, names: list[str]) -> None:
         self._session.active_skills(names)
 
+    def stage_skills(self, names: list[str] | Sequence[str]) -> None:
+        self._session.stage_skills(names)
+
     def request_compact(self) -> None:
         """Request compaction and durable-log it (the CLI's /compact row).
 
@@ -216,6 +217,32 @@ class CodingSession:
     async def aget_todos(self) -> list[dict[str, Any]]:
         return await self._session.aget_todos()
 
+    async def get_state(self) -> dict[str, Any]:
+        return await self._session.get_state()
+
+    async def get_messages(self) -> list[Any]:
+        return await self._session.get_messages()
+
+    async def preview_context(self, *, mode: str | None = None):
+        """Preview L0–L2 system message + prospective L3 overlay."""
+        return await self._session.preview_context(mode=mode)
+
+    def is_subagent_active(self) -> bool:
+        """Whether a child subagent run is currently in flight.
+
+        Adapter-owned: used by :meth:`run_turn` to suppress child-branch
+        stream noise so the TUI spinner is not fed spurious assistant/tool
+        events. Pure :class:`~liteharness.Session` consumers do not filter.
+        """
+        try:
+            from liteharness.tools.subagents import subagent_runs_active
+        except ImportError:
+            return False
+        try:
+            return subagent_runs_active() > 0
+        except Exception:
+            return False
+
     # ----------------------------------------------------------------------
     # The turn loop
     # ----------------------------------------------------------------------
@@ -239,7 +266,7 @@ class CodingSession:
            still-``@tagged`` text is what gets persisted to the events table;
            the expansion is what the model sees.
         3. Snapshot files (``create_file_checkpoint``) + the per-thread
-           session-memory file (``read_mem_file``) BEFORE the agent acts.
+           session-memory file (``memory_store.read_session_raw``) BEFORE the agent acts.
         4. Persist the user event (``append_event``), then key the rollback
            checkpoint row by that seq (``save_checkpoint``).
 
@@ -261,7 +288,7 @@ class CodingSession:
         # run unconditionally.
         git_hash = await asyncio.to_thread(create_file_checkpoint, self.project_root)
         mem_snapshot = await asyncio.to_thread(
-            read_mem_file, self.ness_dir, self.thread_id
+            self.memory_store.read_session_raw, self.thread_id
         )
 
         # Persist the user event and key the checkpoint by its seq. The
@@ -285,6 +312,11 @@ class CodingSession:
                 active_skills=active_skills,
                 mode=mode,
             ):
+                # Suppress child-subagent stream noise (spinner hygiene). The
+                # underlying Session still runs the graph; we just don't
+                # forward those events to the TUI.
+                if self.is_subagent_active():
+                    continue
                 # Adapter-owned side effects run BEFORE yielding so a caller
                 # that breaks/errors after receiving the event can't skip
                 # durable persistence. The event itself is unaffected. Plan
@@ -546,11 +578,11 @@ class CodingSession:
     async def _restore_rollback_memory(self, checkpoint: dict) -> str:
         """Overwrite the per-thread session-memory file from the snapshot."""
         try:
+            snapshot = checkpoint.get("mem_snapshot") or ""
             await asyncio.to_thread(
-                restore_mem_file,
-                self.ness_dir,
+                self.memory_store.write_session_raw,
                 self.thread_id,
-                checkpoint.get("mem_snapshot") or "",
+                snapshot,
             )
         except Exception as exc:
             return f"Session memory restore failed: {exc}"

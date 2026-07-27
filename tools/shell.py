@@ -29,8 +29,8 @@ _job_processes: dict[str, subprocess.Popen[bytes]] = {}
 
 @tool
 def shell(
-    action: Literal["run", "start", "jobs", "read", "kill"],
     command: str = "",
+    action: Literal["run", "start", "jobs", "read", "kill"] = "run",
     timeout: int = 30,
     max_output_chars: int = DEFAULT_OUTPUT_CHARS,
     name: str = "",
@@ -39,10 +39,13 @@ def shell(
     tail_chars: int = DEFAULT_OUTPUT_CHARS,
     force: bool = False,
 ) -> str:
-    """Execute development operations via the system shell.
+    """Execute a bash command in the project root (cwd is already the project root;
+    do not cd to invented paths like /workspace).
+
+    Defaults to a synchronous foreground run when `action` is omitted.
 
     Supported Actions & Required Parameters:
-      - 'run': Execute a synchronous foreground command.
+      - 'run' (default): Execute a synchronous foreground command.
         -> Required: `command`
         -> Optional: `timeout`, `max_output_chars`
       - 'start': Run a persistent background process (e.g. dev servers, worker daemons).
@@ -67,7 +70,7 @@ def shell(
         return _shell_read(job_id, tail_chars=tail_chars)
     if action == "kill":
         return _shell_kill(job_id, force=force)
-    
+
     return _format_result(
         "error",
         duration_ms=0,

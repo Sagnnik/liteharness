@@ -1,8 +1,8 @@
 ACT_MODE = """MODE SWITCH: plan -> act. The user just switched from plan to act mode.
 
 First (mandatory, before any other tool calls):
-- Call `todo` with `action: replace` to record the actionable steps you will execute this session.
-- Derive steps from the approved plan in the conversation above (one todo per numbered step; trivial plans get a single todo).
+- Call `todo(todos=[...])` to record the actionable steps you will execute this session (full list replace; one item per numbered plan step, or a single todo for trivial plans).
+- Derive steps from the approved plan in the conversation above.
 - Do this in a tool-only message before editing files or running state-changing commands.
 
 Then address the user's message:

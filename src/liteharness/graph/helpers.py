@@ -4,24 +4,9 @@ from typing import Any
 from langchain_core.messages import HumanMessage, BaseMessage
 from langchain_core.messages import ToolMessage, AIMessage
 from liteharness.compaction import resolve_token_count
+from liteharness.context.overlay import wrap_system_reminder
 from liteharness.tools import ToolRegistry
 from liteharness.graph.state import AgentState
-
-def _message_text(message) -> str:
-    """Return the text content of a message, joining text blocks if content is a list."""
-    if message is None:
-        return ""
-    content = message.content
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            # get only the text blocks not other media types included
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-        return "\n".join(p for p in parts if p)
-    return str(content)
 
 def _effective_conversation(messages, state) -> list[BaseMessage]:
     """
@@ -38,16 +23,18 @@ def _effective_conversation(messages, state) -> list[BaseMessage]:
 def _with_working_state_tail(messages, overlay) -> list[BaseMessage]:
     """Inject L3 working state ephemerally for the model API call (never persisted to state).
 
-    Fresh user turn (last message is human): append <system-reminder> to that message so
-    mode/todos/git context accompanies the user's request (matches L0).
-
-    Tool loop (last message is AI or tool): append a separate tail HumanMessage so the
-    user's text stays byte-stable for prefix caching while fresh overlay lands after results.
+    Invariant: the ``<system-reminder>`` tail is call-ephemeral only — it must
+    never be written into ``AgentState.messages``. Fresh user turn (last message
+    is human): append the reminder onto that message. Tool loop (last message is
+    AI or tool): append a separate tail HumanMessage so the user's text stays
+    byte-stable for prefix caching.
     """
-
     if not overlay.strip():
         return list(messages)
-    block = f"\n\n<system-reminder>\n{overlay.strip()}\n</system-reminder>"
+    reminder = wrap_system_reminder(overlay)
+    if not reminder:
+        return list(messages)
+    block = f"\n\n{reminder}"
     result = list(messages)
     if result and result[-1].type == "human":
         last = result[-1]
@@ -59,7 +46,6 @@ def _with_working_state_tail(messages, overlay) -> list[BaseMessage]:
                 content=[*last.content, {"type": "text", "text": block.lstrip()}]
             )
             return result
-    reminder = f"<system-reminder>\n{overlay.strip()}\n</system-reminder>"
     return result + [HumanMessage(content=reminder)]
 
 def _needs_approval(name, args, options, perms, tools_reg: ToolRegistry) -> bool:

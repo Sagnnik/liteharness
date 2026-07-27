@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -11,9 +10,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from liteharness.compaction import (
+    CompactionResult,
+    ContextPressure,
     apply_force_floor,
     calculate_context_pressure,
     compaction_label,
+    format_compaction_overlay_note,
 )
 from liteharness.graph.builder import build_graph
 from liteharness.graph.helpers import _effective_conversation
@@ -32,6 +34,7 @@ from liteharness.tracing.semconv import (
 )
 from liteharness.types import (
     ApprovalHandler,
+    ContextPreview,
     InterruptHandler,
     PlanTurnHandler,
     RunResult,
@@ -44,11 +47,6 @@ _active_session: ContextVar["Session | None"] = ContextVar(
 )
 
 PLAN_COMPACTION_CHECKPOINT_RATIO = 0.75
-
-# [Image #N] placeholders that the TUI inserts when the user pastes an
-# image into the input buffer. They are stripped from both the model-facing
-# text and the persisted transcript text before the turn payload is built.
-_IMAGE_PLACEHOLDER_RE = re.compile(r"\[Image #\d+\]")
 
 
 def _messages_from_event(event: dict) -> list[Any]:
@@ -86,7 +84,7 @@ def _extract_text_from_blocks(content: Any) -> str:
 def _ensure_config_event_bridges(cfg: Any) -> None:
     """
     It installs one-time wrapper callbacks on the config object that bridge async events
-    (approval requests, questions, usage) into the active Session's event queue.
+    (approval requests, questions, usage, compaction) into the active Session's event queue.
     """
     # skip if already installed
     if getattr(cfg, "_event_bridges_installed", False):
@@ -139,8 +137,15 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
                 },
             )
 
-    # store the usage bridge so the agent node can use this
+    # Compaction channel: the agent node reports when it actually compacted
+    # the conversation this turn (tool_outputs or summary).
+    def _compaction(data: dict[str, Any]) -> None:
+        sess = _active_session.get()
+        if sess is not None:
+            sess._add_queue("compaction", dict(data))
+
     cfg._usage_bridge = _usage
+    cfg._compaction_bridge = _compaction
     # mark as installed to avoid re-wrappings
     cfg._event_bridges_installed = True
 
@@ -333,23 +338,6 @@ class Session:
         """Whether :meth:`cancel` was requested for the active turn."""
         return self._cancel_token.is_set()
 
-    def is_subagent_active(self) -> bool:
-        """Whether a child subagent run is currently in flight.
-
-        Polled lazily from :mod:`liteharness.tools.subagents` so the SDK stays
-        decoupled from the tools package at import time. Returns ``False`` if
-        the signal is unavailable, preserving today's no-suppression behavior
-        on pure-SDK usage without subagents.
-        """
-        try:
-            from liteharness.tools.subagents import subagent_runs_active
-        except ImportError:
-            return False
-        try:
-            return subagent_runs_active() > 0
-        except Exception:
-            return False
-
     def set_mode(self, mode: str) -> None:
         """Switch the session to *mode* (``"act"`` or ``"plan"``).
 
@@ -378,8 +366,24 @@ class Session:
         return self.agent_mode
 
     def active_skills(self, names: Sequence[str]) -> None:
-        """Sets the active skills for the session."""
+        """Replace the pending skill list for the next turn (replace-all)."""
         self._pending_skills = list(names)
+
+    def stage_skills(self, names: Sequence[str]) -> None:
+        """Append skill names to the pending list.
+
+        Used by CLI ``/skill`` so multiple stages before one turn accumulate.
+        Consumed by :meth:`_build_run_payload` when ``active_skills=`` is omitted.
+        """
+        pending = list(self._pending_skills)
+        seen = set(pending)
+        for name in names:
+            n = str(name).strip()
+            if not n or n in seen:
+                continue
+            pending.append(n)
+            seen.add(n)
+        self._pending_skills = pending
 
     def request_compact(self) -> None:
         """Requests a compaction of the session."""
@@ -407,46 +411,176 @@ class Session:
             tracing=self._cfg.tracing,
         )
 
-    async def aget_todos(self) -> list[dict[str, Any]]:
-        """Gets the todos from the current graph state."""
-        cfg = {"configurable": {"thread_id": self.thread_id}}
-        try:
-            snap = await self.app.aget_state(cfg)
-        except Exception:
-            return []
-        return list((snap.values or {}).get("todos", []))
+    async def get_state(self) -> dict[str, Any]:
+        """Return the current graph state values for this thread.
 
-    async def refresh_context_snapshot(self) -> dict[str, Any]:
-        """Refreshes the Session's token usage metrics by inspecting the current graph state."""
-        # fetch the current graph state
+        Thin wrapper over ``app.aget_state`` so apps can read todos, messages,
+        and other state.
+        Returns ``{}`` when the checkpointer has no snapshot yet.
+        """
         cfg = {"configurable": {"thread_id": self.thread_id}}
         try:
             snap = await self.app.aget_state(cfg)
         except Exception:
             return {}
-        
-        # convert the snapshot to a dictionary
-        state = dict(snap.values or {})
-        msgs = list(state.get("messages", []))
-        if not msgs:
+        return dict(snap.values or {})
+
+    async def get_messages(self) -> list[Any]:
+        """Return the message list from the current graph state."""
+        state = await self.get_state()
+        return list(state.get("messages", []))
+
+    async def aget_todos(self) -> list[dict[str, Any]]:
+        """Gets the todos from the current graph state."""
+        state = await self.get_state()
+        return list(state.get("todos", []))
+
+    async def preview_context(self, *, mode: str | None = None) -> ContextPreview:
+        """Preview the L0–L2 system message and prospective L3 overlay.
+
+        Assembles the same stable prefix the next turn would send, plus the
+        full L3 overlay for a fresh user turn (all sections joined). Does
+        **not** run the model or the compaction summarizer — compaction
+        pressure is estimated cheaply for the L3 note only.
+
+        Args:
+            mode: Optional mode override for this preview only (``\"act\"`` or
+                ``\"plan\"``). Defaults to the session's current mode.
+        """
+        cfg = self._cfg
+        options = cfg.options
+        tools_reg = cfg.tool_registry
+        tools_reg.sync()
+
+        memory = cfg.memory_store
+        skills_loader = cfg.skill_loader
+        all_skills = skills_loader.load()
+        user_mem = memory.load_user() if not memory.disabled else ""
+        proj_mem = memory.load_project() if not memory.disabled else ""
+        skill_catalog = skills_loader.render_catalog(all_skills)
+
+        git_flag = self.git_available
+        if git_flag is None:
+            from liteharness.tools.fs import is_git_repo
+
+            root = options.project_root or Path.cwd()
+            git_flag = is_git_repo(str(root))
+
+        system_message = cfg.prompts.build_stable_prefix(
+            tools_reg.active_tools,
+            user_memory=user_mem,
+            project_memory=proj_mem,
+            skill_catalog=skill_catalog,
+            git_available=bool(git_flag),
+            metadata=self.metadata,
+            tool_catalog_groups=[
+                (label, frozenset(group))
+                for label, group in tools_reg.tool_catalog_groups()
+            ],
+            deferred_mcp=tools_reg.deferred_mcp_summary(),
+        )
+
+        state, pressure, conversation = await self._context_pressure_snapshot()
+        if not conversation:
+            conversation = list(_effective_conversation(state.get("messages", []), state))
+
+        model_name = getattr(cfg.model, "model", "") or getattr(cfg.model, "model_name", "")
+        compaction_note = ""
+        if pressure is not None:
+            compaction_note = format_compaction_overlay_note(
+                CompactionResult(
+                    messages=conversation,
+                    compacted=False,
+                    token_count=pressure.token_count,
+                    action=pressure.action,
+                    kept_recent=pressure.keep_recent,
+                    pressure_ratio=pressure.ratio,
+                    usable_budget=pressure.usable_budget,
+                ),
+                options=options,
+                had_stored_compaction=bool(state.get("compacted_messages")),
+                model_name=model_name,
+            )
+
+        preview_mode = (mode or self.agent_mode or "act").lower()
+        mode_switch = ""
+        if self._pending_act_checkpoint and preview_mode == "act":
+            mode_switch = "plan->act"
+
+        cwd = options.project_root or Path.cwd()
+        git_snapshot = ""
+        if git_flag:
+            from liteharness.workspace.git_context import git_worktree_summary
+
+            git_snapshot = await asyncio.to_thread(git_worktree_summary, cwd)
+
+        from liteharness.context.overlay import OverlayContext, wrap_system_reminder
+
+        overlay_sections: dict[str, str] = {}
+        overlay_provider = cfg.overlay
+        if overlay_provider is not None:
+            overlay_ctx = OverlayContext(
+                thread_id=self.thread_id,
+                agent_mode=preview_mode,
+                messages=conversation,
+                todos=list(state.get("todos", [])),
+                session_memory=(
+                    memory.load_session(self.thread_id) if not memory.disabled else ""
+                ),
+                compaction_note=compaction_note,
+                mode_switch=mode_switch,
+                metadata=self.metadata,
+                git_snapshot=git_snapshot,
+                git_available=bool(git_flag),
+                activate_skills=list(self._pending_skills),
+                loaded_skills=list(state.get("loaded_skills", [])),
+            )
+            overlay_sections = {
+                name: text
+                for name, text in (overlay_provider.sections(state, overlay_ctx) or {}).items()
+                if text and str(text).strip()
+            }
+
+        overlay = "\n\n".join(overlay_sections.values())
+        return ContextPreview(
+            system_message=system_message,
+            overlay=overlay,
+            overlay_sections=dict(overlay_sections),
+            overlay_reminder=wrap_system_reminder(overlay),
+            agent_mode=preview_mode,
+        )
+
+    async def _context_pressure_snapshot(
+        self,
+    ) -> tuple[dict[str, Any], ContextPressure | None, list[Any]]:
+        """Load graph state and compute context pressure in one pass.
+
+        Updates :attr:`context_used` / :attr:`context_total` when messages are
+        present. Returns ``(state, None, [])`` when there is no conversation yet.
+        """
+        state = await self.get_state()
+        messages = list(state.get("messages", []))
+        if not messages:
             self.context_used = 0
-            return state
-        
-        # convert the messages to a conversation and resolve the model name
-        conv = _effective_conversation(msgs, state)
+            return state, None, []
+
+        conversation = list(_effective_conversation(messages, state))
         model_name = getattr(self._cfg.model, "model", "") or getattr(
             self._cfg.model, "model_name", ""
         )
-        # calculate the context pressure
         pressure = calculate_context_pressure(
-            conv,
+            conversation,
             known_input_tokens=state.get("last_input_tokens") or None,
             model_name=model_name,
             options=self._cfg.options,
         )
-        # update the context used and total
         self.context_used = pressure.token_count
         self.context_total = pressure.usable_budget
+        return state, pressure, conversation
+
+    async def refresh_context_snapshot(self) -> dict[str, Any]:
+        """Refresh token-usage metrics from the current graph state."""
+        state, _pressure, _conversation = await self._context_pressure_snapshot()
         return state
 
     def _user_message(
@@ -454,15 +588,15 @@ class Session:
     ) -> tuple[HumanMessage, str]:
         """Build a HumanMessage and return ``(message, cleaned_text)``.
 
-        ``[Image #N]`` placeholders (TUI-inserted image markers) are stripped
-        from both the model text and the returned text so callers can persist
-        the clean transcript. When ``self._vision is False`` and images were
-        supplied, the blocks are dropped to text-only and a ``warning``
-        SessionEvent is queued for the caller. When ``None`` (default), the
-        caller-built content shape is forwarded verbatim — the SDK is
-        shape-blind and trusts the adapter's gating decision.
+        Adapter-owned cleanup (e.g. TUI ``[Image #N]`` placeholders) should
+        happen before calling :meth:`run` / :meth:`stream`. When
+        ``self._vision is False`` and images were supplied, the blocks are
+        dropped to text-only and a ``warning`` SessionEvent is queued for the
+        caller. When ``None`` (default), the caller-built content shape is
+        forwarded verbatim — the SDK is shape-blind and trusts the adapter's
+        gating decision.
         """
-        cleaned = _IMAGE_PLACEHOLDER_RE.sub("", message or "").strip()
+        cleaned = (message or "").strip()
         if not images:
             return HumanMessage(content=cleaned), cleaned
         if self._vision is False:
@@ -483,52 +617,25 @@ class Session:
         )
 
     async def _maybe_checkpoint_before_act(self) -> None:
+        """Pre-execution compaction checkpoint when switching plan→act.
+
+        Measures context pressure and either force-compacts (hard threshold)
+        or emits an advisory ``compaction`` SessionEvent so the caller can
+        surface a notice / offer ``/compact`` before execution.
         """
-        Pre-execution compaction checkpoint when switching plan→act.
-        It measures context pressure and either auto-compacts (hard threshold), 
-        asks the user via callback, or emits an event so the frontend can decide.
-        """
-        # fetch the current state of the graph
-        try:
-            snapshot = await self.app.aget_state(
-                {"configurable": {"thread_id": self.thread_id}}
-            )
-        except Exception:
+        _state, pressure, conversation = await self._context_pressure_snapshot()
+        if pressure is None or pressure.ratio < PLAN_COMPACTION_CHECKPOINT_RATIO:
             return
 
-        # convert the snapshot to a dictionary
-        state = dict(snapshot.values or {})
-        messages = list(state.get("messages", []))
-        if not messages:
-            return
-        # convert the messages to a conversation
-        conversation = _effective_conversation(messages, state)
-        model_name = getattr(self._cfg.model, "model", "") or getattr(
-            self._cfg.model, "model_name", ""
-        )
-        # calculate the context pressure
-        pressure = calculate_context_pressure(
-            conversation,
-            known_input_tokens=state.get("last_input_tokens") or None,
-            model_name=model_name,
-            options=self._cfg.options,
-        )
-        if pressure.ratio < PLAN_COMPACTION_CHECKPOINT_RATIO:
-            return
-
-        # count the number of non-system messages
         rest_count = sum(1 for message in conversation if message.type != "system")
-        # apply the force floor
         action, keep_recent = apply_force_floor(
             pressure.action, pressure.keep_recent, rest_count
         )
-        # create a string with the context pressure information
         info = (
             f"Context ~{pressure.token_count:,} tokens of {pressure.usable_budget:,} budget "
             f"({pressure.ratio:.0%}). Compaction if run: {compaction_label(action, keep_recent)}."
         )
 
-        # if the hard threshold is reached then force a compaction
         if pressure.hard_threshold_reached:
             self._force_compact = True
             self._add_queue(
@@ -540,12 +647,15 @@ class Session:
                 },
             )
             return
-        # Soft checkpoint: no interactive ask — emit a passive notice so the
-        # caller can surface "context is filling up" and the user can run
-        # /compact before execution if they want.
+        # Soft checkpoint: advisory notice only (no interactive prompt).
         self._add_queue(
             "compaction",
-            {"reason": "pre_act_checkpoint", "info": info, "forced": False, "ask": True},
+            {
+                "reason": "pre_act_checkpoint",
+                "info": info,
+                "forced": False,
+                "advisory": True,
+            },
         )
 
     async def _build_run_payload(
@@ -558,8 +668,7 @@ class Session:
         """Build the turn payload and run config.
 
         Takes a *pre-built* ``user_message`` (constructed by
-        :meth:`_user_message` and stripped of image placeholders by the caller
-        in :meth:`_iter_events`). Any pending bootstrap messages are prepended
+        :meth:`_user_message`). Any pending bootstrap messages are prepended
         to the payload's ``messages`` and consumed once here.
         """
         skills = list(active_skills if active_skills is not None else self._pending_skills)
@@ -576,7 +685,7 @@ class Session:
             "activate_skills": skills,
             "mode_switch": mode_switch,
         }
-        cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 75}
+        cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": self._cfg.options.recursion_limit}
         return payload, cfg
 
     def _dispatch_stream_event(
@@ -863,7 +972,7 @@ class Session:
                 # base64 payloads aren't re-sent. The new turn's user_message
                 # (carrying this turn's images, unstripped) is built above and
                 # not touched here.
-                cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": 75}
+                cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": self._cfg.options.recursion_limit}
                 await self._strip_prior_image_blocks(cfg)
 
                 try:
@@ -887,11 +996,6 @@ class Session:
                     async for ev in self.app.astream_events(
                         payload, config=cfg, version="v2"
                     ):
-                        # subagent suppression: when child runs are pending,
-                        # drop all events so the caller's spinner isn't fed
-                        # spurious assistant/tool stream from the child branch.
-                        if self.is_subagent_active():
-                            continue
                         # first yield queued events like usage, compact, etc.
                         for queued in self._drain_queue():
                             yield queued, assistant_text

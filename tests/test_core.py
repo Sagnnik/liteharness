@@ -225,7 +225,8 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
         first_seen = [m for m in model.seen_messages[0] if m.type == "human"]
         first_overlay = first_seen[-1].content
         self.assertIn("MODE SWITCH", first_overlay)
-        self.assertIn("action: replace", first_overlay)
+        self.assertIn("todo(todos=[...])", first_overlay)
+        self.assertNotIn("action: replace", first_overlay)
         self.assertIn("do not blindly execute", first_overlay)
 
         # second turn on the same thread, no mode_switch in the payload
@@ -316,10 +317,10 @@ class CoreRuntimeTests(unittest.IsolatedAsyncioTestCase):
             {
                 "name": "todo",
                 "args": {
-                    "action": "insert",
-                    "index": 1,
-                    "content": "New task",
-                    "status": "pending",
+                    "todos": [
+                        {"content": "New task", "status": "pending"},
+                        {"id": "1", "content": "Existing", "status": "pending"},
+                    ]
                 },
                 "id": "call-1",
             }

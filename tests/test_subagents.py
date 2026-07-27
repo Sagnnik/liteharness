@@ -88,7 +88,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.write_agent("explore", ["read"])
         set_subagent_runtime(ConcurrentEchoModel())
         self.assertEqual(subagent_runs_active(), 0)
-        await spawn_subagent.ainvoke({"name": "explore", "prompt": "inspect"})
+        await spawn_subagent.ainvoke({"tasks": [{"name": "explore", "prompt": "inspect"}]})
         self.assertEqual(subagent_runs_active(), 0)
 
     async def test_spawn_subagent_rejects_write_capable_batch_before_running(self):
@@ -121,7 +121,7 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
             {"tasks": [{"name": "stale", "prompt": "inspect"}]}
         )
 
-        self.assertIn("status=failed", result)
+        self.assertIn("Error: subagent stale failed:", result)
         self.assertIn("unknown tools for subagent stale: bash", result)
         self.assertEqual(model.calls, 0)
 
@@ -130,7 +130,9 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
-        result = await spawn_subagent.ainvoke({"name": "exec", "prompt": "change code"})
+        result = await spawn_subagent.ainvoke(
+            {"tasks": [{"name": "exec", "prompt": "change code"}]}
+        )
 
         self.assertIn("unsafe tools for subagent exec: write", result)
         self.assertEqual(model.calls, 0)
@@ -140,7 +142,9 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         model = ConcurrentEchoModel(text="single ok")
         set_subagent_runtime(model)
 
-        result = await spawn_subagent.ainvoke({"name": "explore", "prompt": "inspect"})
+        result = await spawn_subagent.ainvoke(
+            {"tasks": [{"name": "explore", "prompt": "inspect"}]}
+        )
 
         self.assertIn("single ok", result)
         self.assertEqual(model.calls, 1)
@@ -158,25 +162,16 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertIn("status=failed", result)
-        self.assertIn("name=slow status=timeout", result)
-        self.assertIn("error=timed out after 1s", result)
+        self.assertIn("Error: subagent slow timeout:", result)
+        self.assertIn("timed out after 1s", result)
 
-    async def test_spawn_subagent_rejects_mixed_single_and_batch_arguments(self):
+    async def test_spawn_subagent_requires_tasks(self):
         self.write_agent("explore", ["read"])
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
-        result = await spawn_subagent.ainvoke(
-            {
-                "name": "explore",
-                "prompt": "inspect",
-                "tasks": [{"name": "explore", "prompt": "inspect"}],
-            }
-        )
-
-        self.assertIn("status=error", result)
-        self.assertIn("provide either tasks or name/prompt, not both", result)
+        with self.assertRaises(Exception):
+            await spawn_subagent.ainvoke({})
         self.assertEqual(model.calls, 0)
 
     async def test_spawn_subagent_rejects_nested_subagent_tool(self):
@@ -184,7 +179,9 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
-        result = await spawn_subagent.ainvoke({"name": "nested", "prompt": "inspect"})
+        result = await spawn_subagent.ainvoke(
+            {"tasks": [{"name": "nested", "prompt": "inspect"}]}
+        )
 
         self.assertIn("unsafe tools for subagent nested: spawn_subagent", result)
         self.assertEqual(model.calls, 0)
@@ -241,7 +238,9 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         model = ConcurrentEchoModel()
         set_subagent_runtime(model)
 
-        result = await spawn_subagent.ainvoke({"name": "missing", "prompt": "inspect"})
+        result = await spawn_subagent.ainvoke(
+            {"tasks": [{"name": "missing", "prompt": "inspect"}]}
+        )
 
         self.assertIn("unknown agent 'missing'", result)
         self.assertEqual(model.calls, 0)

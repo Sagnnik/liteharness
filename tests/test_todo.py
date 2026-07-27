@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import unittest
 import uuid
@@ -37,92 +39,32 @@ class TodoToolTests(unittest.TestCase):
             ],
         )
 
-    def test_insert_uses_one_based_index(self):
-        set_thread_todos(
-            self.thread_id,
-            [
-                {"id": "1", "content": "First", "status": "pending"},
-                {"id": "2", "content": "Third", "status": "pending"},
-            ],
+    def test_replace_updates_status_in_full_list(self):
+        todo.invoke(
+            {
+                "todos": [
+                    {"id": "1", "content": "First", "status": "pending"},
+                    {"id": "2", "content": "Second", "status": "pending"},
+                ]
+            }
         )
-
         result = todo.invoke(
-            {"action": "insert", "index": 2, "content": "Second", "status": "in_progress"}
+            {
+                "todos": [
+                    {"id": "2", "content": "Second", "status": "completed"},
+                    {"id": "1", "content": "First", "status": "in_progress"},
+                ]
+            }
         )
-
-        self.assertEqual(result, "Inserted todo 3 at index 2")
+        self.assertEqual(result, "Updated 2 todos")
         self.assertEqual(
-            [todo["content"] for todo in get_thread_todos(self.thread_id)],
-            ["First", "Second", "Third"],
-        )
-        self.assertEqual(get_thread_todos(self.thread_id)[1]["status"], "in_progress")
-
-    def test_insert_without_index_appends_and_len_plus_one_appends(self):
-        set_thread_todos(self.thread_id, [{"id": "1", "content": "First", "status": "pending"}])
-
-        self.assertEqual(
-            todo.invoke({"action": "insert", "content": "Second"}),
-            "Inserted todo 2 at index 2",
-        )
-        self.assertEqual(
-            todo.invoke({"action": "insert", "index": 3, "content": "Third"}),
-            "Inserted todo 3 at index 3",
+            [(t["id"], t["status"]) for t in get_thread_todos(self.thread_id)],
+            [("2", "completed"), ("1", "in_progress")],
         )
 
-        self.assertEqual(
-            [todo["content"] for todo in get_thread_todos(self.thread_id)],
-            ["First", "Second", "Third"],
-        )
-
-    def test_invalid_index_leaves_todos_unchanged(self):
-        original = [{"id": "1", "content": "Keep me", "status": "pending"}]
-        set_thread_todos(self.thread_id, original)
-
-        result = todo.invoke({"action": "insert", "index": 3, "content": "Too far"})
-
-        self.assertEqual(result, "Error: index must be between 1 and 2")
-        self.assertEqual(get_thread_todos(self.thread_id), original)
-
-    def test_update_status_and_move_by_one_based_index(self):
-        set_thread_todos(
-            self.thread_id,
-            [
-                {"id": "1", "content": "First", "status": "pending"},
-                {"id": "2", "content": "Second", "status": "pending"},
-                {"id": "3", "content": "Third", "status": "pending"},
-            ],
-        )
-
-        result = todo.invoke({"action": "update", "id": "3", "status": "completed", "index": 1})
-
-        self.assertEqual(result, "Updated todo 3")
-        self.assertEqual(
-            [(todo["id"], todo["status"]) for todo in get_thread_todos(self.thread_id)],
-            [("3", "completed"), ("1", "pending"), ("2", "pending")],
-        )
-
-    def test_invalid_status_leaves_todos_unchanged(self):
-        original = [{"id": "1", "content": "Keep status", "status": "pending"}]
-        set_thread_todos(self.thread_id, original)
-
-        result = todo.invoke({"action": "update", "id": "1", "status": "blocked"})
-
-        self.assertEqual(result, "Error: todo 1 has invalid status blocked")
-        self.assertEqual(get_thread_todos(self.thread_id), original)
-
-    def test_delete_removes_by_id(self):
-        set_thread_todos(
-            self.thread_id,
-            [
-                {"id": "1", "content": "Keep", "status": "pending"},
-                {"id": "2", "content": "Delete", "status": "pending"},
-            ],
-        )
-
-        result = todo.invoke({"action": "delete", "id": "2"})
-
-        self.assertEqual(result, "Deleted todo 2")
-        self.assertEqual(get_thread_todos(self.thread_id), [{"id": "1", "content": "Keep", "status": "pending"}])
+    def test_invalid_status_rejected_by_schema(self):
+        with self.assertRaises(Exception):
+            todo.invoke({"todos": [{"content": "x", "status": "blocked"}]})
 
     def test_get_thread_todos_returns_copies(self):
         set_thread_todos(self.thread_id, [{"id": "1", "content": "Stable", "status": "pending"}])
@@ -131,6 +73,15 @@ class TodoToolTests(unittest.TestCase):
         todos[0]["status"] = "completed"
 
         self.assertEqual(get_thread_todos(self.thread_id)[0]["status"], "pending")
+
+    def test_schema_requires_todos(self):
+        schema = todo.args_schema.model_json_schema()
+        self.assertIn("todos", schema.get("required", []))
+        self.assertNotIn("action", schema.get("properties", {}))
+
+    def test_missing_todos_fails_schema(self):
+        with self.assertRaises(Exception):
+            todo.invoke({})
 
 
 class TodoGraphTests(unittest.IsolatedAsyncioTestCase):
@@ -155,10 +106,10 @@ class TodoGraphTests(unittest.IsolatedAsyncioTestCase):
                             {
                                 "name": "todo",
                                 "args": {
-                                    "action": "insert",
-                                    "index": 1,
-                                    "content": "Inserted first",
-                                    "status": "pending",
+                                    "todos": [
+                                        {"id": "2", "content": "Inserted first", "status": "pending"},
+                                        {"id": "1", "content": "Existing", "status": "pending"},
+                                    ]
                                 },
                                 "id": "call-1",
                             }
@@ -185,7 +136,6 @@ class TodoGraphTests(unittest.IsolatedAsyncioTestCase):
                 {"id": "1", "content": "Existing", "status": "pending"},
             ],
         )
-        # tool loop: rendered todos changed (new pending todo) -> delta includes TODOS
         working_state_tail = model.seen_messages[1][-1]
         self.assertEqual(working_state_tail.type, "human")
         self.assertIn("<system-reminder>", working_state_tail.content)

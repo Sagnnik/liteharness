@@ -16,6 +16,7 @@ import yaml
 from langchain_core.messages import HumanMessage
 
 from liteharness.tools.discover import TOOL_COUNT_WARN_THRESHOLD
+from liteharness.workspace import setup_ness_structure
 from liteharness.workspace.project_context import get_project_context
 from liteharness_cli.chat_model import (
     active_model_name,
@@ -110,15 +111,14 @@ async def cmd_skill(app: "TuiApp", args: str) -> None:
     if name not in skills:
         render.render_error(f"Unknown skill: {name}  (/skill to list)")
         return
-    if name not in app.pending_skills:
-        app.pending_skills.append(name)
+    app.coding.stage_skills([name])
     render.render_notice(f"Skill '{name}' will load on your next message.", title="skill")
 
 
 async def cmd_init(app: "TuiApp", args: str) -> None:
     force = _flag(args, "force", "--force")
     memory = app.coding.memory_store
-    created = memory.setup_structure()
+    created = setup_ness_structure(app.coding.ness_dir)
     if created:
         render.render_notice(
             f"Initialized .ness/ ({', '.join(created)})",

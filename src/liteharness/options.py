@@ -24,6 +24,8 @@ class NessAgentOptions:
     # pending tool calls, so the model does not silently resume the abandoned
     # request next turn
     interruption_marker: str = ("… [turn interrupted by user] ")
+    # LangGraph recursion_limit for Session.run / Session.stream turns.
+    recursion_limit: int = 75
 
 
 @dataclass
@@ -41,7 +43,7 @@ class ModeConfig:
     plans_dir: Path | None = None
     plan_mode_template: str | None = None
     act_mode_template: str | None = None
-    reject_state_changing_tools_in_plan: bool = True
+    plan_mode_readonly: bool = True
 
 
 @dataclass

@@ -217,7 +217,7 @@ def is_destructive_tool_call(name: str, args: dict[str, Any]) -> bool:
 
 
 def _shell_action(args: dict[str, Any]) -> str:
-    return str(args.get("action") or "").strip().lower()
+    return str(args.get("action") or "run").strip().lower()
 
 
 def _dedupe_tools(tools: Iterable[Any]) -> list[Any]:

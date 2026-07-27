@@ -65,55 +65,14 @@ TOOL_CATALOG_GROUPS = (
 )
 FULL_TOOL_SET = set(SMALL_ALWAYS_ON) | set(TIER_L1) | set(TIER_DISCOVERY) | set(TIER_L3_ADVANCED)
 
-# Module-level MCP catalog used by search_tools / add_tools until a session
-# ToolRegistry is the sole source of truth (Phase B).
-ACTIVE_MCP_TOOLS: set[str] = set()
-_MCP_CATALOG: dict[str, dict[str, Any]] = {}
-
-
-def mcp_catalog() -> dict[str, dict[str, Any]]:
-    return _MCP_CATALOG
-
-
-def set_mcp_catalog(catalog: dict[str, dict[str, Any]]) -> None:
-    _MCP_CATALOG.clear()
-    _MCP_CATALOG.update(catalog or {})
-
-
-def activate_mcp_tools(names: Iterable[str]) -> tuple[list[str], list[str]]:
-    added: list[str] = []
-    unknown: list[str] = []
-    for name in names:
-        if name not in TOOL_MAP or not name.startswith("mcp__"):
-            unknown.append(name)
-            continue
-        if name not in ACTIVE_MCP_TOOLS:
-            ACTIVE_MCP_TOOLS.add(name)
-            added.append(name)
-    return added, unknown
-
-
-def tool_names_for_session() -> list[str]:
-    return list(FULL_TOOL_SET | set(ACTIVE_MCP_TOOLS))
-
-
-def register_dynamic_tools(tools: Iterable[BaseTool]) -> None:
-    """Register dynamically loaded tools (e.g. MCP) into the module-level map.
-
-    Lets the model-facing ``search_tools`` / ``add_tools`` discover tools —
-    which run on these module globals until Phase B — find and activate
-    dynamically loaded tools. Session ``ToolRegistry`` instances are wired
-    separately via :meth:`ToolRegistry.register_dynamic`.
-    """
-    for t in tools:
-        if t.name not in TOOL_MAP:
-            ALL_TOOLS.append(t)
-        TOOL_MAP[t.name] = t
-    TOOL_NAMES[:] = list(TOOL_MAP)
-
 
 class ToolRegistry:
-    """Bound tool set with optional MCP hot-rebind."""
+    """Bound tool set with optional MCP hot-rebind.
+
+    One registry is shared across all sessions on a :class:`~liteharness.agent.NessAgent`
+    — that is intentional. Apps that need a different toolset should construct a
+    new agent (and thus a new registry).
+    """
 
     def __init__(
         self, 
@@ -144,17 +103,13 @@ class ToolRegistry:
         if self._include is not None:
             active = [t for t in self._all_tools if t.name in self._include]
         else:
-            # Built-in full set plus this session's activated MCP tools. The
-            # module-level ACTIVE_MCP_TOOLS bridge keeps the model-facing
-            # add_tools discover path (which still runs on module globals —
-            # see discover.py) effective for this session until Phase B makes
-            # the session registry the sole source of truth.
-            wanted = FULL_TOOL_SET | self.active_mcp_tools | ACTIVE_MCP_TOOLS
+            # Built-in full set plus this registry's activated MCP tools.
+            wanted = FULL_TOOL_SET | self.active_mcp_tools
             active = [t for t in self._all_tools if t.name in wanted]
         active = self._dedupe(active)
         self.runtime["active_tools"] = active
         self.runtime["tool_map"] = {t.name: t for t in active}
-        self.runtime["tool_names"] = list(self.runtime["tool_map"])
+        self.runtime["tool_names"] = sorted(self.runtime["tool_map"])
         self.runtime["generation"] = self._generation
 
     @property
@@ -171,7 +126,7 @@ class ToolRegistry:
     def tool_names(self) -> list[str]:
         """Sorted list of active tool names (lazy-synced)."""
         self._sync()
-        return self.runtime["tool_names"]
+        return list(self.runtime["tool_names"])
 
     def bind_model(self, model: BaseChatModel) -> BaseChatModel:
         """Bind the currently active tools to *model* and return it.
@@ -200,6 +155,7 @@ class ToolRegistry:
         Each entry is ``(label, set_of_tool_names)``. Groups with no
         active tools are omitted.
         """
+        self._sync()
         groups = [
             (label, set(names) & set(self.runtime["tool_names"]))
             for label, names in TOOL_CATALOG_GROUPS
@@ -217,27 +173,50 @@ class ToolRegistry:
         self._mcp_catalog.update(catalog or {})
 
     def deferred_mcp_summary(self) -> str:
-        """Human-readable summary of MCP tools not yet activated."""
+        """List MCP servers with deferred tools.
+
+        Server lines + deferred count + description (or a short sample of
+        tool names). Full schemas stay deferred — models discover tools via
+        ``search_tools`` / ``add_tools``. Returns ``""`` when nothing is
+        deferred.
+        """
         if not self._mcp_catalog:
             return ""
-        lines = ["- Available MCP servers (use search_tools to find, add_tools to load):"]
+
+        _desc_max = 100
+        server_lines: list[str] = []
         for server in sorted(self._mcp_catalog):
             info = self._mcp_catalog[server]
-            count = sum(1 for e in info.get("tools", []) if e.get("name") not in self.active_mcp_tools)
-            if count == 0:
+            deferred = [
+                e
+                for e in info.get("tools", [])
+                if e.get("name") not in self.active_mcp_tools
+            ]
+            if not deferred:
                 continue
-            desc = str(info.get("description") or "").strip().replace("\n", " ")[:100]
-            lines.append(f"  - mcp__{server}__* ({count} tool(s)){': ' + desc if desc else ''}")
-        return "\n".join(lines[1:]) if len(lines) > 1 else ""
+            desc = str(info.get("description") or "").strip().replace("\n", " ")
+            if not desc:
+                sample = [str(e.get("tool") or "") for e in deferred][:4]
+                desc = ", ".join(t for t in sample if t)
+            if len(desc) > _desc_max:
+                desc = desc[:_desc_max].rstrip() + "..."
+            suffix = f": {desc}" if desc else ""
+            server_lines.append(
+                f"  - mcp__{server}__* ({len(deferred)} tool(s)){suffix}"
+            )
+
+        if not server_lines:
+            return ""
+        header = "- Available MCP servers (use search_tools to find, add_tools to load):"
+        return "\n".join([header, *server_lines])
 
     def register_dynamic(self, tools: Iterable[BaseTool]) -> None:
         """Register dynamically loaded tool instances (e.g. from MCP servers).
 
         New tools join the pool as *known but inactive* — activation is a
-        separate step (:meth:`activate_mcp`, or the model-facing add_tools
-        discover tool via the module-level bridge in ``_sync``), so startup
-        can register every MCP tool without binding them all into the
-        model's active set.
+        separate step (:meth:`activate_mcp`, or the model-facing ``add_tools``
+        discover tool), so startup can register every MCP tool without binding
+        them all into the model's active set.
         """
         for t in tools:
             if t.name not in self._tool_map:
@@ -271,26 +250,53 @@ class ToolRegistry:
 
         return added, unknown
 
+    def deactivate_mcp(self, names: Iterable[str]) -> tuple[list[str], list[str]]:
+        """Deactivate MCP tools by name (leave them registered for re-activation).
+
+        Returns ``(removed, unknown)`` — tools successfully deactivated and
+        names that were not active MCP tools on this registry.
+        """
+        removed, unknown = [], []
+        for name in names:
+            if name not in self.active_mcp_tools:
+                if name not in self._tool_map or not name.startswith("mcp__"):
+                    unknown.append(name)
+                continue
+            self.active_mcp_tools.discard(name)
+            if self._include is not None:
+                self._include.discard(name)
+            removed.append(name)
+
+        if removed:
+            self.bump_generation()
+
+        return removed, unknown
+
     def is_destructive(self, name: str, args: dict) -> bool:
         """Return ``True`` if a tool invocation may modify state."""
         if name == "shell":
-            return args.get("action") in {"run", "start", "kill"}
+            action = str(args.get("action") or "run").strip().lower()
+            return action in {"run", "start", "kill"}
         return name in DESTRUCTIVE_TOOLS or name.startswith("mcp__")
 
     def is_read_only(self, name: str, args: dict) -> bool:
         """Return ``True`` if a tool invocation is read-only."""
         if name == "shell":
-            return args.get("action") in {"jobs", "read"}
+            action = str(args.get("action") or "run").strip().lower()
+            return action in {"jobs", "read"}
         return name in READ_ONLY_TOOLS
 
     def _dedupe(self, tools):
         seen, out = set(), []
         for t in tools:
-            if t.name and t.name not in seen: seen.add(t.name)
+            if not t.name or t.name in seen:
+                continue
+            seen.add(t.name)
             out.append(t)
         return out
 
-def coding_tools(*, include: list[str] | None = None, mcp: bool = False) -> ToolRegistry:
+
+def coding_tools(*, include: list[str] | None = None) -> ToolRegistry:
     """Convenience factory for selecting a subset of SDK tools by name.
 
     Example::
@@ -303,6 +309,5 @@ def coding_tools(*, include: list[str] | None = None, mcp: bool = False) -> Tool
 
     Args:
         include: Tool names to include. When ``None``, all SDK tools are active.
-        mcp: Reserved for future MCP integration.
     """
     return ToolRegistry(LOCAL_TOOLS, include=include)

@@ -10,10 +10,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
 from liteharness import NessAgent, PromptLayers, PromptLayersConfig
-from liteharness.compaction import CompactionResult, apply_force_floor
+from liteharness.compaction import CompactionResult, apply_force_floor, summarize_history
 from liteharness.context.layers import TaskPrompts
 from liteharness.graph.nodes import make_nodes
-from liteharness.options import NessAgentOptions
+from liteharness.memory import MemoryStore
+from liteharness.options import MemoryConfig, NessAgentOptions
 from liteharness.persistence import ThreadStore
 from liteharness.reflection import finalize_session_reflection, run_reflection_gate
 from liteharness.tracing.cost import CostTracker
@@ -156,6 +157,7 @@ def test_reflection_error_event_has_full_schema(tmp_path: Path):
         )
     )
     assert result.error == "boom"
+    assert result.bullets == ()
     events = store.load_thread_events("session-r")
     reflection = next(e for e in events if e.get("kind") == "reflection")
     assert set(reflection) >= {
@@ -171,6 +173,43 @@ def test_reflection_error_event_has_full_schema(tmp_path: Path):
     assert reflection["response"] == {"new_bullet_points": []}
     assert reflection["memory_updated"] is False
     assert "No todos" in reflection["prompt"]
+
+
+def test_reflection_result_returns_bullets(tmp_path: Path):
+    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
+    memory = MemoryStore(MemoryConfig(), ness_dir=tmp_path / ".ness")
+
+    class OkModel:
+        def with_structured_output(self, _schema):
+            return self
+
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(
+                model_dump=lambda: {
+                    "new_bullet_points": ["Added rate limiter", "Wired auth"]
+                },
+                new_bullet_points=["Added rate limiter", "Wired auth"],
+            )
+
+    result = asyncio.run(
+        run_reflection_gate(
+            "session-bullets",
+            [HumanMessage(content="hello")],
+            OkModel(),
+            1,
+            memory=memory,
+            persistence=store,
+            task_prompts=TaskPrompts(
+                reflection=(
+                    "t={thread_id} n={user_message_count} msgs={messages} "
+                    "bullets={current_session_bullets} todos={todos}"
+                )
+            ),
+        )
+    )
+    assert result.memory_updated is True
+    assert result.bullets == ("Added rate limiter", "Wired auth")
+    assert result.error == ""
 
 
 def test_finalize_session_reflection_passes_rendered_todos(tmp_path: Path):
@@ -257,6 +296,107 @@ def test_agent_node_sets_last_input_tokens_zero_after_compaction(tmp_path: Path)
 
     assert updates["last_input_tokens"] == 0
     assert updates["compaction_message_count"] == 1
+
+
+def test_agent_node_emits_compaction_bridge_on_compact(tmp_path: Path):
+    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
+    agent = _agent(tmp_path)
+    agent.config.thread_store = store
+    seen: list[dict] = []
+    agent.config._compaction_bridge = lambda data: seen.append(dict(data))
+    rt = make_nodes(agent.config, thread_id="session-cb", agent_mode="act", git_available=False)
+
+    compacted = CompactionResult(
+        messages=[HumanMessage(content="hi")],
+        compacted=True,
+        token_count=10,
+        action="tool_outputs",
+        kept_recent=0,
+    )
+
+    async def fake_ainvoke(_msgs):
+        return AIMessage(content="ok")
+
+    with (
+        patch(
+            "liteharness.graph.nodes.compact_messages_progressively",
+            return_value=compacted,
+        ),
+        patch.object(
+            agent.config.tool_registry,
+            "bind_model",
+            return_value=SimpleNamespace(ainvoke=fake_ainvoke),
+        ),
+    ):
+        asyncio.run(
+            rt.agent_node(
+                {
+                    "messages": [HumanMessage(content="hi")],
+                    "agent_mode": "act",
+                    "todos": [],
+                    "force_compact": True,
+                    "last_input_tokens": 999,
+                }
+            )
+        )
+
+    assert len(seen) == 1
+    assert seen[0]["reason"] == "agent_turn"
+    assert seen[0]["action"] == "tool_outputs"
+    assert seen[0]["forced"] is True
+    assert seen[0]["info"]
+
+
+def test_summarize_history_persists_once_on_success_and_failure(tmp_path: Path):
+    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
+
+    class OkModel:
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(
+                content="summary text",
+                usage_metadata=None,
+                response_metadata={},
+            )
+
+    class BoomModel:
+        async def ainvoke(self, _messages):
+            raise RuntimeError("summarizer down")
+
+    asyncio.run(
+        summarize_history(
+            [HumanMessage(content="hello")],
+            OkModel(),
+            thread_id="session-sum-ok",
+            persistence=store,
+            action="summary",
+            kept_recent=4,
+        )
+    )
+    ok_events = [
+        e
+        for e in store.load_thread_events("session-sum-ok")
+        if e.get("kind") == "compaction_llm"
+    ]
+    assert len(ok_events) == 1
+    assert ok_events[0]["response"] == "summary text"
+
+    asyncio.run(
+        summarize_history(
+            [HumanMessage(content="hello")],
+            BoomModel(),
+            thread_id="session-sum-fail",
+            persistence=store,
+            action="summary",
+            kept_recent=4,
+        )
+    )
+    fail_events = [
+        e
+        for e in store.load_thread_events("session-sum-fail")
+        if e.get("kind") == "compaction_llm"
+    ]
+    assert len(fail_events) == 1
+    assert "Compaction summary unavailable" in fail_events[0]["response"]
 
 
 def test_usage_event_always_logged_with_model(tmp_path: Path):

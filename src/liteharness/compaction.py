@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
@@ -378,6 +379,29 @@ def _fallback_summary(serialized: str) -> str:
     return "[Compaction summary unavailable]\n" + excerpt
 
 
+def _persist_compaction_llm(
+    persistence,
+    thread_id: str | None,
+    *,
+    prompt: str,
+    response: str,
+    action: CompactionAction,
+    kept_recent: int,
+) -> None:
+    if not persistence or not thread_id:
+        return
+    persistence.append_event(
+        thread_id,
+        {
+            "kind": "compaction_llm",
+            "prompt": prompt,
+            "response": response,
+            "action": action,
+            "kept_recent": kept_recent,
+        },
+    )
+
+
 async def summarize_history(
     messages: Iterable[BaseMessage],
     model,
@@ -417,13 +441,12 @@ async def summarize_history(
         return ""
 
     if model is None:
-        # if no model, use the fallback summary
+        # if no model, use the fallback summary (no durable llm row)
         return _fallback_summary(serialized)
 
     # build the prompt
     prompt = task_prompt.format(messages=serialized) if task_prompt else serialized
 
-    # invoke the model (under a span when a tracer is available)
     span_attrs: dict[str, Any] = {
         "compaction.action": action,
         "compaction.kept_recent": kept_recent,
@@ -436,68 +459,45 @@ async def summarize_history(
         span_attrs["gen_ai.request.model"] = model_name
 
     capture_msgs = bool(tracing and getattr(tracing, "capture_messages", False))
+    span_cm = (
+        tracer.start_span(COMPACTION_SUMMARIZE, attributes=span_attrs, kind=KIND_CLIENT)
+        if tracer is not None
+        else nullcontext()
+    )
 
-    if tracer is None:
+    summary = ""
+    resp = None
+    with span_cm as span:
+        if capture_msgs and span is not None:
+            # The compaction prompt is a single templated user turn, not the raw conversation
+            span.set_attribute(
+                GEN_AI_PROMPT,
+                serialize_messages([HumanMessage(content=prompt)]),
+            )
         try:
             resp = await model.ainvoke([HumanMessage(content=prompt)])
-        except Exception:
-            summary = _fallback_summary(serialized)
-            if persistence and thread_id:
-                persistence.append_event(
-                    thread_id, {
-                        "kind": "compaction_llm",
-                        "prompt": prompt,
-                        "response": summary,
-                        "action": action,
-                        "kept_recent": kept_recent,
-                    })
-            return summary
-    else:
-        with tracer.start_span(
-            COMPACTION_SUMMARIZE, attributes=span_attrs, kind=KIND_CLIENT
-        ) as span:
-            if capture_msgs:
-                # The compaction prompt is a single templated user turn, not
-                # the raw conversation — serialise it as one user message so
-                # Langfuse/Arize render it in the chat UI.
-                span.set_attribute(
-                    GEN_AI_PROMPT,
-                    serialize_messages([HumanMessage(content=prompt)]),
-                )
-            try:
-                resp = await model.ainvoke([HumanMessage(content=prompt)])
-            except Exception as exc:
+        except Exception as exc:
+            if span is not None:
                 span.record_exception(exc)
                 span.set_status("ERROR", str(exc))
-                summary = _fallback_summary(serialized)
-                if persistence and thread_id:
-                    persistence.append_event(
-                        thread_id, {
-                            "kind": "compaction_llm",
-                            "prompt": prompt,
-                            "response": summary,
-                            "action": action,
-                            "kept_recent": kept_recent,
-                        })
-                return summary
-            if capture_msgs:
+            summary = _fallback_summary(serialized)
+        else:
+            if capture_msgs and span is not None:
                 span.set_attribute(GEN_AI_COMPLETION, serialize_completion(resp))
+            summary = str(resp.content).strip()
+            if resp.usage_metadata and cost_tracker:
+                cost_tracker.add(
+                    resp.usage_metadata, model_name, resp.response_metadata or {}
+                )
 
-    # track the cost
-    if resp.usage_metadata and cost_tracker:
-        cost_tracker.add(resp.usage_metadata, model_name, resp.response_metadata or {})
-    # get the summary
-    summary = str(resp.content).strip()
-    if persistence and thread_id:
-        persistence.append_event(
-            thread_id, {
-                "kind": "compaction_llm",
-                "prompt": prompt,
-                "response": summary,
-                "action": action,
-                "kept_recent": kept_recent,
-            }
-        )
+    _persist_compaction_llm(
+        persistence,
+        thread_id,
+        prompt=prompt,
+        response=summary,
+        action=action,
+        kept_recent=kept_recent,
+    )
     return summary
 
 

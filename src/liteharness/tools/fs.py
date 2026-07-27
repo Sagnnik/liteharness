@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
 
 from liteharness.session_context import get_session_context
 
@@ -31,7 +30,11 @@ def _project_root() -> Path:
 
 @tool
 def read(path: str, offset: int = 1, limit: int | None = None) -> str:
-    """Read a file from the local filesystem."""
+    """Read a file from the local filesystem.
+
+    Defaults to 400 lines from ``offset`` (1-based); cap is 2000 lines per call.
+    Pass ``limit`` to request fewer or more lines (still capped at 2000).
+    """
     try:
         abs_path = _validate_path(path)
         lines = Path(abs_path).read_text(encoding="utf-8").splitlines()
@@ -106,19 +109,22 @@ def write(path: str, content: str) -> str:
         return f"Error: {exc}"
 
 
-class EditItem(BaseModel):
-    old_string: str = Field(description="Exact text to find in the file.")
-    new_string: str = Field(description="Replacement text.")
-    replace_all: bool = Field(default=False, description="Replace every occurrence in the file.")
-
-
 @tool
-def edit(path: str, edits: list[EditItem]) -> str:
-    """Edit a file using string replacements.
+def edit(
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    """Edit a file with one string replacement.
 
-    Each edit uses exact match first with a conservative fuzzy fallback. All edits
-    are applied in order; if any edit finds no match, the file is left unchanged.
-    A single replacement is just a one-item edits list.
+    Provide exact-text ``old_string`` / ``new_string`` (optional ``replace_all``).
+    When ``replace_all`` is false, ``old_string`` must match exactly once; if it
+    matches multiple times the file is left unchanged. For multiple independent
+    replacements, call ``edit`` once per change (or set ``replace_all=True``).
+
+    Uses exact match first with a conservative fuzzy fallback. If no match is
+    found, the file is left unchanged.
 
     WARNING: When an exact match fails, a near-match (>= 0.95 similarity) may be
     rewritten in your place. Treat any 'FUZZY MATCH' result as suspicious and
@@ -130,37 +136,32 @@ def edit(path: str, edits: list[EditItem]) -> str:
         rel = _relative_to_root(abs_path)
         if error := _reject_protected_write(rel, "edit"):
             return error
-        if not edits:
-            return "Error: edits must contain at least one edit"
         p = Path(abs_path)
         original = p.read_text(encoding="utf-8")
-        content = original
-        total = 0
-        fuzzy_edits: list[int] = []
-        for idx, item in enumerate(edits, 1):
-            content, count, fuzzy = _replace_content(
-                content, item.old_string, item.new_string, item.replace_all
+        content, count, fuzzy = _replace_content(
+            original, old_string, new_string, replace_all
+        )
+        if count < 0:
+            n = -count
+            return (
+                f"Error: found {n} matches for old_string in {rel}; "
+                "provide more surrounding context to make the match unique, "
+                "or set replace_all=True; file was not changed"
             )
-            if count == 0:
-                return f"Error: no match for edit {idx} in {rel}; file was not changed"
-            total += count
-            if fuzzy:
-                fuzzy_edits.append(idx)
+        if count == 0:
+            return f"Error: no match for edit in {rel}; file was not changed"
         _atomic_write(p, content)
         auto_format(abs_path)
         written = p.read_text(encoding="utf-8")
-        if fuzzy_edits:
-            which = ", ".join(str(n) for n in fuzzy_edits)
+        if fuzzy:
             summary = (
-                f"WARNING: FUZZY MATCH applied to edit(s) {which} in {rel} — "
+                f"WARNING: FUZZY MATCH applied in {rel} — "
                 f"verify the result before continuing. "
-                f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
-                f"({total} replacement{'s' if total != 1 else ''})."
+                f"Applied 1 edit ({count} replacement{'s' if count != 1 else ''})."
             )
         else:
             summary = (
-                f"Applied {len(edits)} edit{'s' if len(edits) != 1 else ''} "
-                f"({total} replacement{'s' if total != 1 else ''}) to {rel}"
+                f"Applied 1 edit ({count} replacement{'s' if count != 1 else ''}) to {rel}"
             )
         return _with_diff(summary, _unified_diff(rel, original, written))
     except Exception as exc:
@@ -185,7 +186,10 @@ def _replace_content(content: str, old: str, new: str, replace_all: bool) -> tup
     if not old:
         return content, 0, False
     if old in content:
-        count = content.count(old) if replace_all else 1
+        occurrences = content.count(old)
+        if not replace_all and occurrences > 1:
+            return content, -occurrences, False
+        count = occurrences if replace_all else 1
         return content.replace(old, new, -1 if replace_all else 1), count, False
 
     # fuzzy match (conservative — high threshold to avoid false positives):

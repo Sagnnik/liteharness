@@ -207,7 +207,7 @@ def test_skill_view_returns_skill_content(tmp_path: Path):
         assert "View Me" in data["content"]
         assert "Content here." in data["content"]
         assert isinstance(data["linked_files"], dict)
-        assert data["usage_hint"] == "To view linked files, call read(file_path) tool"
+        assert data["usage_hint"] == "To view linked files, call read(path=...) tool"
     finally:
         reset_session_context(token)
 

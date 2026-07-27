@@ -102,12 +102,10 @@ def preview_diff(tool: str, args: dict) -> str:
     if tool == "write":
         new = str(args.get("content", ""))
     elif tool == "edit":
-        new = old
-        for edit in args.get("edits", []):
-            old_s = str(edit.get("old_string", ""))
-            new_s = str(edit.get("new_string", ""))
-            count = -1 if edit.get("replace_all") else 1
-            new = new.replace(old_s, new_s, count)
+        old_s = str(args.get("old_string", ""))
+        new_s = str(args.get("new_string", ""))
+        count = -1 if args.get("replace_all") else 1
+        new = old.replace(old_s, new_s, count)
     else:
         return f"{tool}({args})"
 

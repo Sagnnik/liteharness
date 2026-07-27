@@ -478,6 +478,36 @@ def test_run_turn_records_mutations_from_tool_log(tmp_path: Path):
     assert "src/e2e.py" in (cp.get("modified_paths") or "[]")
 
 
+def test_subagent_active_suppresses_stream_events(tmp_path: Path):
+    """Adapter-owned: while a child subagent run is active, run_turn must not
+    forward SessionEvents to the caller (spinner hygiene).
+    """
+    coding = CodingSession(
+        _make_agent(tmp_path), thread_id="t-sub-suppress", agent_mode="act"
+    )
+
+    async def _fake_stream(*a, **k):
+        yield SessionEvent("assistant_final", {"content": "child noise"})
+        yield SessionEvent("tool_end", {"name": "read", "content": "x"})
+
+    coding._session.stream = lambda *a, **k: _fake_stream()
+
+    async def _noop_refresh():
+        return {}
+
+    coding.refresh_context_snapshot = _noop_refresh
+
+    async def _run():
+        out = []
+        with patch.object(coding, "is_subagent_active", return_value=True):
+            async for ev in coding.run_turn("go"):
+                out.append(ev)
+        return out
+
+    events = asyncio.run(_run())
+    assert events == []
+
+
 def test_act_mode_interrupted_turn_writes_no_plan_file(tmp_path: Path, monkeypatch):
     """Finding 5: an interrupted ACT-mode turn with partial assistant text
     must not autosave a plan file. Only plan-mode interrupts do.

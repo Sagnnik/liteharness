@@ -235,7 +235,7 @@ def _shell_command_matches(rule: str, command: str) -> bool:
 
 
 def _shell_action(args: dict) -> str:
-    return str(args.get("action") or "").strip().lower()
+    return str(args.get("action") or "run").strip().lower()
 
 
 def _normalize_permission_url(url: str) -> str:

@@ -16,6 +16,7 @@ from liteharness.graph.helpers import (
 )
 from liteharness.compaction import (
     compact_messages_progressively,
+    compaction_label,
     format_compaction_overlay_note,
     resolve_token_count,
     resolve_usable_context_budget,
@@ -86,8 +87,6 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
     task_prompts = config.task_prompts
     options = config.options
     tracer = config.tracer
-    all_skills = skills_loader.load()
-
     main_model = config.model
     compaction_model = config.compaction_model or config.model
 
@@ -100,6 +99,10 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
 
         set_current_thread(thread_id)
         set_thread_todos(thread_id, list(state.get("todos", [])))
+
+        # Reload skill catalog each turn so disk adds appear without rebuild.
+        # (skill_view already uses SessionContext.all_skills, reloaded per turn.)
+        all_skills = skills_loader.load()
 
         # load the components for the L1 prompt layer
         user_mem = memory.load_user() if not memory.disabled else ""
@@ -116,7 +119,6 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             git_available=rt.repo_has_git,
             metadata=rt.metadata,
             tool_catalog_groups=[(l, frozenset(g)) for l, g in tools_reg.tool_catalog_groups()],
-            mcp_catalog=tools_reg.mcp_catalog(),
             deferred_mcp=tools_reg.deferred_mcp_summary()
         ))
 
@@ -128,11 +130,12 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         # stall the event loop (and the TUI working spinner) before the first token lands.
         token_estimate = await asyncio.to_thread(resolve_token_count, [system] + conversation, known_input_tokens=state.get("last_input_tokens") or None)
 
+        force_compact = bool(state.get("force_compact"))
         compaction = await compact_messages_progressively(
             conversation,
             known_input_tokens=token_estimate,
             summary_model=compaction_model,
-            force=bool(state.get("force_compact")),
+            force=force_compact,
             model_name=model_name,
             thread_id=thread_id,
             options=options,
@@ -265,6 +268,21 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             updates["compacted_messages"] = conversation
             updates["compaction_message_count"] = len(messages)
             updates["last_input_tokens"] = 0  # next turn re-estimates if no usage_metadata
+            # since the agent node does not own a session - a compation_bridge callback is added to the config
+            # this callback is used to report the compaction action to the session which raises a compaction event.
+            compaction_bridge = getattr(config, "_compaction_bridge", None)
+            if compaction_bridge is not None:
+                info = compaction_note or compaction_label(
+                    compaction.action, compaction.kept_recent
+                )
+                compaction_bridge(
+                    {
+                        "reason": "agent_turn",
+                        "action": compaction.action,
+                        "forced": force_compact,
+                        "info": info,
+                    }
+                )
         else:
             updates["last_input_tokens"] = last_input_tokens
 
@@ -353,10 +371,22 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         results: list[ToolMessage] = []
         cur_mode = (state.get("agent_mode") or rt.resolved_mode).lower()
         newly_loaded_names: set[str] = set()
+        # Fresh catalog for loaded_skills eligibility (matches skill_view context).
+        all_skills = skills_loader.load()
 
         for name, args, call_id in calls:
-            # if the mode is plan and the tool is not read-only then return the denied messages
-            if config.modes and cur_mode == "plan" and not tools_reg.is_read_only(name, args):
+            # Plan-mode write gate: honors ModeConfig.plan_mode_readonly
+            # (default True even when modes is unset).
+            readonly = (
+                True
+                if config.modes is None
+                else bool(config.modes.plan_mode_readonly)
+            )
+            if (
+                cur_mode == "plan"
+                and readonly
+                and not tools_reg.is_read_only(name, args)
+            ):
                 content = "Unavailable in plan mode. Switch to act mode to run state-changing tools."
                 results.append(ToolMessage(
                     tool_call_id=call_id,
@@ -464,8 +494,16 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
 
         cur = (state.get("agent_mode") or rt.resolved_mode).lower()
 
-        # if the mode is plan and the tool is not read-only then return the tools node
-        if config.modes and cur == "plan" and any(not tools_reg.is_read_only(n, a) for n, a, _ in calls): 
+        # Plan-mode mutating tools skip the approval gate (still denied in tools_node
+        # when plan_mode_readonly is on).
+        readonly = (
+            True if config.modes is None else bool(config.modes.plan_mode_readonly)
+        )
+        if (
+            cur == "plan"
+            and readonly
+            and any(not tools_reg.is_read_only(n, a) for n, a, _ in calls)
+        ):
             return "tools"
 
         # if the approval is enabled and the tool needs approval then return the approval gate node

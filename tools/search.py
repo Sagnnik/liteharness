@@ -18,8 +18,15 @@ GREP_MAX_OUTPUT_CHARS = 12000
 
 
 @tool
-def grep(pattern: str, include: str | None = None, path: str = ".") -> str:
-    """Search file contents using regular expressions."""
+def grep(
+    pattern: str,
+    glob: str | None = None,
+    path: str = ".",
+) -> str:
+    """Search file contents using regular expressions.
+
+    Optional ``glob`` filters by filename pattern (e.g. ``"*.py"``).
+    """
     try:
         if not pattern:
             return "Error: pattern is empty. Provide a regex to search for."
@@ -27,11 +34,14 @@ def grep(pattern: str, include: str | None = None, path: str = ".") -> str:
             re.compile(pattern)
         except re.error as exc:
             return f"Error: invalid regex {pattern!r}: {exc}. Fix the pattern and retry."
+        file_filter = str(glob).strip() if glob else None
+        if file_filter == "":
+            file_filter = None
         abs_path = validate_path(path)
         if shutil.which("rg"):
             cmd = ["rg", "-n", "--no-heading"]
-            if include:
-                cmd.extend(["-g", include])
+            if file_filter:
+                cmd.extend(["-g", file_filter])
             cmd.extend(["--", pattern, abs_path])
             result = subprocess.run(
                 cmd,
@@ -44,12 +54,12 @@ def grep(pattern: str, include: str | None = None, path: str = ".") -> str:
                 return f"Error: {result.stderr or result.stdout}"
             return _cap_output(result.stdout.strip() or "No matches found")
 
-        return _python_grep(pattern, abs_path, include)
+        return _python_grep(pattern, abs_path, file_filter)
     except Exception as exc:
         return f"Error: {exc}"
 
 
-def _python_grep(pattern: str, path: str, include: str | None) -> str:
+def _python_grep(pattern: str, path: str, glob: str | None) -> str:
     rx = re.compile(pattern)
     matches = []
     for root, dirs, files in os.walk(path):
@@ -57,7 +67,7 @@ def _python_grep(pattern: str, path: str, include: str | None) -> str:
         for filename in files:
             fp = os.path.join(root, filename)
             rel = os.path.relpath(fp, permissions.PROJECT_ROOT)
-            if include and not _matches_glob(rel, include):
+            if glob and not _matches_glob(rel, glob):
                 continue
             try:
                 with open(fp, "r", encoding="utf-8") as handle:

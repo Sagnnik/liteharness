@@ -48,11 +48,19 @@ class _FakeMemoryStore:
     def __init__(self) -> None:
         self.ness_file = Path(".ness") / "NESS.md"
         self.user_file = Path(".ness") / "USER.md"
+        self._session_raw: dict[str, str] = {}
+
+    @property
+    def disabled(self) -> bool:
+        return False
 
     def load_project(self) -> str:
         return ""
 
     def load_user(self) -> str:
+        return ""
+
+    def load_session(self, thread_id: str) -> str:
         return ""
 
     def append_project(self, text: str) -> str:
@@ -61,11 +69,23 @@ class _FakeMemoryStore:
     def append_user(self, text: str) -> str:
         return "Updated USER.md"
 
+    def append_session_bullets(self, thread_id: str, bullets: list[str]) -> bool:
+        return False
+
     def write_project(self, text: str, overwrite: bool = False) -> str:
         return "Wrote .ness/NESS.md"
 
-    def setup_structure(self) -> list[str]:
-        return []
+    def write_user(self, text: str, overwrite: bool = False) -> str:
+        return "Wrote USER.md"
+
+    def read_session_raw(self, thread_id: str) -> str:
+        return self._session_raw.get(thread_id, "")
+
+    def write_session_raw(self, thread_id: str, text: str) -> None:
+        if text:
+            self._session_raw[thread_id] = text
+        else:
+            self._session_raw.pop(thread_id, None)
 
     def check_health(self) -> str | None:
         return None
@@ -137,6 +157,8 @@ class FakeCoding:
         self.turn_count = 0
         self.context_used = 12_400
         self.context_total = 128_000
+        self.ness_dir = Path(".ness")
+        self.project_root = Path.cwd()
         self.thread_store = _FakeThreadStore()
         self.cost_tracker = _FakeCostTracker()
         self.perms = _FakePerms()
@@ -147,6 +169,7 @@ class FakeCoding:
         self.agent = SimpleNamespace(
             config=SimpleNamespace(model=SimpleNamespace())
         )
+        self._pending_skills: list[str] = []
 
         self.cancelled = False
         self.resumed: list[str] = []
@@ -192,6 +215,19 @@ class FakeCoding:
 
     def request_compact(self) -> None:
         self.compact_requested = True
+
+    def active_skills(self, names: list[str]) -> None:
+        self._pending_skills = list(names)
+
+    def stage_skills(self, names) -> None:
+        pending = list(self._pending_skills)
+        seen = set(pending)
+        for name in names:
+            n = str(name).strip()
+            if n and n not in seen:
+                pending.append(n)
+                seen.add(n)
+        self._pending_skills = pending
 
     def save_thread(self) -> str:
         self.saved = True

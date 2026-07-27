@@ -14,7 +14,6 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 
 import permissions
 from tools.fs import (
-    EditItem,
     delete_file,
     edit,
     glob,
@@ -161,31 +160,29 @@ class EditTests(unittest.TestCase):
         target = self.root / "module.py"
         target.write_text("alpha\n", encoding="utf-8")
         result = edit.invoke(
-            {"path": "module.py", "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+            {"path": "module.py", "old_string": "alpha", "new_string": "beta"}
         )
         self.assertIn("Applied 1 edit", result)
         self.assertEqual(target.read_text(encoding="utf-8"), "beta\n")
 
-    def test_applies_multiple_edits(self) -> None:
+    def test_sequential_edits_via_multiple_calls(self) -> None:
         target = self.root / "module.py"
         target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-        result = edit.invoke(
-            {
-                "path": "module.py",
-                "edits": [
-                    {"old_string": "alpha", "new_string": "ALPHA"},
-                    {"old_string": "gamma", "new_string": "GAMMA"},
-                ],
-            }
+        first = edit.invoke(
+            {"path": "module.py", "old_string": "alpha", "new_string": "ALPHA"}
         )
-        self.assertIn("Applied 2 edits", result)
+        second = edit.invoke(
+            {"path": "module.py", "old_string": "gamma", "new_string": "GAMMA"}
+        )
+        self.assertIn("Applied 1 edit", first)
+        self.assertIn("Applied 1 edit", second)
         self.assertEqual(target.read_text(encoding="utf-8"), "ALPHA\nbeta\nGAMMA\n")
 
-    def test_empty_edits_is_error(self) -> None:
+    def test_missing_old_string_fails_schema(self) -> None:
         target = self.root / "module.py"
         target.write_text("alpha\n", encoding="utf-8")
-        result = edit.invoke({"path": "module.py", "edits": []})
-        self.assertIn("at least one edit", result)
+        with self.assertRaises(Exception):
+            edit.invoke({"path": "module.py", "new_string": "beta"})
         self.assertEqual(target.read_text(encoding="utf-8"), "alpha\n")
 
     def test_no_match_leaves_file_unchanged(self) -> None:
@@ -194,23 +191,20 @@ class EditTests(unittest.TestCase):
         result = edit.invoke(
             {
                 "path": "module.py",
-                "edits": [
-                    {"old_string": "alpha", "new_string": "ALPHA"},
-                    {"old_string": "nonexistent", "new_string": "X"},
-                ],
+                "old_string": "nonexistent",
+                "new_string": "X",
             }
         )
-        self.assertIn("Error: no match for edit 2", result)
+        self.assertIn("Error: no match for edit", result)
         self.assertEqual(target.read_text(encoding="utf-8"), "alpha\nbeta\n")
 
-    def test_schema_requires_edit_keys(self) -> None:
+    def test_schema_requires_old_and_new_string(self) -> None:
         schema = _tool_json_schema(edit)
-        edit_schema = schema["$defs"]["EditItem"]
-        self.assertEqual(edit_schema["required"], ["old_string", "new_string"])
         self.assertEqual(
-            {key for key, field in EditItem.model_fields.items() if field.is_required()},
-            {"old_string", "new_string"},
+            set(schema.get("required", [])),
+            {"path", "old_string", "new_string"},
         )
+        self.assertNotIn("edits", schema.get("properties", {}))
 
     def test_refuses_protected_paths(self) -> None:
         for rel in (".git/config", ".ness/NESS.md"):
@@ -219,27 +213,22 @@ class EditTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("alpha\n", encoding="utf-8")
                 result = edit.invoke(
-                    {"path": rel, "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+                    {"path": rel, "old_string": "alpha", "new_string": "beta"}
                 )
                 self.assertIn("protected", result)
                 self.assertEqual(target.read_text(encoding="utf-8"), "alpha\n")
 
     def test_fuzzy_match_below_threshold_leaves_file_unchanged(self) -> None:
         target = self.root / "module.py"
-        # 0.85-ish similarity — well below the 0.95 threshold
         target.write_text("def handle_request(request, response):\n    return response\n", encoding="utf-8")
         result = edit.invoke(
             {
                 "path": "module.py",
-                "edits": [
-                    {
-                        "old_string": "def handle_request(req, resp):\n    return resp\n",
-                        "new_string": "def handle_request(request, response):\n    return response\n",
-                    }
-                ],
+                "old_string": "def handle_request(req, resp):\n    return resp\n",
+                "new_string": "def handle_request(request, response):\n    return response\n",
             }
         )
-        self.assertIn("Error: no match for edit 1", result)
+        self.assertIn("Error: no match for edit", result)
         self.assertEqual(
             target.read_text(encoding="utf-8"),
             "def handle_request(request, response):\n    return response\n",
@@ -247,18 +236,13 @@ class EditTests(unittest.TestCase):
 
     def test_fuzzy_match_above_threshold_emits_loud_warning(self) -> None:
         target = self.root / "module.py"
-        # One-token difference: very high similarity, should trigger fuzzy match
         original = "def process_payment(amount, currency, customer):\n    pass\n"
         target.write_text(original, encoding="utf-8")
         result = edit.invoke(
             {
                 "path": "module.py",
-                "edits": [
-                    {
-                        "old_string": "def process_payment(amount, currency, custemer):\n    pass\n",
-                        "new_string": "def process_payment(amount, currency, customer):\n    return amount\n",
-                    }
-                ],
+                "old_string": "def process_payment(amount, currency, custemer):\n    pass\n",
+                "new_string": "def process_payment(amount, currency, customer):\n    return amount\n",
             }
         )
         self.assertIn("WARNING: FUZZY MATCH", result)
@@ -270,10 +254,35 @@ class EditTests(unittest.TestCase):
         target = self.root / "module.py"
         target.write_text("alpha\n", encoding="utf-8")
         result = edit.invoke(
-            {"path": "module.py", "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+            {"path": "module.py", "old_string": "alpha", "new_string": "beta"}
         )
         self.assertNotIn("FUZZY", result)
         self.assertIn("Applied 1 edit", result)
+
+    def test_ambiguous_old_string_leaves_file_unchanged(self) -> None:
+        target = self.root / "module.py"
+        original = "alpha\nbeta\nalpha\n"
+        target.write_text(original, encoding="utf-8")
+        result = edit.invoke(
+            {"path": "module.py", "old_string": "alpha", "new_string": "ALPHA"}
+        )
+        self.assertIn("found 2 matches for old_string", result)
+        self.assertIn("replace_all=True", result)
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_replace_all_updates_every_match(self) -> None:
+        target = self.root / "module.py"
+        target.write_text("alpha\nbeta\nalpha\n", encoding="utf-8")
+        result = edit.invoke(
+            {
+                "path": "module.py",
+                "old_string": "alpha",
+                "new_string": "ALPHA",
+                "replace_all": True,
+            }
+        )
+        self.assertIn("Applied 1 edit (2 replacements)", result)
+        self.assertEqual(target.read_text(encoding="utf-8"), "ALPHA\nbeta\nALPHA\n")
 
 
 class GlobFilesTests(unittest.TestCase):

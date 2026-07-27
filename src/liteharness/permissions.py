@@ -172,7 +172,7 @@ class PermissionStore:
         return json.dumps(self._load(), indent=2)
 
     def _shell_action(self, args: dict) -> str:
-        return str(args.get("action") or "").strip().lower()
+        return str(args.get("action") or "run").strip().lower()
 
     def _is_default_port(self, scheme: str, port: int) -> bool:
         return (scheme == "http" and port == 80) or (scheme == "https" and port == 443)

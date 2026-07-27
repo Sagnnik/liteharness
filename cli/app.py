@@ -67,10 +67,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self.mcp = mcp
         self._dispatch = command_dispatcher
         # TUI-owned session state (formerly SessionApp): input queue, exit
-        # flag, skills staged via /skill, assistant text history for /copy.
+        # flag, assistant text history for /copy. Skills stage via
+        # coding.stage_skills → Session._pending_skills.
         self.should_exit = False
         self.prompt_queue: list[str] = []
-        self.pending_skills: list[str] = []
         self.assistant_history: list[str] = []
         self._cwd_line = display_cwd()
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -601,7 +601,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         """Archive the current thread and start a fresh one (``/new``)."""
         await self.coding.reset(_new_thread_id())
         self.assistant_history.clear()
-        self.pending_skills.clear()
+        self.coding.active_skills([])
 
     async def resume_thread(self, thread_id: str) -> None:
         """Resume a saved thread: replay its transcript, then rebuild state.
@@ -675,14 +675,13 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
     async def _run_turn(self, text: str, images: list[str]) -> None:
         """Drive one CodingSession turn, rendering its SessionEvent stream."""
         renderer = TurnRenderer()
-        active_skills = self.pending_skills
-        self.pending_skills = []
+        # Omit active_skills= so Session._pending_skills (staged via /skill →
+        # coding.stage_skills) is consumed by the SDK payload builder.
         render.begin_turn()
         try:
             async for ev in self.coding.run_turn(
                 text,
                 images=images or None,
-                active_skills=active_skills or None,
             ):
                 renderer.feed(ev)
         except asyncio.CancelledError:

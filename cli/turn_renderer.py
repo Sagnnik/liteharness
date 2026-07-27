@@ -77,10 +77,6 @@ class TurnRenderer:
             self._accumulate_usage(data)
         elif kind == "compaction":
             self._on_compaction(data)
-        elif kind == "reflection":
-            info = str(data.get("info") or data.get("message") or "")
-            if info.strip():
-                render.render_notice(info, title="reflection")
         elif kind == "warning":
             render.render_warning(str(data.get("message") or data))
         elif kind == "error":

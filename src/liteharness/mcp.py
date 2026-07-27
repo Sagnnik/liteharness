@@ -20,7 +20,7 @@ class MCPManager:
     Step 2: spawn MCP server(s) via stdio -> start_server(name, spec)
     Step 3: initialize + list tools -> _connect_stdio(name, spec, stack)
     Step 4: return StructuredTool wraps over mcp functions (convert to langchain tool) -> _wrap_tool(server_name, mcp_tool)
-    Step 5: register_dynamic_tools(..) -> create langchain tools from mcp tools -> register_dynamic_tools()
+    Step 5: ToolRegistry.register_dynamic(..) -> create langchain tools from mcp tools
     Step 6: mcp returns structured content -> convert to string and return -> _serialize_mcp_result(result)
     """
 

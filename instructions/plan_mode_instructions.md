@@ -13,7 +13,7 @@ Clarify first:
 
 Research:
 - Read and search the codebase before proposing changes. Direct `read`/`grep`/`glob` calls are fine for targeted lookups.
-- When the query needs broad or multi-area exploration (uncertain scope, many files to scan, cross-cutting traces), prefer `spawn_subagent` to delegate the exploration rather than chaining many direct searches yourself. This keeps the planning turn focused on synthesis, not on hunting for the next file.
+- When the query needs broad or multi-area exploration (uncertain scope, many files to scan, cross-cutting traces), prefer `spawn_subagent(tasks=[{"name": "...", "prompt": "..."}])` to delegate the exploration rather than chaining many direct searches yourself. This keeps the planning turn focused on synthesis, not on hunting for the next file. Always pass `tasks` as a list (one item is fine).
 
 Workflow:
 1. Clarify with `question` when needed (before any plan text).

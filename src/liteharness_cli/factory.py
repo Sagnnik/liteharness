@@ -67,6 +67,8 @@ def build_coding_agent(
         "prompt": default_prompt_layers(l2_context=l2_context),
         "task_prompts": default_task_prompts(),
         "modes": plan_act_modes(plans_dir=ness_dir / "plans"),
+        "hooks_config": ness_dir / "hooks.json",
+        "skills_dir": ness_dir / "skills",
         "options": NessAgentOptions(
             context_window=context_window_for(active_model_name()),
             compaction_token_budget=settings.compaction_token_budget,

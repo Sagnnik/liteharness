@@ -5,6 +5,26 @@ from liteharness.tools import TOOL_MAP
 from langchain_core.tools import BaseTool
 from typing import Any
 
+def message_to_text(message: Any) -> str:
+    """Return the text content of a chat message.
+
+    Handles string content and list-content (multimodal) messages by joining
+    ``type=="text"`` blocks. Non-text blocks are ignored. ``None`` → ``""``.
+    """
+    if message is None:
+        return ""
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
 def normalize_tool(item: Any) -> BaseTool:
     """Normalize a user-supplied tool specifier to a ``BaseTool`` instance.
 
@@ -51,12 +71,10 @@ def preview_diff(tool: str, args: dict) -> str:
     if tool == "write":
         new = str(args.get("content", ""))
     elif tool == "edit":
-        new = old
-        for edit in args.get("edits", []):
-            old_s = str(edit.get("old_string", ""))
-            new_s = str(edit.get("new_string", ""))
-            count = -1 if edit.get("replace_all") else 1
-            new = new.replace(old_s, new_s, count)
+        old_s = str(args.get("old_string", ""))
+        new_s = str(args.get("new_string", ""))
+        count = -1 if args.get("replace_all") else 1
+        new = old.replace(old_s, new_s, count)
     else:
         return f"{tool}({args})"
 

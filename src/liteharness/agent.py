@@ -14,10 +14,10 @@ from liteharness.options import (
 from liteharness.context.layers import PromptLayers, PromptLayersConfig, TaskPrompts
 from liteharness.context.overlay import OverlayProvider
 from liteharness.types import ApprovalHandler, QuestionHandler
-from liteharness.memory import MemoryStore
+from liteharness.memory import MemoryBackend, MemoryStore
 from liteharness.persistence import ThreadStore
 from liteharness.permissions import PermissionStore
-from liteharness.hooks import HookRunner
+from liteharness.hooks import Hook, HookRunner
 from liteharness.skills import SkillLoader
 from liteharness.tools import LOCAL_TOOLS, ToolRegistry
 from liteharness.utils import normalize_tool
@@ -75,7 +75,11 @@ class AgentSpec:
         (plan/act, git, todos, compaction, session memory).
         Pass :class:`~liteharness.context.coding_overlay.NoOverlay` for no L3.
     ``memory``
-        :class:`MemoryConfig` — project / user / session memory paths.
+        :class:`MemoryConfig` — project / user / session memory paths
+        (used when ``memory_store`` is not injected).
+    ``memory_store``
+        Optional :class:`~liteharness.memory.MemoryBackend` instance. When
+        set, skips constructing the default :class:`MemoryStore`.
     ``modes``
         :class:`ModeConfig` for plan/act mode (optional; toggle still works
         with default instruction texts when ``None``).
@@ -89,7 +93,11 @@ class AgentSpec:
     ``skills_dir``
         ``.ness/skills/`` directory (or ``None`` to disable skills).
     ``hooks_config``
-        ``.ness/hooks.json`` for pre/post tool-use shell hooks.
+        Path to ``hooks.json`` for pre/post tool-use hooks. When ``None``,
+        defaults to ``{ness_dir}/hooks.json``.
+    ``hooks``
+        Optional in-memory :class:`~liteharness.hooks.Hook` list seeded into
+        the runner at resolve (combined with the JSON file).
 
     **Runtime hooks**
 
@@ -127,6 +135,7 @@ class AgentSpec:
     options: NessAgentOptions = field(default_factory=NessAgentOptions)
     overlay: OverlayProvider | None = None
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    memory_store: MemoryBackend | None = None
     modes: ModeConfig | None = None
     subagents: SubagentConfig | None = None
     # Prompt templates for auxiliary model calls
@@ -135,6 +144,7 @@ class AgentSpec:
     # specs
     skills_dir: Path | None = None
     hooks_config: Path | None = None
+    hooks: Sequence[Hook] | None = None
 
     # runtime hooks
     approval_handler: ApprovalHandler | None = None
@@ -181,7 +191,7 @@ class NessAgentConfig:
     tracing: TracingConfig = field(default_factory=TracingConfig)
 
     # agent backends (resolved)
-    memory_store: MemoryStore | None = None
+    memory_store: MemoryBackend | None = None
     thread_store: ThreadStore | None = None
     permission_store: PermissionStore | None = None
     hook_runner: HookRunner | None = None
@@ -275,21 +285,31 @@ class NessAgentConfig:
             subagents=spec.subagents,
             task_prompts=spec.task_prompts,
             skills_dir=spec.skills_dir,
-            hooks_config=spec.hooks_config,
+            hooks_config=spec.hooks_config if spec.hooks_config is not None else ness_dir / "hooks.json",
 
             approval_handler=spec.approval_handler,
             question_handler=spec.question_handler,
             checkpoint_factory=spec.checkpoint_factory,
             tracing=spec.tracing,
 
-            memory_store=MemoryStore(spec.memory, ness_dir=ness_dir),
+            memory_store=(
+                spec.memory_store
+                if spec.memory_store is not None
+                else MemoryStore(
+                    spec.memory, ness_dir=ness_dir, project_root=project_root
+                )
+            ),
             thread_store=ThreadStore(
                 threads_dir=ness_dir / "threads",
                 auto_save=options.auto_save_threads,
                 default_model=str(model_name or ""),
             ),
             permission_store=PermissionStore(ness_dir=ness_dir, project_root=project_root),
-            hook_runner=HookRunner(spec.hooks_config, project_root=project_root),
+            hook_runner=HookRunner(
+                spec.hooks_config if spec.hooks_config is not None else ness_dir / "hooks.json",
+                project_root=project_root,
+                hooks=spec.hooks,
+            ),
             skill_loader=SkillLoader(spec.skills_dir),
             tool_registry=ToolRegistry(resolved_tools),
             cost_tracker=spec.cost_tracker or CostTracker(pricing=spec.tracing.pricing),

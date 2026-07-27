@@ -24,7 +24,6 @@ class SessionEvent:
         "approval_required",
         "question_required",
         "compaction",
-        "reflection",
         "error",
         "warning",
         "interrupted",
@@ -38,6 +37,30 @@ class RunResult:
     usage: UsageEvent | None
     todos: list[dict[str, Any]]
     events: list[SessionEvent]
+
+
+@dataclass(frozen=True)
+class ContextPreview:
+    """Snapshot of the L0–L2 system prefix and prospective L3 overlay.
+
+    Produced by :meth:`~liteharness.session.Session.preview_context` without
+    running the model or compaction LLM. Useful for debugging prompt shape.
+    """
+
+    system_message: str
+    """Cached L0 + L1 + L2 stable prefix (what becomes the SystemMessage)."""
+
+    overlay: str
+    """Joined L3 section bodies (before ``<system-reminder>`` wrapping)."""
+
+    overlay_sections: dict[str, str]
+    """Named L3 sections from the overlay provider (empty sections omitted)."""
+
+    overlay_reminder: str
+    """``overlay`` wrapped with :func:`~liteharness.context.overlay.wrap_system_reminder`."""
+
+    agent_mode: str
+    """Mode used for this preview (``\"act\"`` or ``\"plan\"``)."""
 
 
 class ApprovalHandler(ABC):

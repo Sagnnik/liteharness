@@ -64,6 +64,16 @@ class ShellToolTests(unittest.TestCase):
         self.assertIn(f"output:\n{self.root}", second)
         self.assertNotIn(str(self.root / "sub"), second)
 
+    def test_shell_run_defaults_action_when_omitted(self) -> None:
+        """Pi/Claude-shaped calls ({command, timeout}) should work without action."""
+        schema = shell.shell.args_schema.model_json_schema()
+        self.assertNotIn("action", schema.get("required", []))
+
+        result = shell.shell.invoke({"command": "printf hi", "timeout": 10})
+
+        self.assertEqual(_field(result, "status"), "ok")
+        self.assertIn("hi", result)
+
     def test_shell_run_reports_nonzero_exit(self) -> None:
         result = shell.shell.invoke({"action": "run", "command": "printf nope; exit 7"})
 

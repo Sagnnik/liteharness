@@ -38,6 +38,6 @@ def skill_view(name: str) -> str:
     payload = {
         "content": body,
         "linked_files": linked_files,
-        "usage_hint": "To view linked files, call read(file_path) tool",
+        "usage_hint": "To view linked files, call read(path=...) tool",
     }
     return json.dumps(payload, indent=2)

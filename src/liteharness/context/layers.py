@@ -162,6 +162,7 @@ class PromptLayers:
         project_memory: str = "",
         skill_catalog: str = "",
         tool_catalog_groups: list[tuple[str, frozenset[str]]] | None = None,
+        deferred_mcp: str = "",
     ) -> str:
         """Render the L1 context block (persona + tool catalog + memories).
 
@@ -177,10 +178,16 @@ class PromptLayers:
             One-line descriptions of available skills (from ``SkillLoader``).
         tool_catalog_groups : list of (label, frozenset), optional
             Tiered tool grouping labels for the catalog.
+        deferred_mcp : str
+            Pre-computed deferred-MCP servers blurb (header + per-server
+            lines). Appended after the active tool catalog when non-empty.
         """
         persona = self.config.persona
         catalog = _render_tool_catalog(tool_catalog_groups, tools)
         sections = [persona, catalog]
+
+        if deferred_mcp and deferred_mcp.strip():
+            sections.append(deferred_mcp.strip())
 
         if self.config.include_skill_catalog and skill_catalog: 
             sections.append(skill_catalog.strip())
@@ -240,16 +247,15 @@ class PromptLayers:
         git_available: bool | None,
         metadata: Mapping[str, Any] | None = None,
         tool_catalog_groups=None, 
-        mcp_catalog=None, 
         deferred_mcp=""
     ) -> str:
         """Build and cache the full L0 + L1 + L2 prefix.
 
         This is the main assembly method — it concatenates ``build_l0()``,
         ``build_l1()``, and ``build_l2()`` and caches the result under a
-        key derived from the persona, tool names, user/project memory text
-        hashes, tool groups, MCP catalog, and metadata. The cache is
-        invalidated when any of those inputs change, so the prefix is
+        key derived from tool names, skill catalog, user/project memory
+        hashes, tool groups, deferred MCP summary, and metadata. The cache
+        is invalidated when any of those inputs change, so the prefix is
         rebuilt automatically on structural updates without manual
         management.
 
@@ -275,10 +281,8 @@ class PromptLayers:
             bust the prefix correctly.
         tool_catalog_groups : list of (label, frozenset), optional
             Tiered tool grouping labels (see ``_render_tool_catalog``).
-        mcp_catalog : dict, optional
-            Full MCP server catalog for the deferred-MCP summary.
         deferred_mcp : str
-            Pre-computed deferred-MCP tools available blurb.
+            Pre-computed deferred-MCP servers blurb (rendered into L1).
 
         Returns
         -------
@@ -288,10 +292,10 @@ class PromptLayers:
         key = (
             tuple(sorted(t.name for t in tools)),
             git_available,
-            hash(user_memory), # string hash helps to check for cache breaks
+            hash(user_memory),
             hash(project_memory),
+            hash(skill_catalog),
             tool_catalog_groups,
-            mcp_catalog,
             deferred_mcp,
             _hash_metadata(metadata),
         )
@@ -303,7 +307,14 @@ class PromptLayers:
         # if key is different, build the body
         body = "\n\n".join([
             self.build_l0(),
-            self.build_l1(tools, user_memory=user_memory, project_memory=project_memory, skill_catalog=skill_catalog, tool_catalog_groups=tool_catalog_groups),
+            self.build_l1(
+                tools,
+                user_memory=user_memory,
+                project_memory=project_memory,
+                skill_catalog=skill_catalog,
+                tool_catalog_groups=tool_catalog_groups,
+                deferred_mcp=deferred_mcp,
+            ),
             self.build_l2(git_available=git_available, metadata=metadata)
         ]).strip()
         
@@ -351,10 +362,6 @@ def _project_memory_section(text) -> str:
     """Render the project memory section into a string."""
     return (f"Project conventions (human-authored, stable; honor unless the current turn "
             f"explicitly overrides):\n{text.strip()}")
-
-def messages_to_text(messages, limit=16) -> str:
-    """Render the messages into a string."""
-    return "\n\n".join(f"{m.type}: {str(m.content)[:1200]}" for m in list(messages)[-limit:])
 
 @dataclass
 class TaskPrompts:

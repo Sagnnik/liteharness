@@ -420,6 +420,217 @@ Same harness across all four: turn loop, compaction, reflection, permissions, sk
 
 ---
 
+## Compaction persistence split
+
+Compaction has several channels — do not conflate them:
+
+| Channel | Kind / signal | Who writes | When |
+|---|---|---|---|
+| Durable notice | `compact` | CodingSession (adapter) | `/compact`, pre-act notices, and live agent-turn `SessionEvent("compaction")` rows the adapter durable-logs |
+| Durable LLM I/O | `compaction_llm` | SDK `summarize_history` | Summary path only (not silent `tool_outputs`) |
+| Graph state | `compacted_messages` | agent node | Any successful compaction (`tool_outputs` or `summary`) |
+| Live stream | `SessionEvent("compaction")` | Session | Pre-act checkpoints, plus `reason=agent_turn` when a Session is active and the agent node actually compacted |
+
+Silent `tool_outputs` compaction still updates graph state and emits a live
+`SessionEvent("compaction")` with `action=tool_outputs` (when a Session is
+bound), but never writes `compaction_llm`.
+
+## Reflection defaults (SDK vs CLI)
+
+Reflection is **opt-in** on the bare SDK:
+
+- `NessAgentOptions.reflection_token_ratio` defaults to `0.0` (mid-session
+  token-delta trigger off).
+- `NessAgentOptions.session_end_reflection` defaults to `False`.
+
+The coding CLI factory typically sets `REFLECTION_TOKEN_RATIO=0.4` from env
+(and leaves session-end reflection off unless toggled in `/config`). To enable
+in an SDK app:
+
+```python
+options=NessAgentOptions(
+    reflection_token_ratio=0.3,       # mid-session background gate
+    session_end_reflection=True,      # finalize on exit / archive
+)
+# ...
+await session.finalize_reflection()
+```
+
+Durable audit rows use ThreadStore `kind=reflection`. There is no live
+`SessionEvent` for reflection.
+
+## Context / graph invariants
+
+These contracts keep the L0–L2 prefix cache and compaction splice correct:
+
+- **No system messages in state.** `AgentState.messages` holds the conversation
+  only. The L0–L2 system prefix is rebuilt each `agent_node` turn and never
+  checkpointed.
+- **L3 is ephemeral.** Overlay text is injected via `_with_working_state_tail`
+  as a `<system-reminder>` (see `wrap_system_reminder`) for the model call only
+  — it is never written into `AgentState.messages`.
+- **`session.metadata` identity.** `make_nodes` snapshots the metadata dict at
+  graph build. In-place mutation of `session.metadata` is visible on later
+  turns; reassignment (`session.metadata = {...}`) needs `rebuild_graph()`.
+- **Plan write gating.** When `agent_mode == "plan"` and
+  `ModeConfig.plan_mode_readonly` is true (default, including when
+  `modes is None`), state-changing tools are denied. Set
+  `ModeConfig(plan_mode_readonly=False)` to allow writes in plan mode.
+- **`recursion_limit`.** LangGraph turn depth comes from
+  `NessAgentOptions.recursion_limit` (default `75`), used by `Session.run` /
+  `Session.stream`.
+
+### Preview system + L3
+
+```python
+preview = await session.preview_context()           # current mode
+# preview = await session.preview_context(mode="plan")
+
+print(preview.system_message)   # L0–L2 stable prefix
+print(preview.overlay)          # joined L3 sections
+print(preview.overlay_sections) # dict of named sections
+print(preview.overlay_reminder) # <system-reminder>… wrap
+```
+
+Does not call the model or compaction LLM. Useful for inspecting what the
+next turn would put in the system message and working-state tail.
+
+## SDK persistence recipe
+
+`Session` is the turn engine. Durable thread CRUD lives on
+`agent.config.thread_store` (`ThreadStore`, exported from `liteharness`).
+Resume/archive are not CLI-only — wire them with the primitives below (or use
+`CodingSession.resume` / `CodingSession.reset` for the batteries-included
+coding path).
+
+### Event-kind ownership
+
+| Kind | Writer |
+|------|--------|
+| `user`, `compact` | App / `CodingSession` |
+| `assistant`, `tool`, `usage`, `approval` | Graph (`nodes.py`) |
+| `reflection` | `reflection.py` (durable only; not a `SessionEvent`) |
+| `compaction_llm` | `compaction.py` |
+
+**Important:**
+
+- Bare `Session.run` / `Session.stream` do **not** auto-persist `user` (or
+  `compact`) rows — apps must `append_event`, or use `CodingSession.run_turn`.
+- `ThreadStore.list_threads` currently filters to `session-*` prefixes only;
+  custom thread IDs will not appear until filters are made explicit in a later
+  pass.
+
+```python
+from liteharness import NessAgent, PromptLayersConfig, ThreadStore
+from liteharness_cli.events import events_to_messages  # coding transcript rebuild
+
+
+# --- small helpers apps can copy --------------------------------------------
+
+async def persist_user_turn(session, text: str, *, images=None) -> int | None:
+    """Append a user row before session.run / session.stream."""
+    store = session.agent.config.thread_store
+    event = {"kind": "user", "content": text}
+    if images:
+        event["images"] = list(images)
+    return store.append_event(session.thread_id, event)
+
+
+async def persist_assistant_turn(session, text: str) -> int | None:
+    store = session.agent.config.thread_store
+    return store.append_event(
+        session.thread_id, {"kind": "assistant", "content": text}
+    )
+
+
+async def archive_thread(session) -> str:
+    """Finalize reflection (if enabled) and archive the current thread."""
+    await session.finalize_reflection()
+    return session.agent.config.thread_store.archive_thread(session.thread_id)
+
+
+async def resume_thread(session, thread_id: str, *, vision: bool | None = None) -> bool:
+    """Rebuild live graph state from the durable event log.
+
+    Uses Session.reset_checkpointer + Session.bootstrap so the event log is
+    the single source of truth (do not reuse a dirty MemorySaver).
+    """
+    store = session.agent.config.thread_store
+    events = store.load_thread_events(thread_id)
+    if not events:
+        return False
+    perms = session.agent.config.permission_store
+    messages = events_to_messages(
+        events,
+        store.list_subagents(thread_id),
+        vision=vision,
+        perms=perms,
+    )
+    session.thread_id = thread_id
+    session.reset_checkpointer()
+    session.bootstrap(messages)
+    await session.refresh_context_snapshot()
+    return True
+
+
+async def list_recent_threads(session, n: int = 10) -> list[dict]:
+    return session.agent.config.thread_store.list_threads(n)
+
+
+# --- usage ------------------------------------------------------------------
+
+agent = NessAgent(model=..., prompt=PromptLayersConfig())
+session = agent.session(thread_id="session-demo-1")
+
+await persist_user_turn(session, "add a rate limiter")
+result = await session.run("add a rate limiter")
+await persist_assistant_turn(session, result.assistant_message)
+
+# later, in another process:
+session2 = agent.session(thread_id="session-fresh")
+ok = await resume_thread(session2, "session-demo-1")
+assert ok
+messages = await session2.get_messages()  # public read — no app.aget_state needed
+```
+
+Public reads on `Session`: `get_state()`, `get_messages()`, `aget_todos()`,
+`refresh_context_snapshot()`.
+
+---
+
+## Hooks (three different concepts)
+
+LiteHarness uses the word “hooks” in three places — do not confuse them:
+
+1. **`HookRunner`** — tool pre/post hooks (`preToolUse` / `postToolUse` only).
+   Loaded from `{ness_dir}/hooks.json` by default, and/or registered in-memory:
+
+   ```python
+   from liteharness import Hook, NessAgent, PromptLayersConfig
+
+   def deny_shell(payload: dict) -> tuple[bool, str]:
+       if payload.get("tool") == "shell":
+           return False, "shell blocked by policy"
+       return True, ""
+
+   agent = NessAgent(
+       model=...,
+       prompt=PromptLayersConfig(),
+       hooks=[Hook(event="preToolUse", matcher="*", handler=deny_shell)],
+       # hooks_config=Path(".ness/hooks.json"),  # default when omitted
+   )
+   # or later: agent.config.hook_runner.register(Hook(...))
+   ```
+
+2. **`approval_handler` / `question_handler`** — interactive gates on the agent
+   for destructive tools and the `question` tool (not JSON hooks).
+
+3. **`on_plan_turn` / `on_interrupt`** — per-`Session` coding callbacks
+   (plan autosave / interrupt text). Installed via `agent.session(...)`.
+
+---
+
+
 ## Tracing & cost tracking
 
 OpenTelemetry-style tracing emits one span per turn, LLM call, tool execution, compaction summarisation, and reflection gate. Token usage (input / output / cached / cache hit rate) and estimated USD cost are recorded on every LLM span and aggregated per model.

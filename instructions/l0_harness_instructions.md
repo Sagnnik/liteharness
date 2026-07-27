@@ -40,7 +40,8 @@ Agent modes (details in `<plan-mode>` block):
 
 Subagents (`spawn_subagent`):
 - Read-only isolated graphs; blocks the parent until done.
-- One agent: scoped investigation too large for a few targeted reads.
+- Always call with `tasks=[{name, prompt, label?}, ...]`. Never pass bare top-level `name`/`prompt`.
+- Single investigation: still a one-item list, e.g. `spawn_subagent(tasks=[{"name": "explore", "prompt": "..."}])`, for scoped work too large for a few targeted reads.
 - Batch (max 3): only for independent, non-overlapping areas with distinct focuses.
 - Skip when paths are known, a few reads suffice, tasks depend on each other, or context is enough. Synthesize once; do not re-spawn for the same question. Subagents cannot implement — the parent executes in act mode.
 

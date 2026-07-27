@@ -56,7 +56,8 @@ import typer
 
 from liteharness.compaction import resolve_token_count
 from liteharness.mcp import MCPManager
-from liteharness.tools import is_git_repo, register_dynamic_tools, set_mcp_catalog
+from liteharness.session_context import SessionContext, set_session_context
+from liteharness.tools import is_git_repo
 from liteharness_cli.chat_model import (
     ModelOverrides,
     configure_model,
@@ -160,7 +161,6 @@ def _check_prompt_budget(coding, git_available: bool) -> str | None:
         git_available=git_available,
         metadata={},
         tool_catalog_groups=cfg.tool_registry.tool_catalog_groups(),
-        mcp_catalog=cfg.tool_registry.mcp_catalog(),
         deferred_mcp=cfg.tool_registry.deferred_mcp_summary(),
     ).strip()
     tokens = resolve_token_count(
@@ -192,13 +192,24 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
     coding.perms.clear_session_rules()
 
     # Register MCP tools as known but deferred: nothing is bound until
-    # /mcp (session registry) or the model-facing add_tools (module-level
-    # bridge) activates them.
+    # /mcp or the model-facing add_tools activates them on this registry.
     mcp_tools = list(mcp.tools.values())
     coding.tool_registry.register_dynamic(mcp_tools)
     coding.tool_registry.set_mcp_catalog(mcp.catalog())
-    register_dynamic_tools(mcp_tools)
-    set_mcp_catalog(mcp.catalog())
+
+    # Install session context early so idle-path helpers (e.g. MCP arg
+    # previews in tool_display) and discover tools share one ToolRegistry.
+    set_session_context(
+        SessionContext(
+            permissions=coding.perms,
+            options=coding.cfg.options,
+            thread_store=coding.thread_store,
+            ness_dir=coding.ness_dir,
+            project_root=coding.project_root,
+            agent_config=coding.cfg,
+            all_skills=coding.skill_loader.load() if coding.skill_loader else None,
+        )
+    )
 
     ui = TuiApp(
         coding,

@@ -59,10 +59,10 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 - `memory.py`: NESS.md, USER.md, and per-thread session memory helpers.
 - `tools/`: local tools for files, search, web (`web_search`, `webfetch` via Exa or DuckDuckGo fallback), shell, todos, user clarification (`question`), and subagents.
 - `permissions.py`: `.ness/permissions.json` allow/deny/ask matching.
-- `hooks.py`: `.ness/hooks.json` pre/post/user/session command hooks.
+- `src/liteharness/hooks.py`: `.ness/hooks.json` (and in-memory) `preToolUse` / `postToolUse` hooks.
 - `mcp_client.py`: stdio MCP startup and namespaced MCP tool wrappers.
 - `session.py`: SQLite thread storage (`threads.db`) for events, metadata, and subagent links.
-- `skill_loader.py`: `SKILL.md` skill discovery under `.ness/skills/`.
+- `src/liteharness/skills.py`: `SKILL.md` skill discovery; bodies load via the `skill_view` tool.
 - `config.py`: settings, model pricing, and cost/cache tracking.
 - `parsers.py`: native tool-call extraction.
 
@@ -72,10 +72,10 @@ LiteHarness splits context into four layers to keep prompt caching stable:
 
 1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
-3. **L2 project context** (`build_project_context_block`): repo structure, git availability, and the full bodies of explicitly-activated (sticky) skills.
-4. **L3 working state** (`build_working_state_sections` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, and session memory from `.ness/sessions/mem_<thread_id>.md`. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
+3. **L2 project context**: app-supplied domain/repo structure (`PromptLayersConfig.l2_context`); not auto-loaded by bare `Session`.
+4. **L3 working state** (`CodingOverlay` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, session memory, skill-request hints, and loaded-skill summaries. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
 
-The L1 skill catalog lists every available skill with its path; full skill bodies load into L2 on trigger match or `/skill <name>` and stay sticky for the session once loaded (see Skills below).
+The L1 skill catalog lists every available skill with its path; full skill bodies enter the conversation when the model calls `skill_view` (or `read`s the path). `/skill <name>` stages a one-shot L3 hint for the next turn — it does not inject the body itself (see Skills below).
 
 ## Agent Modes
 
@@ -158,7 +158,7 @@ Summary compaction triggers at 80% (not at the context ceiling): past that point
 
 ## Skills
 
-Skills live under `.ness/skills/<name>/SKILL.md`:
+Skills live under `.ness/skills/<name>/SKILL.md` (wired via `skills_dir` on the coding agent):
 
 ```text
 .ness/skills/react_component/SKILL.md
@@ -170,17 +170,13 @@ Each `SKILL.md` may include YAML frontmatter:
 ---
 name: react_component
 description: Create React components matching project conventions.
-triggers: [react, component, tsx]
-references: [examples/Button.tsx]
 ---
 # React Component
 
 Skill instructions go here.
 ```
 
-Small reference files (≤ 20 lines) are inlined into the prompt. Larger references are listed for on-demand `read` fetch.
-
-Skill loading is two-stage. A one-line catalog of every available skill (`name: description`, plus path) is always present in L1. Full `SKILL.md` bodies load into L2 when a frontmatter trigger matches the user's message, or when the user runs `/skill <name>`. Otherwise the agent can `read` the path from the catalog; that content stays in the conversation via tool messages. Once a skill is sticky in L2 it remains for the rest of the session.
+Skill loading is two-stage. A one-line catalog of every available skill (`name: description`, plus path) is always present in L1. Full `SKILL.md` bodies load when the model calls the `skill_view` tool (or `read`s the catalog path); that content stays in the conversation as a tool message. `/skill <name>` stages a one-shot L3 `skill_request` hint for the next user turn. Successfully viewed skills accumulate in L3 as a `loaded_skills` summary (metadata only — the body remains in tool history).
 
 ## Permissions
 
@@ -273,7 +269,13 @@ tools: [read, grep, glob, web_search, webfetch]
 You are a read-only explorer. Return concise findings with file references.
 ```
 
-The `spawn_subagent` tool runs one or more filtered, isolated read-only graphs. Only the parent agent can spawn subagents; nested spawning is blocked by the read-only tool filter. For one task, pass `name` and `prompt`. For parallel exploration, pass `tasks`, plus optional `max_concurrency` and `timeout`; the parent agent waits until every subagent completes, fails, or times out.
+The `spawn_subagent` tool runs one or more filtered, isolated read-only graphs. Only the parent agent can spawn subagents; nested spawning is blocked by the read-only tool filter. Always pass `tasks` — a non-empty list of `{name, prompt, label?}` — plus optional `max_concurrency` and `timeout`. Never call with bare top-level `name`/`prompt`. A single investigation still uses a one-item list:
+
+```python
+spawn_subagent(tasks=[{"name": "explore", "prompt": "Find route handlers"}])
+```
+
+The parent agent waits until every subagent completes, fails, or times out.
 
 Batch mode validates every task before starting any of them and returns one structured result with each task's status, duration, thread id, label, and output.
 
@@ -298,7 +300,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 
 **Context & memory**
 
-- `/skill [<name>]`: list skills, or load a skill's full instructions on the next message.
+- `/skill [<name>]`: list skills, or stage a skill for the next message (model loads via `skill_view`).
 - `/init [force]`: initialize `.ness/` (dirs, permissions, hooks, mcp) and generate `.ness/NESS.md`.
 - `/memory` or `/memory add <note>`: read or append project memory.
 - `/user` or `/user add <note>`: read or append user preferences.

@@ -144,6 +144,12 @@ class DefaultRuleForTests(unittest.TestCase):
         rule = permissions.default_rule_for("shell", {"action": "run", "command": "git status -s"})
         self.assertEqual(rule, "shell:run:git status*")
 
+    def test_missing_action_defaults_to_run(self) -> None:
+        rule = permissions.default_rule_for("shell", {"command": "git status -s"})
+        self.assertEqual(rule, "shell:run:git status*")
+        key = permissions.pattern_key("shell", {"command": "git status --short"})
+        self.assertEqual(key, "shell:run:git status --short")
+
     def test_pytest_generalizes_base_command(self) -> None:
         rule = permissions.default_rule_for("shell", {"action": "run", "command": "pytest tests/foo.py"})
         self.assertEqual(rule, "shell:run:pytest*")

@@ -9,7 +9,7 @@ Bullets are injected into L3 system-reminder overlay on subsequent turns.
 
 from __future__ import annotations
 
-import asyncio, json
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -28,6 +28,7 @@ from liteharness.tracing.semconv import (
 )
 from liteharness.tracing.messages import serialize_completion_dict, serialize_messages
 from liteharness.tools.todo import render_todos
+from liteharness.utils import message_to_text
 
 _reflection_locks: dict[str, asyncio.Lock] = {}
 _completed_indices: dict[str, int] = {}
@@ -45,6 +46,7 @@ class ReflectionStructuredOutput(BaseModel):
 class ReflectionResult:
     memory_updated: bool = False
     error: str = ""
+    bullets: tuple[str, ...] = ()
 
 def consume_reflection_message_index(thread_id: str) -> int | None:
     """Pop index written by last successful reflection. Agent stores it in `last_reflected_message_index`"""
@@ -72,9 +74,12 @@ def is_reflection_running(thread_id: str) -> bool:
 
 
 # --- reflection gate ---
-def _messages_to_text(messages, limit=16) -> str:
-    messages = list(messages)[-limit:]
-    return "\n\n".join(f"{m.type}: {str(m.content)[:1200]}" for m in messages)
+def _messages_for_prompt(messages, limit=16) -> str:
+    """Join recent messages for the reflection prompt via ``message_to_text``."""
+    recent = list(messages)[-limit:]
+    return "\n\n".join(
+        f"{m.type}: {message_to_text(m)[:1200]}" for m in recent
+    )
 
 
 def _normalize_bullets(bullets: list[str]) -> list[str]:
@@ -148,18 +153,18 @@ async def run_reflection_gate(
 
         if not recent: 
             return ReflectionResult()
-        # get the bullets text
-        bullets_txt = "\n".join(f"- {b}" for b in (memory.load_session(thread_id).splitlines() if memory else []))
+        # load_session already returns "- bullet" lines; use as-is.
+        bullets_txt = memory.load_session(thread_id) if memory else ""
         tmpl = (task_prompts.reflection if task_prompts else None)
         todos_txt = (todos or "").strip() or "No todos"
         
         prompt = tmpl.format(
             thread_id=thread_id, 
             user_message_count=user_message_count,
-            messages=_messages_to_text(recent), 
+            messages=_messages_for_prompt(recent), 
             current_session_bullets=bullets_txt or "(none yet)",
             todos=todos_txt,
-        ) if tmpl else _messages_to_text(recent)
+        ) if tmpl else _messages_for_prompt(recent)
         
         try:
             structured_model = model.with_structured_output(ReflectionStructuredOutput)
@@ -224,7 +229,7 @@ async def run_reflection_gate(
             memory_updated=updated,
             error="",
         )
-        return ReflectionResult(memory_updated=updated)
+        return ReflectionResult(memory_updated=updated, bullets=tuple(bullets))
 
 # --- finalize session reflection ---
 async def finalize_session_reflection(

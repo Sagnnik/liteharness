@@ -20,7 +20,7 @@ from liteharness import (
 from liteharness.context.overlay import OverlayContext
 from liteharness.graph.helpers import _with_working_state_tail
 from liteharness.graph.nodes import make_nodes
-from liteharness.options import NessAgentOptions
+from liteharness.options import ModeConfig, NessAgentOptions
 from liteharness.tools.todo import get_thread_todos, set_current_thread, set_thread_todos
 
 
@@ -32,9 +32,10 @@ def _agent(**kwargs):
         """Return pong."""
         return "pong"
 
+    tools = kwargs.pop("tools", [ping])
     return NessAgent(
         model=model,
-        tools=[ping],
+        tools=tools,
         prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
         **kwargs,
     )
@@ -118,6 +119,95 @@ def test_toggle_mode():
     assert session.toggle_mode() == "plan"
     assert session.toggle_mode() == "act"
     assert session._pending_act_checkpoint is True
+
+
+def test_preview_context_system_and_l3(tmp_path: Path):
+    from liteharness import ContextPreview
+
+    agent = _agent(
+        options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
+        overlay=CodingOverlay(plan_mode_template="PLAN BODY"),
+    )
+    session = agent.session(thread_id="t-preview", agent_mode="act", git_available=False)
+
+    async def _run():
+        act = await session.preview_context()
+        assert isinstance(act, ContextPreview)
+        assert "L0" in act.system_message
+        assert act.agent_mode == "act"
+        assert "plan_mode" not in act.overlay_sections
+        assert act.overlay_reminder == "" or "<system-reminder>" in act.overlay_reminder
+
+        plan = await session.preview_context(mode="plan")
+        assert plan.agent_mode == "plan"
+        assert "plan_mode" in plan.overlay_sections
+        assert "PLAN BODY" in plan.overlay
+        assert plan.overlay_reminder.startswith("<system-reminder>")
+        assert plan.system_message  # same L0–L2 shape for both modes
+
+    asyncio.run(_run())
+
+
+def test_plan_mode_gates_writes_without_mode_config(tmp_path: Path):
+    """Plan-mode write gating must not require ModeConfig to be present."""
+    agent = _agent(
+        tools=["write", "read"],
+        options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
+        modes=None,
+    )
+    assert agent.config.modes is None
+    rt = make_nodes(agent.config, thread_id="t-plan-gate", agent_mode="plan", git_available=False)
+
+    async def _run():
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write",
+                    "args": {"path": "x.py", "content": "print(1)"},
+                    "id": "w1",
+                }
+            ],
+        )
+        route = await rt.route_after_agent({"messages": [ai], "agent_mode": "plan"})
+        assert route == "tools"
+        out = await rt.tools_node({"messages": [ai], "agent_mode": "plan", "todos": []})
+        msgs = out["messages"]
+        assert len(msgs) == 1
+        assert "Unavailable in plan mode" in msgs[0].content
+
+    asyncio.run(_run())
+
+
+def test_plan_mode_readonly_false_allows_mutating_tools(tmp_path: Path):
+    agent = _agent(
+        tools=["write"],
+        options=NessAgentOptions(
+            project_root=tmp_path,
+            ness_dir=tmp_path / ".ness",
+            enable_approval=False,
+        ),
+        modes=ModeConfig(plan_mode_readonly=False),
+    )
+    rt = make_nodes(agent.config, thread_id="t-plan-rw", agent_mode="plan", git_available=False)
+
+    async def _run():
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write",
+                    "args": {"path": str(tmp_path / "ok.py"), "content": "x=1\n"},
+                    "id": "w2",
+                }
+            ],
+        )
+        route = await rt.route_after_agent({"messages": [ai], "agent_mode": "plan"})
+        assert route == "tools"
+        out = await rt.tools_node({"messages": [ai], "agent_mode": "plan", "todos": []})
+        assert "Unavailable in plan mode" not in out["messages"][0].content
+
+    asyncio.run(_run())
 
 
 def test_approval_session_and_never_persist(tmp_path: Path):
@@ -255,6 +345,33 @@ def test_session_emits_assistant_events():
         assert "assistant_delta" in events or "assistant_final" in events or "error" in events
 
     asyncio.run(_run())
+
+
+def test_session_compaction_bridge_queues_event():
+    import liteharness.session as sm
+
+    agent = _agent()
+    session = agent.session(thread_id="t-cbridge")
+    bridge = getattr(session._cfg, "_compaction_bridge", None)
+    assert callable(bridge)
+
+    token = sm._active_session.set(session)
+    try:
+        bridge(
+            {
+                "reason": "agent_turn",
+                "action": "summary",
+                "forced": False,
+                "info": "compacted",
+            }
+        )
+        events = session._drain_queue()
+    finally:
+        sm._active_session.reset(token)
+
+    assert any(
+        ev.kind == "compaction" and ev.data.get("reason") == "agent_turn" for ev in events
+    )
 
 
 def test_smoke_still_passes_import():
@@ -561,11 +678,14 @@ def test_vision_disabled_emits_warning_and_drops_images():
     events = _stream_session(session, "see this [Image #1]", images=["data:image/png;base64,zz"])
 
     assert any(ev.kind == "warning" for ev in events)
-    # The payload message is text-only (no image_url blocks).
+    # The payload message is text-only (no image_url blocks). TUI
+    # ``[Image #N]`` placeholder stripping is adapter-owned — Session
+    # forwards the text as given.
     msgs = fake.last_payload["messages"]
     user_msg = msgs[-1]
     assert isinstance(user_msg.content, str)
-    assert "[Image #1]" not in user_msg.content
+    assert "[Image #1]" in user_msg.content
+    assert not isinstance(user_msg.content, list)
 
 
 def test_no_durable_compaction_append_in_sdk(tmp_path: Path):
@@ -607,28 +727,6 @@ def test_no_durable_compaction_append_in_sdk(tmp_path: Path):
     # ...but the SDK must NOT have written a durable ``compact`` event row.
     durable = [e for e in cfg.thread_store.load_thread_events(session.thread_id) if e.get("kind") == "compact"]
     assert durable == [], "SDK wrote a durable compact row; the adapter should own that"
-
-
-def test_is_subagent_active_drops_events_when_active():
-    agent = _agent()
-    session = agent.session(thread_id="t-sub")
-    fake = _FakeApp(
-        [
-            {
-                "event": "on_chat_model_end",
-                "name": "agent",
-                "data": {"output": {"messages": []}},
-            },
-        ]
-    )
-    session._app = fake
-
-    # With the SDK signal reporting active subagent runs, the dispatcher must
-    # skip every event from the child branch.
-    with patch.object(session, "is_subagent_active", return_value=True):
-        events = _stream_session(session, "go")
-
-    assert all(ev.kind != "assistant_final" for ev in events)
 
 
 # ---------------------------------------------------------------------------
@@ -770,9 +868,27 @@ def test_explicit_active_skills_does_not_consume_pending():
     assert session._pending_skills == ["pending"]
 
 
-def test_soft_pre_act_checkpoint_emits_passive_ask_event(tmp_path: Path):
-    """The soft plan→act checkpoint consults no handler: it always emits a
-    passive ``ask=True`` notice (the user can /compact if they want) and never
+def test_stage_skills_appends_and_dedupes():
+    agent = _agent()
+    session = agent.session(thread_id="t-stage")
+    session.stage_skills(["a", "b"])
+    session.stage_skills(["b", "c"])
+    assert session._pending_skills == ["a", "b", "c"]
+
+    payload, _ = asyncio.run(
+        session._build_run_payload(
+            HumanMessage(content="hi"),
+            active_skills=None,
+            mode_switch="",
+        )
+    )
+    assert payload["activate_skills"] == ["a", "b", "c"]
+    assert session._pending_skills == []
+
+
+def test_soft_pre_act_checkpoint_emits_advisory_event(tmp_path: Path):
+    """The soft plan→act checkpoint consults no handler: it always emits an
+    ``advisory=True`` notice (the user can /compact if they want) and never
     force-compacts."""
     agent = _agent()
     session = agent.session(thread_id="t-soft-checkpoint")
@@ -799,11 +915,35 @@ def test_soft_pre_act_checkpoint_emits_passive_ask_event(tmp_path: Path):
         asyncio.run(session._maybe_checkpoint_before_act())
 
     assert session._force_compact is False
-    asks = [ev for ev in session._drain_queue() if ev.kind == "compaction"]
-    assert len(asks) == 1
-    assert asks[0].data["reason"] == "pre_act_checkpoint"
-    assert asks[0].data["ask"] is True
-    assert asks[0].data["forced"] is False
+    notices = [ev for ev in session._drain_queue() if ev.kind == "compaction"]
+    assert len(notices) == 1
+    assert notices[0].data["reason"] == "pre_act_checkpoint"
+    assert notices[0].data["advisory"] is True
+    assert notices[0].data["forced"] is False
+
+
+def test_get_state_and_get_messages(tmp_path: Path):
+    agent = _agent()
+    session = agent.session(thread_id="t-reads")
+    msgs = [HumanMessage(content="hello"), AIMessage(content="world")]
+
+    async def _stub_state(cfg):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(values={"messages": msgs, "todos": [{"id": "1"}]})
+
+    session.app.aget_state = _stub_state
+
+    async def _run():
+        state = await session.get_state()
+        messages = await session.get_messages()
+        todos = await session.aget_todos()
+        return state, messages, todos
+
+    state, messages, todos = asyncio.run(_run())
+    assert state["messages"] == msgs
+    assert messages == msgs
+    assert todos == [{"id": "1"}]
 
 
 def test_hard_pre_act_checkpoint_force_compacts_autonomously(tmp_path: Path):

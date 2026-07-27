@@ -126,9 +126,9 @@ def _read_token(args: dict[str, Any]) -> str:
 
 def _grep_token(args: dict[str, Any]) -> str:
     parts = [_truncate_arg(str(args.get("pattern", "")), 40)]
-    include = str(args.get("include") or "").strip()
-    if include:
-        parts.append(include)
+    file_filter = str(args.get("glob") or "").strip()
+    if file_filter:
+        parts.append(file_filter)
     path = _short_path(str(args.get("path", ".")))
     if path and path != ".":
         parts.append(path)
@@ -145,14 +145,11 @@ def _path_token(args: dict[str, Any]) -> str:
 
 def _edit_token(args: dict[str, Any]) -> str:
     path = _short_path(str(args.get("path", "")))
-    edits = args.get("edits")
-    count = len(edits) if isinstance(edits, list) else 0
-    label = f"{count} edit" if count == 1 else f"{count} edits"
-    return _join_parts(path, label)
+    return _join_parts(path, "1 edit")
 
 
 def _shell_token(args: dict[str, Any]) -> str:
-    action = str(args.get("action") or "").strip().lower()
+    action = str(args.get("action") or "run").strip().lower()
     if action == "run":
         parts = ["run", _truncate_arg(str(args.get("command", "")), _DEFAULT_ARG_PREVIEW)]
         timeout = int(args.get("timeout", _SHELL_DEFAULT_TIMEOUT) or _SHELL_DEFAULT_TIMEOUT)
@@ -241,9 +238,13 @@ def _question_token(args: dict[str, Any]) -> str:
 
 
 def _mcp_arg_names(full_name: str) -> list[str]:
-    from liteharness.tools import mcp_catalog
+    from liteharness.session_context import try_get_session_context
 
-    for info in mcp_catalog().values():
+    ctx = try_get_session_context()
+    catalog: dict = {}
+    if ctx and ctx.agent_config and ctx.agent_config.tool_registry is not None:
+        catalog = ctx.agent_config.tool_registry.mcp_catalog()
+    for info in catalog.values():
         for entry in info.get("tools", []):
             if str(entry.get("name") or "") == full_name:
                 raw = entry.get("arg_names", [])
@@ -294,10 +295,7 @@ def _spawn_subagent_lines(args: dict[str, Any]) -> list[tuple[str, str]]:
             rows.append((agent, prompt))
         if rows:
             return rows
-
-    agent = str(args.get("name", "?"))
-    prompt = _truncate_arg(str(args.get("prompt", "")), _PROMPT_PREVIEW)
-    return [(agent, prompt)]
+    return [("?", "")]
 
 
 def _generic_args_text(args: Any) -> str:
@@ -476,7 +474,9 @@ def format_shell_output(content: str) -> tuple[str, str]:
     (bounded) suitable for a multi-line panel.
     """
     text = str(content or "")
-    status = parse_result_status(text) or "ok"
+    status = parse_result_status(text)
+    if status is None:
+        status = "error" if is_tool_result_error(text) else "ok"
     exit_code = _shell_field(text, "exit_code")
     body = _extract_output_section(text)
     if len(body) > _SHELL_DISPLAY_LIMIT:

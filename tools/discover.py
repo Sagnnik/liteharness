@@ -144,8 +144,6 @@ def add_tools(names: list[str]) -> str:
 
     if not names:
         return "Error: add_tools requires at least one tool name"
-    if isinstance(names, str):
-        names = [names]
 
     added, unknown = activate_mcp_tools(names)
 

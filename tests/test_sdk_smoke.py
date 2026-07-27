@@ -14,12 +14,14 @@ def test_import_liteharness_public_api():
         "NessAgentConfig",
         "AgentSpec",
         "Session",
+        "ContextPreview",
         "NoopTracer",
         "CostTracker",
         "PromptLayers",
         "ToolRegistry",
         "coding_tools",
         "NessAgentOptions",
+        "message_to_text",
     ):
         assert hasattr(lh, name), name
     assert not hasattr(lh, "ContextBudgetConfig")
