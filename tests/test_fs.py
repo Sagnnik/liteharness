@@ -14,7 +14,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 
 from liteharness.permissions import DEFAULT_RULES, PermissionStore
 from liteharness.tools.fs import (
-    delete_file,
+    delete,
     edit,
     glob,
     read,
@@ -41,25 +41,25 @@ class DeleteFileTests(SessionContextTestMixin, unittest.TestCase):
     def test_deletes_existing_file(self) -> None:
         target = self.root / "old_module.py"
         target.write_text("x = 1\n", encoding="utf-8")
-        result = delete_file.invoke({"path": "old_module.py"})
+        result = delete.invoke({"path": "old_module.py"})
         self.assertEqual(result, "Deleted old_module.py")
         self.assertFalse(target.exists())
 
     def test_refuses_directory(self) -> None:
         (self.root / "pkg").mkdir()
-        result = delete_file.invoke({"path": "pkg"})
+        result = delete.invoke({"path": "pkg"})
         self.assertIn("directory", result)
         self.assertTrue((self.root / "pkg").is_dir())
 
     def test_refuses_missing_file(self) -> None:
-        result = delete_file.invoke({"path": "missing.txt"})
+        result = delete.invoke({"path": "missing.txt"})
         self.assertIn("does not exist", result)
 
     def test_refuses_git_paths(self) -> None:
         git_file = self.root / ".git" / "config"
         git_file.parent.mkdir(parents=True)
         git_file.write_text("[core]\n", encoding="utf-8")
-        result = delete_file.invoke({"path": ".git/config"})
+        result = delete.invoke({"path": ".git/config"})
         self.assertIn("protected", result)
         self.assertTrue(git_file.exists())
 
@@ -75,7 +75,7 @@ class DeleteFileTests(SessionContextTestMixin, unittest.TestCase):
             path = ness / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-            result = delete_file.invoke({"path": f".ness/{rel}"})
+            result = delete.invoke({"path": f".ness/{rel}"})
             with self.subTest(path=rel):
                 self.assertIn("protected", result)
                 self.assertTrue(path.exists())
@@ -85,7 +85,7 @@ class DeleteFileTests(SessionContextTestMixin, unittest.TestCase):
         outside = outside_parent / "outside_delete_test.txt"
         outside.write_text("nope", encoding="utf-8")
         try:
-            result = delete_file.invoke({"path": str(outside)})
+            result = delete.invoke({"path": str(outside)})
             self.assertTrue(result.startswith("Error:"))
             self.assertTrue(outside.exists())
         finally:

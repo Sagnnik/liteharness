@@ -2,7 +2,7 @@
 
 Each constant is the .strip()-equivalent of the original ``_instructions.md``
 file. Users can import these to inspect, copy, or modify them and feed the
-result back into ``PromptLayersConfig(l0=...)``, ``TaskPrompts(compaction=...)``,
+result back into ``PromptLayersConfig(l0=...)``, ``AuxPrompts(compaction=...)``,
 or ``CodingOverlay(plan_mode_template=...)``.
 """
 

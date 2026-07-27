@@ -161,7 +161,7 @@ class FakeCoding:
         self.project_root = Path.cwd()
         self.thread_store = _FakeThreadStore()
         self.cost_tracker = _FakeCostTracker()
-        self.perms = _FakePerms()
+        self.permission_store = _FakePerms()
         self.memory_store = _FakeMemoryStore()
         self.hook_runner = _FakeHookRunner()
         self.skill_loader = _FakeSkillLoader()
@@ -242,7 +242,7 @@ class FakeCoding:
     async def refresh_context_snapshot(self) -> dict:
         return {}
 
-    async def aget_todos(self) -> list[dict]:
+    async def get_todos(self) -> list[dict]:
         return []
 
     # --- thread management ----------------------------------------------------

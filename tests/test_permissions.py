@@ -200,55 +200,55 @@ class DefaultRuleForTests(unittest.TestCase):
         self.assertEqual(decision, "allow")
         self.assertEqual(rule, "web_search:*")
 
-    def test_webfetch_asks_by_default(self) -> None:
+    def test_fetch_url_asks_by_default(self) -> None:
         with mock.patch.object(self.store, "_load", return_value=DEFAULT_RULES.copy()):
-            decision, rule = self.store.check_with_rule("webfetch", {"url": "https://example.com/a"})
+            decision, rule = self.store.check_with_rule("fetch_url", {"url": "https://example.com/a"})
         self.assertEqual(decision, "ask")
         self.assertEqual(rule, "*")
 
-    def test_webfetch_default_rule_uses_normalized_url_only(self) -> None:
+    def test_fetch_url_default_rule_uses_normalized_url_only(self) -> None:
         rule = self.store.default_rule_for(
-            "webfetch",
+            "fetch_url",
             {"url": "https://Example.com:443/a?x=1#frag", "max_characters": 500},
         )
-        self.assertEqual(rule, "webfetch:url=https://example.com/a?x=1")
+        self.assertEqual(rule, "fetch_url:url=https://example.com/a?x=1")
 
-    def test_webfetch_approval_ignores_max_characters(self) -> None:
+    def test_fetch_url_approval_ignores_max_characters(self) -> None:
         rules = {
-            "allow": ["webfetch:url=https://example.com/a?x=1"],
+            "allow": ["fetch_url:url=https://example.com/a?x=1"],
             "deny": [],
             "ask": ["*"],
         }
         with mock.patch.object(self.store, "_load", return_value=rules):
             decision, rule = self.store.check_with_rule(
-                "webfetch",
+                "fetch_url",
                 {"url": "https://example.com/a?x=1", "max_characters": 5000},
             )
         self.assertEqual(decision, "allow")
-        self.assertEqual(rule, "webfetch:url=https://example.com/a?x=1")
+        self.assertEqual(rule, "fetch_url:url=https://example.com/a?x=1")
 
-    def test_webfetch_different_query_still_asks(self) -> None:
+    def test_fetch_url_different_query_still_asks(self) -> None:
         rules = {
-            "allow": ["webfetch:url=https://example.com/a?x=1"],
+            "allow": ["fetch_url:url=https://example.com/a?x=1"],
             "deny": [],
             "ask": ["*"],
         }
         with mock.patch.object(self.store, "_load", return_value=rules):
             decision, rule = self.store.check_with_rule(
-                "webfetch",
+                "fetch_url",
                 {"url": "https://example.com/a?x=2"},
             )
         self.assertEqual(decision, "ask")
         self.assertEqual(rule, "*")
 
-    def test_webfetch_wildcard_rule_does_not_bypass_per_url_approval(self) -> None:
+    def test_fetch_url_wildcard_rule_does_not_bypass_per_url_approval(self) -> None:
         rules = {
-            "allow": ["webfetch:*"],
+            "allow": ["fetch_url:*"],
             "deny": [],
             "ask": ["*"],
         }
         with mock.patch.object(self.store, "_load", return_value=rules):
-            decision, rule = self.store.check_with_rule("webfetch", {"url": "https://example.com/a"})
+            decision, rule = self.store.check_with_rule("fetch_url", {"url": "https://example.com/a"})
         self.assertEqual(decision, "ask")
         self.assertEqual(rule, "*")
 

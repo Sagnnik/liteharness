@@ -122,7 +122,7 @@ def resolve_usable_context_budget(
         return options.compaction_token_budget
 
     # calculate usable budget = window - reserve
-    reserve = options.compaction_output_reserve_tokens + options.compaction_input_reserve_tokens
+    reserve = options.compaction_output_reserve + options.compaction_input_reserve
     usable = window - reserve
     # for smaller models we return the exact window size
     if usable <= 0:
@@ -265,7 +265,7 @@ def compaction_label(action: CompactionAction, kept_recent: int = 0) -> str:
     return f"summary, kept last {kept_recent} messages"
 
 
-async def compact_messages_progressively(
+async def progressive_compact(
     messages: list[BaseMessage],
     *,
     known_input_tokens:int | None,
@@ -501,7 +501,7 @@ async def summarize_history(
     return summary
 
 
-def format_compaction_overlay_note(
+def compaction_overlay_note(
     result: CompactionResult,
     *,
     budget: int | None = None,

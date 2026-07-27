@@ -10,8 +10,8 @@ class NessAgentOptions:
 
     context_window: int | None = None
     compaction_token_budget: int = 120_000
-    compaction_output_reserve_tokens: int = 8_192
-    compaction_input_reserve_tokens: int = 4_096
+    compaction_output_reserve: int = 8_192
+    compaction_input_reserve: int = 4_096
     enable_approval: bool = True
     auto_save_threads: bool = True
     reflection_token_ratio: float = 0.0
@@ -51,12 +51,12 @@ class SubagentConfig:
     """Optional parallel sub-agent tasks (spawn_subagent tool uses this)."""
     prompt_template: str | None = None   # default subagent prompt body
     max_parallel: int = 3
-    default_tools: tuple[str, ...] = ("read", "grep", "glob", "web_search", "webfetch")
+    default_tools: tuple[str, ...] = ("read", "grep", "glob", "web_search", "fetch_url")
     default_timeout_seconds: int = 300
 
 
 @dataclass
-class PermissionPolicy:
+class PermissionRules:
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     ask: list[str] = field(default_factory=lambda: ["*"])

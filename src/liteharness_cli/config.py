@@ -180,8 +180,8 @@ class Settings(BaseSettings):
     session_end_reflection: bool = Field(default=False, alias="SESSION_END_REFLECTION")
     reflection_token_ratio: float = Field(default=0.4, alias="REFLECTION_TOKEN_RATIO")
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
-    compaction_output_reserve_tokens: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE_TOKENS")
-    compaction_input_reserve_tokens: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE_TOKENS")
+    compaction_output_reserve: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE")
+    compaction_input_reserve: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE")
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
@@ -262,7 +262,7 @@ def reasoning_efforts_for_model(model_name: str) -> tuple[str, ...]:
     return supported
 
 
-def default_reasoning_effort_for_model(model_name: str) -> str | None:
+def default_effort(model_name: str) -> str | None:
     efforts = reasoning_efforts_for_model(model_name)
     if not efforts:
         return None
@@ -279,4 +279,4 @@ def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
         return None
     if effort and effort in efforts:
         return effort
-    return default_reasoning_effort_for_model(model_name)
+    return default_effort(model_name)

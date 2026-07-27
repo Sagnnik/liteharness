@@ -11,7 +11,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from liteharness.options import (
     NessAgentOptions, MemoryConfig, ModeConfig, SubagentConfig,
 )
-from liteharness.context.layers import PromptLayers, PromptLayersConfig, TaskPrompts
+from liteharness.context.layers import PromptLayers, PromptLayersConfig, AuxPrompts
 from liteharness.context.overlay import OverlayProvider
 from liteharness.types import ApprovalHandler, QuestionHandler
 from liteharness.memory import MemoryBackend, MemoryStore
@@ -19,7 +19,7 @@ from liteharness.persistence import ThreadStore
 from liteharness.permissions import PermissionStore
 from liteharness.hooks import Hook, HookRunner
 from liteharness.skills import SkillLoader
-from liteharness.tools import LOCAL_TOOLS, ToolRegistry
+from liteharness.tools import BUILTIN_TOOLS, ToolRegistry
 from liteharness.utils import normalize_tool
 from liteharness.tracing.cost import CostTracker
 from liteharness.tracing.config import TracingConfig
@@ -85,8 +85,8 @@ class AgentSpec:
         with default instruction texts when ``None``).
     ``subagents``
         :class:`SubagentConfig` for the ``spawn_subagent`` tool.
-    ``task_prompts``
-        :class:`TaskPrompts` — templates for auxiliary LLM calls.
+    ``aux_prompts``
+        :class:`AuxPrompts` — templates for auxiliary LLM calls.
 
     **Filesystem paths**
 
@@ -124,7 +124,7 @@ class AgentSpec:
     model: BaseChatModel
     prompt: PromptLayers | PromptLayersConfig | Mapping[str, Any]
 
-    # tools — defaults to all SDK tools (LOCAL_TOOLS) when None
+    # tools — defaults to all SDK tools (BUILTIN_TOOLS) when None
     tools: Sequence[BaseTool] | None = None
 
     # optional auxiliary models
@@ -139,7 +139,7 @@ class AgentSpec:
     modes: ModeConfig | None = None
     subagents: SubagentConfig | None = None
     # Prompt templates for auxiliary model calls
-    task_prompts: TaskPrompts = field(default_factory=TaskPrompts)
+    aux_prompts: AuxPrompts = field(default_factory=AuxPrompts)
 
     # specs
     skills_dir: Path | None = None
@@ -176,7 +176,7 @@ class NessAgentConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     modes: ModeConfig | None = None
     subagents: SubagentConfig | None = None
-    task_prompts: TaskPrompts = field(default_factory=TaskPrompts)
+    aux_prompts: AuxPrompts = field(default_factory=AuxPrompts)
 
     # specs
     skills_dir: Path | None = None
@@ -251,7 +251,7 @@ class NessAgentConfig:
 
         resolved_tools = [
             normalize_tool(t)
-            for t in (spec.tools if spec.tools is not None else LOCAL_TOOLS)
+            for t in (spec.tools if spec.tools is not None else BUILTIN_TOOLS)
         ]
 
         # Default overlay: CodingOverlay ships with the SDK
@@ -283,7 +283,7 @@ class NessAgentConfig:
             memory=spec.memory,
             modes=spec.modes,
             subagents=spec.subagents,
-            task_prompts=spec.task_prompts,
+            aux_prompts=spec.aux_prompts,
             skills_dir=spec.skills_dir,
             hooks_config=spec.hooks_config if spec.hooks_config is not None else ness_dir / "hooks.json",
 
@@ -353,12 +353,12 @@ class NessAgent:
             (unknown keys ignored).
         tools : iterable of BaseTool / callable / str, optional
             Tools available to the agent. ``None`` (the default) loads all
-            SDK built-in tools (:data:`~liteharness.tools.LOCAL_TOOLS`).
+            SDK built-in tools (:data:`~liteharness.tools.BUILTIN_TOOLS`).
             Items may be ``BaseTool`` instances, plain callables
             (auto-wrapped), or strings resolved from the built-in tool map.
         **kwargs
             Any remaining :class:`AgentSpec` field such as ``options``,
-            ``overlay``, ``modes``, ``task_prompts``, ``memory``, etc.
+            ``overlay``, ``modes``, ``aux_prompts``, ``memory``, etc.
         """
         spec = AgentSpec(model=model, tools=tools, prompt=prompt, **kwargs)
         self._config = NessAgentConfig.resolve(spec)
@@ -394,7 +394,7 @@ class NessAgent:
         self,
         *,
         thread_id: str,
-        agent_mode: str | None = None,
+        mode: str | None = None,
         metadata: Mapping[str, Any] | None = None,
         git_available: bool | None = None,
         vision: bool | None = None,
@@ -407,7 +407,7 @@ class NessAgent:
         ----------
         thread_id : str
             Unique identifier for this conversation thread.
-        agent_mode : str, optional
+        mode : str, optional
             Initial mode — ``"act"`` or ``"plan"``. Falls back to
             ``config.modes.default`` (or ``"act"``) when ``None``.
         metadata : dict, optional
@@ -431,11 +431,11 @@ class NessAgent:
         from liteharness.session import Session
 
         cfg = self._config
-        mode = agent_mode or (cfg.modes.default if cfg.modes else "act")
+        mode = mode or (cfg.modes.default if cfg.modes else "act")
         return Session(
             self,
             thread_id=thread_id,
-            agent_mode=mode,
+            mode=mode,
             metadata=dict(metadata or {}),
             git_available=git_available,
             vision=vision,

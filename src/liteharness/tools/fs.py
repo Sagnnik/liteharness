@@ -71,7 +71,7 @@ def _reject_protected_write(rel_path: str, action: str) -> str | None:
 
 
 @tool
-def delete_file(path: str) -> str:
+def delete(path: str) -> str:
     """Delete a file from the filesystem."""
     try:
         abs_path = _validate_path(path)
@@ -82,7 +82,7 @@ def delete_file(path: str) -> str:
         if not p.exists():
             return f"Error: {rel} does not exist"
         if p.is_dir():
-            return f"Error: {rel} is a directory; delete_file only removes files"
+            return f"Error: {rel} is a directory; delete only removes files"
         p.unlink()
         return f"Deleted {rel}"
     except Exception as exc:

@@ -14,7 +14,7 @@ def build_graph(
     config,
     *,
     thread_id,
-    agent_mode="act",
+    mode="act",
     git_available=None,
     checkpointer: BaseCheckpointSaver | None = None,
     metadata: Mapping[str, Any] | None = None,
@@ -23,7 +23,7 @@ def build_graph(
     runtime = make_nodes(
         config,
         thread_id=thread_id,
-        agent_mode=agent_mode,
+        mode=mode,
         git_available=git_available,
         metadata=metadata,
     )

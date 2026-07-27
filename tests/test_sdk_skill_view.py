@@ -258,9 +258,9 @@ def test_skill_view_unknown_skill(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 def test_skill_view_registered():
-    from liteharness.tools import LOCAL_TOOLS, SMALL_ALWAYS_ON, READ_ONLY_TOOLS, TOOL_NAMES
-    assert any(t.name == "skill_view" for t in LOCAL_TOOLS)
-    assert "skill_view" in SMALL_ALWAYS_ON
+    from liteharness.tools import BUILTIN_TOOLS, ALWAYS_ON, READ_ONLY_TOOLS, TOOL_NAMES
+    assert any(t.name == "skill_view" for t in BUILTIN_TOOLS)
+    assert "skill_view" in ALWAYS_ON
     assert "skill_view" in READ_ONLY_TOOLS
     assert "skill_view" in TOOL_NAMES
 
@@ -272,7 +272,7 @@ def test_skill_view_registered():
 def test_overlay_context_has_new_fields():
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -290,7 +290,7 @@ def test_coding_overlay_skill_request_section():
     state: AgentState = {}
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -312,7 +312,7 @@ def test_coding_overlay_skill_request_empty_when_none():
     state: dict = {}
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -329,7 +329,7 @@ def test_coding_overlay_loaded_skills_section():
     state: dict = {}
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -353,7 +353,7 @@ def test_coding_overlay_loaded_skills_empty_when_none():
     state: dict = {}
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -371,7 +371,7 @@ def test_overlay_delta_renders_newly_loaded_skills():
 
     ctx_t1 = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -383,7 +383,7 @@ def test_overlay_delta_renders_newly_loaded_skills():
 
     ctx_t2 = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -409,7 +409,7 @@ def test_coding_overlay_section_order():
     state: dict = {}
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="mem",

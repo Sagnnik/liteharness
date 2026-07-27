@@ -89,7 +89,7 @@ def test_ness_agent_session_builds_graph():
 def test_instructions_dir_exists_for_cli_prompts():
     # Instruction texts now ship as an importable Python package so users
     # can read/modify them and feed them back into PromptLayersConfig /
-    # TaskPrompts / CodingOverlay. The original .md files are gone.
+    # AuxPrompts / CodingOverlay. The original .md files are gone.
     from liteharness import instructions as I
 
     for name in (

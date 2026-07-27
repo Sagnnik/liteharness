@@ -201,12 +201,12 @@ class SubagentToolTests(SessionContextTestMixin, unittest.IsolatedAsyncioTestCas
         class FakeApp:
             async def ainvoke(self, state, config):
                 seen["config_thread_id"] = config["configurable"]["thread_id"]
-                seen["state_agent_mode"] = state["agent_mode"]
+                seen["state_agent_mode"] = state["mode"]
                 return {"messages": [AIMessage(content="thread ok")]}
 
-        def fake_build_graph(cfg, thread_id, agent_mode=None, **_kwargs):
+        def fake_build_graph(cfg, thread_id, mode=None, **_kwargs):
             seen["thread_id"] = thread_id
-            seen["agent_mode"] = agent_mode
+            seen["mode"] = mode
             seen["tool_names"] = ",".join(tool.name for tool in cfg.tools)
             return FakeApp()
 
@@ -217,7 +217,7 @@ class SubagentToolTests(SessionContextTestMixin, unittest.IsolatedAsyncioTestCas
 
         self.assertIn("thread ok", result)
         self.assertEqual(seen["thread_id"], seen["config_thread_id"])
-        self.assertEqual(seen["agent_mode"], "act")
+        self.assertEqual(seen["mode"], "act")
         self.assertEqual(seen["state_agent_mode"], "act")
         self.assertEqual(seen["tool_names"], "read")
 

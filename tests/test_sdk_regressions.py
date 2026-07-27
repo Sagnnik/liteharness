@@ -11,7 +11,7 @@ from langchain_core.tools import tool
 
 from liteharness import NessAgent, PromptLayers, PromptLayersConfig
 from liteharness.compaction import CompactionResult, apply_force_floor, summarize_history
-from liteharness.context.layers import TaskPrompts
+from liteharness.context.layers import AuxPrompts
 from liteharness.graph.nodes import make_nodes
 from liteharness.memory import MemoryStore
 from liteharness.options import MemoryConfig, NessAgentOptions
@@ -124,7 +124,7 @@ def test_reflection_error_event_has_full_schema(tmp_path: Path):
             BoomModel(),
             1,
             persistence=store,
-            task_prompts=TaskPrompts(
+            aux_prompts=AuxPrompts(
                 reflection=(
                     "t={thread_id} n={user_message_count} msgs={messages} "
                     "bullets={current_session_bullets} todos={todos}"
@@ -175,7 +175,7 @@ def test_reflection_result_returns_bullets(tmp_path: Path):
             1,
             memory=memory,
             persistence=store,
-            task_prompts=TaskPrompts(
+            aux_prompts=AuxPrompts(
                 reflection=(
                     "t={thread_id} n={user_message_count} msgs={messages} "
                     "bullets={current_session_bullets} todos={todos}"
@@ -209,7 +209,7 @@ def test_finalize_session_reflection_passes_rendered_todos(tmp_path: Path):
             values={
                 "messages": [HumanMessage(content="do work")],
                 "todos": [{"id": "1", "content": "Ship it", "status": "pending"}],
-                "last_reflected_message_index": 0,
+                "last_reflection_index": 0,
             }
         )
     )
@@ -220,7 +220,7 @@ def test_finalize_session_reflection_passes_rendered_todos(tmp_path: Path):
             "session-f",
             CaptureModel(),
             persistence=store,
-            task_prompts=TaskPrompts(
+            aux_prompts=AuxPrompts(
                 reflection=(
                     "t={thread_id} n={user_message_count} msgs={messages} "
                     "bullets={current_session_bullets} todos={todos}"
@@ -235,7 +235,7 @@ def test_agent_node_sets_last_input_tokens_zero_after_compaction(tmp_path: Path)
     store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
     agent = _agent(tmp_path)
     agent.config.thread_store = store
-    rt = make_nodes(agent.config, thread_id="session-c", agent_mode="act", git_available=False)
+    rt = make_nodes(agent.config, thread_id="session-c", mode="act", git_available=False)
 
     compacted = CompactionResult(
         messages=[HumanMessage(content="hi")],
@@ -250,7 +250,7 @@ def test_agent_node_sets_last_input_tokens_zero_after_compaction(tmp_path: Path)
 
     with (
         patch(
-            "liteharness.graph.nodes.compact_messages_progressively",
+            "liteharness.graph.nodes.progressive_compact",
             return_value=compacted,
         ),
         patch.object(
@@ -263,7 +263,7 @@ def test_agent_node_sets_last_input_tokens_zero_after_compaction(tmp_path: Path)
             rt.agent_node(
                 {
                     "messages": [HumanMessage(content="hi")],
-                    "agent_mode": "act",
+                    "mode": "act",
                     "todos": [],
                     "last_input_tokens": 999,
                 }
@@ -280,7 +280,7 @@ def test_agent_node_emits_compaction_bridge_on_compact(tmp_path: Path):
     agent.config.thread_store = store
     seen: list[dict] = []
     agent.config._compaction_bridge = lambda data: seen.append(dict(data))
-    rt = make_nodes(agent.config, thread_id="session-cb", agent_mode="act", git_available=False)
+    rt = make_nodes(agent.config, thread_id="session-cb", mode="act", git_available=False)
 
     compacted = CompactionResult(
         messages=[HumanMessage(content="hi")],
@@ -295,7 +295,7 @@ def test_agent_node_emits_compaction_bridge_on_compact(tmp_path: Path):
 
     with (
         patch(
-            "liteharness.graph.nodes.compact_messages_progressively",
+            "liteharness.graph.nodes.progressive_compact",
             return_value=compacted,
         ),
         patch.object(
@@ -308,7 +308,7 @@ def test_agent_node_emits_compaction_bridge_on_compact(tmp_path: Path):
             rt.agent_node(
                 {
                     "messages": [HumanMessage(content="hi")],
-                    "agent_mode": "act",
+                    "mode": "act",
                     "todos": [],
                     "force_compact": True,
                     "last_input_tokens": 999,
@@ -394,7 +394,7 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
     )
     agent.config.thread_store = store
     agent.config.cost_tracker.add = lambda *a, **k: None  # type: ignore[method-assign]
-    rt = make_nodes(agent.config, thread_id="session-u", agent_mode="act", git_available=False)
+    rt = make_nodes(agent.config, thread_id="session-u", mode="act", git_available=False)
 
     response = AIMessage(content="ok")
     response.usage_metadata = {"input_tokens": 5, "output_tokens": 1}
@@ -404,7 +404,7 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
 
     with (
         patch(
-            "liteharness.graph.nodes.compact_messages_progressively",
+            "liteharness.graph.nodes.progressive_compact",
             return_value=CompactionResult(
                 messages=[HumanMessage(content="hi")],
                 compacted=False,
@@ -421,7 +421,7 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
             rt.agent_node(
                 {
                     "messages": [HumanMessage(content="hi")],
-                    "agent_mode": "act",
+                    "mode": "act",
                     "todos": [],
                     "last_input_tokens": 0,
                 }
@@ -438,8 +438,8 @@ def test_options_context_window_drives_usable_budget():
 
     opts = NessAgentOptions(
         context_window=100_000,
-        compaction_output_reserve_tokens=8_000,
-        compaction_input_reserve_tokens=2_000,
+        compaction_output_reserve=8_000,
+        compaction_input_reserve=2_000,
     )
     assert resolve_usable_context_budget("any-model", opts) == 90_000
     assert resolve_usable_context_budget("any-model", None) == 120_000
@@ -481,7 +481,7 @@ def test_agent_spec_resolves_backends(tmp_path: Path):
 
 def test_reflection_schedule_budget_resolve_no_typeerror(tmp_path: Path):
     """reflection_token_ratio > 0 must call resolve_usable_context_budget correctly."""
-    from liteharness.graph.nodes import _maybe_schedule_reflection, make_nodes
+    from liteharness.graph.nodes import _schedule_reflection_if_due, make_nodes
 
     model = FakeListChatModel(responses=["hello"])
 
@@ -501,11 +501,11 @@ def test_reflection_schedule_budget_resolve_no_typeerror(tmp_path: Path):
             context_window=100_000,
         ),
     )
-    rt = make_nodes(agent.config, thread_id="session-ref", agent_mode="act", git_available=False)
+    rt = make_nodes(agent.config, thread_id="session-ref", mode="act", git_available=False)
     # Should not raise TypeError (previously passed budget as meta).
-    _maybe_schedule_reflection(
+    _schedule_reflection_if_due(
         rt,
-        {"last_reflected_message_index": 0, "todos": []},
+        {"last_reflection_index": 0, "todos": []},
         [HumanMessage(content="hello")],
         "test-model",
     )

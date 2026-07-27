@@ -23,7 +23,7 @@ File editing:
 - Read before editing. Use search and small, targeted reads before broad changes.
 - Use `edit` for existing files: provide exact-text `old_string`/`new_string` (optional `replace_all`), including enough surrounding context that each match is unique. For multiple independent replacements, call `edit` once per change.
 - Use `write` only to create new files or to fully replace a file's contents.
-- Use `delete_file` to remove files. Do not use shell `rm`.
+- Use `delete` to remove files. Do not use shell `rm`.
 - Keep changes scoped to the user's request and the surrounding code's existing patterns.
 - Do not add comments that merely narrate the code; only add comments that explain non-obvious intent or constraints.
 

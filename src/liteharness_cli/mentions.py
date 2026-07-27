@@ -55,7 +55,7 @@ def extract_mentions(text: str) -> tuple[str, list[str]]:
     return text or "", paths
 
 
-def expand_documents(text: str, perms: PermissionStore) -> str:
+def expand_documents(text: str, permission_store: PermissionStore) -> str:
     """Prepend ``<document>`` blocks for each @mention and return the augmented text.
 
     The user's original text (with its ``@tokens``) is preserved verbatim
@@ -71,7 +71,7 @@ def expand_documents(text: str, perms: PermissionStore) -> str:
 
     blocks: list[str] = []
     for rel in mentions:
-        blocks.append(_render_document_block(rel, perms))
+        blocks.append(_render_document_block(rel, permission_store))
 
     preamble = "\n\n".join(blocks)
     if not preamble.strip():
@@ -79,10 +79,10 @@ def expand_documents(text: str, perms: PermissionStore) -> str:
     return preamble + "\n\n" + text
 
 
-def _render_document_block(rel: str, perms: PermissionStore) -> str:
+def _render_document_block(rel: str, permission_store: PermissionStore) -> str:
     """Wrap one mentioned file in the <document> XML block, or an error note."""
     try:
-        abs_path = perms.validate_path(rel)
+        abs_path = permission_store.validate_path(rel)
     except Exception as exc:
         return (
             f"<document>\n  <document_content>\n  Error: {exc}\n  </document_content>\n"

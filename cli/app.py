@@ -551,7 +551,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         return self.coding.thread_id
 
     @property
-    def agent_mode(self) -> str:
+    def mode(self) -> str:
         return self.coding.mode
 
     @property
@@ -697,4 +697,4 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self.assistant_history.extend(renderer.assistant_texts)
         if not renderer.interrupted:
             render.render_usage_footer(renderer.usage)
-            render.render_todos(await self.coding.aget_todos())
+            render.render_todos(await self.coding.get_todos())

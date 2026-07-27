@@ -61,7 +61,7 @@ from liteharness.tools import is_git_repo
 from liteharness_cli.chat_model import (
     ModelOverrides,
     configure_model,
-    validate_reasoning_effort_for_model,
+    validate_effort,
 )
 from liteharness_cli.config import REASONING_EFFORTS, settings
 from liteharness_cli.factory import build_coding_session
@@ -95,7 +95,7 @@ def _overrides(
             raise typer.BadParameter(f"reasoning effort must be one of: {allowed}")
         target_model = model or settings.model_name
         try:
-            validate_reasoning_effort_for_model(target_model, reasoning_effort)
+            validate_effort(target_model, reasoning_effort)
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
     active = {key: value for key, value in fields.items() if value is not None}
@@ -189,7 +189,7 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
         approval_handler=render.ask_approval,
         question_handler=render.ask_questions,
     )
-    coding.perms.clear_session_rules()
+    coding.permission_store.clear_session_rules()
 
     # Register MCP tools as known but deferred: nothing is bound until
     # /mcp or the model-facing add_tools activates them on this registry.
@@ -201,7 +201,7 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
     # previews in tool_display) and discover tools share one ToolRegistry.
     set_session_context(
         SessionContext(
-            permissions=coding.perms,
+            permissions=coding.permission_store,
             options=coding.cfg.options,
             thread_store=coding.thread_store,
             ness_dir=coding.ness_dir,

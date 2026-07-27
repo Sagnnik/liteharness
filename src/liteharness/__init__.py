@@ -1,22 +1,18 @@
 from liteharness.agent import NessAgent, NessAgentConfig, AgentSpec
 from liteharness.session import Session
 from liteharness.options import (
-    NessAgentOptions, MemoryConfig, ModeConfig, SubagentConfig, PermissionPolicy,
+    NessAgentOptions, MemoryConfig, ModeConfig, SubagentConfig, PermissionRules,
 )
 from liteharness.types import (
     RunResult, SessionEvent, UsageEvent, ApprovalHandler,
     QuestionHandler,
     PlanTurnHandler, InterruptHandler, ContextPreview,
 )
-from liteharness.context.layers import PromptLayers, PromptLayersConfig, TaskPrompts
+from liteharness.context.layers import PromptLayers, PromptLayersConfig, AuxPrompts
 from liteharness.context.overlay import OverlayContext, OverlayProvider, render_overlay_delta, wrap_system_reminder
 from liteharness.context.coding_overlay import CodingOverlay, NoOverlay
 from liteharness.graph.state import AgentState
 from liteharness.utils import message_to_text
-from liteharness.compaction import (
-    CompactionResult, ContextPressure, compact_messages_progressively, format_compaction_overlay_note,
-)
-from liteharness.reflection import run_reflection_gate, finalize_session_reflection, ReflectionResult
 from liteharness.memory import MemoryBackend, MemoryStore
 from liteharness.persistence import ThreadStore
 from liteharness.permissions import PermissionStore
@@ -36,10 +32,10 @@ from liteharness.workspace import (
 
 __all__ = [
     "NessAgent", "NessAgentConfig", "AgentSpec", "Session",
-    "NessAgentOptions", "MemoryConfig", "ModeConfig", "SubagentConfig", "PermissionPolicy",
+    "NessAgentOptions", "MemoryConfig", "ModeConfig", "SubagentConfig", "PermissionRules",
     "RunResult", "SessionEvent", "UsageEvent", "ApprovalHandler", "QuestionHandler",
     "PlanTurnHandler", "InterruptHandler", "ContextPreview",
-    "PromptLayers", "PromptLayersConfig", "TaskPrompts",
+    "PromptLayers", "PromptLayersConfig", "AuxPrompts",
     "OverlayContext", "OverlayProvider", "render_overlay_delta", "wrap_system_reminder",
     "CodingOverlay", "NoOverlay", "AgentState",
     "message_to_text",

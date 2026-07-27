@@ -20,7 +20,7 @@ from liteharness.tools.web import (
     get_provider,
     reset_provider,
     web_search,
-    webfetch,
+    fetch_url,
 )
 
 from tests.sdk_fixtures import SessionContextTestMixin, set_exa_key
@@ -176,12 +176,12 @@ class FetchUrlTests(SessionContextTestMixin, unittest.TestCase):
         self._tmp.cleanup()
 
     def test_validation_failure(self) -> None:
-        result = json.loads(webfetch.invoke({"url": "http://127.0.0.1/secret"}))
+        result = json.loads(fetch_url.invoke({"url": "http://127.0.0.1/secret"}))
         self.assertEqual(result["category"], "validation")
         self.assertIn("error", result)
 
     def test_rejects_out_of_range_max_characters(self) -> None:
-        result = json.loads(webfetch.invoke({"url": "https://example.com", "max_characters": 0}))
+        result = json.loads(fetch_url.invoke({"url": "https://example.com", "max_characters": 0}))
         self.assertEqual(result["category"], "validation")
         self.assertIn("max_characters", result["error"])
 
@@ -195,7 +195,7 @@ class FetchUrlTests(SessionContextTestMixin, unittest.TestCase):
             mock.patch.object(web.requests, "get", return_value=fetch_response),
             mock.patch.object(web.trafilatura, "extract", return_value="# Python 3 documentation\n\nOverview"),
         ):
-            result = json.loads(webfetch.invoke({"url": "https://docs.python.org/3/"}))
+            result = json.loads(fetch_url.invoke({"url": "https://docs.python.org/3/"}))
 
         self.assertEqual(result["provider"], "duckduckgo")
         self.assertIn("Python 3 documentation", result["markdown_content"])
@@ -218,7 +218,7 @@ class FetchUrlTests(SessionContextTestMixin, unittest.TestCase):
             mock.patch.object(web.socket, "getaddrinfo", return_value=[_addr("93.184.216.34")]),
             mock.patch.object(ExaProvider, "_request", return_value=response) as exa_request,
         ):
-            result = json.loads(webfetch.invoke({"url": "https://docs.python.org/3/"}))
+            result = json.loads(fetch_url.invoke({"url": "https://docs.python.org/3/"}))
 
         self.assertEqual(result["provider"], "exa")
         self.assertEqual(result["title"], "Python docs")
@@ -239,7 +239,7 @@ class FetchUrlTests(SessionContextTestMixin, unittest.TestCase):
                 side_effect=ProviderError("Exa could not fetch https://example.com", "api"),
             ),
         ):
-            result = json.loads(webfetch.invoke({"url": "https://example.com"}))
+            result = json.loads(fetch_url.invoke({"url": "https://example.com"}))
 
         self.assertEqual(result["category"], "api")
         self.assertIn("error", result)

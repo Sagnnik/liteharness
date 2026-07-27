@@ -39,13 +39,13 @@ def make_session_context(
         enable_approval=enable_approval,
         auto_save_threads=auto_save,
     )
-    perms = PermissionStore(ness_dir=ness, project_root=project_root)
+    permission_store = PermissionStore(ness_dir=ness, project_root=project_root)
     store = ThreadStore(threads_dir=ness / "threads", auto_save=auto_save)
     cfg = agent_config
     if cfg is None and tools is not None:
         cfg = resolve_minimal_agent_config(project_root, ness, tools=tools, options=options)
     return SessionContext(
-        permissions=perms,
+        permissions=permission_store,
         options=options,
         thread_store=store,
         ness_dir=ness,

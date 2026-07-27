@@ -21,7 +21,7 @@ from liteharness.workspace.project_context import get_project_context
 from liteharness_cli.chat_model import (
     active_model_name,
     active_reasoning_effort,
-    effective_openrouter_session_id,
+    openrouter_session,
 )
 from liteharness_cli.config import settings
 from liteharness_cli.prompts import build_init_memory_prompt
@@ -71,7 +71,7 @@ async def cmd_config(app: "TuiApp", args: str) -> None:
 
 
 async def cmd_status(app: "TuiApp", args: str) -> None:
-    session_id = effective_openrouter_session_id(app.thread_id)
+    session_id = openrouter_session(app.thread_id)
     tracker = app.coding.cost_tracker
     input_tokens = int(tracker.input_tokens or 0)
     cached = int(tracker.cached_input_tokens or 0)
@@ -158,18 +158,18 @@ async def cmd_user(app: "TuiApp", args: str) -> None:
 
 
 async def cmd_permissions(app: "TuiApp", args: str) -> None:
-    perms = app.coding.perms
+    permission_store = app.coding.permission_store
     parts = args.split()
     if not parts or parts[0] == "list":
-        render.render_panel_text(perms.list_rules(), title="permissions", style="usage.value")
+        render.render_panel_text(permission_store.list_rules(), title="permissions", style="usage.value")
         return
     if len(parts) >= 2 and parts[0] in {"allow", "deny"}:
-        perms.persist_rule(" ".join(parts[1:]), parts[0])
+        permission_store.persist_rule(" ".join(parts[1:]), parts[0])
         render.render_notice(f"Added {parts[0]} rule.")
         return
     if len(parts) == 3 and parts[0] == "remove" and parts[1] in {"allow", "deny"}:
         try:
-            removed = perms.remove_rule(parts[1], int(parts[2]))
+            removed = permission_store.remove_rule(parts[1], int(parts[2]))
             render.render_notice(f"Removed {removed}")
         except ValueError as exc:
             render.render_error(str(exc))

@@ -19,7 +19,7 @@ class OverlayContext:
 
     ``thread_id`` : str
         Session thread identifier.
-    ``agent_mode`` : str
+    ``mode`` : str
         Current mode — ``"act"`` or ``"plan"``.
     ``messages`` : list[BaseMessage]
         The conversation (after compaction, before the current turn).
@@ -47,7 +47,7 @@ class OverlayContext:
     """
 
     thread_id: str
-    agent_mode: str
+    mode: str
     messages: list[BaseMessage]
     todos: list[dict[str, Any]]
     session_memory: str

@@ -77,7 +77,7 @@ class CodingOverlay(OverlayProvider):
             :data:`~liteharness.instructions.ACT_MODE`).
 
         ``plan_mode``
-            Only rendered when ``ctx.agent_mode == "plan"``. Wraps
+            Only rendered when ``ctx.mode == "plan"``. Wraps
             the plan-mode instructions in a ``<plan-mode path="…">``
             block.
 
@@ -111,7 +111,7 @@ class CodingOverlay(OverlayProvider):
             Section name → rendered text mapping, in insertion order.
         """
         sections: dict[str, str] = {}
-        mode = (ctx.agent_mode or "act").lower()
+        mode = (ctx.mode or "act").lower()
 
         req = list(ctx.activate_skills or [])
         if req:

@@ -6,23 +6,23 @@ from langchain_core.tools import BaseTool
 
 from liteharness.tools.ask import question
 from liteharness.tools.discover import add_tools, search_tools
-from liteharness.tools.fs import delete_file, edit, glob, is_git_repo, read, write
+from liteharness.tools.fs import delete, edit, glob, is_git_repo, read, write
 from liteharness.tools.search import grep
 from liteharness.tools.shell import shell as shell_tool
 from liteharness.tools.skill import skill_view
 from liteharness.tools.subagents import spawn_subagent
 from liteharness.tools.todo import todo
-from liteharness.tools.web import webfetch, web_search
+from liteharness.tools.web import fetch_url, web_search
 
-LOCAL_TOOLS = [
+BUILTIN_TOOLS = [
     read, 
     write, 
-    delete_file, 
+    delete, 
     edit, 
     glob, 
     grep, 
     web_search, 
-    webfetch,
+    fetch_url,
     shell_tool,
     todo,
     search_tools,
@@ -32,19 +32,18 @@ LOCAL_TOOLS = [
     skill_view,
 ]
 
-ALL_TOOLS = list(LOCAL_TOOLS)
-TOOL_MAP = {tool.name: tool for tool in ALL_TOOLS}
+TOOL_MAP = {tool.name: tool for tool in BUILTIN_TOOLS}
 TOOL_NAMES = list(TOOL_MAP)
 
-SMALL_ALWAYS_ON = {"todo", "question", "skill_view"}
-TIER_L1 = {"read", "write", "delete_file", "edit", "grep", "web_search", "webfetch", "glob", "shell"}
-TIER_DISCOVERY = {"search_tools", "add_tools"}
-TIER_L3_ADVANCED = {"spawn_subagent"}
+ALWAYS_ON = {"todo", "question", "skill_view"}
+CORE = {"read", "write", "delete", "edit", "grep", "web_search", "fetch_url", "glob", "shell"}
+DISCOVERY = {"search_tools", "add_tools"}
+ADVANCED = {"spawn_subagent"}
 READ_ONLY_TOOLS = {
     "read", 
     "grep", 
     "web_search", 
-    "webfetch", 
+    "fetch_url", 
     "glob", 
     "todo",
     "search_tools",
@@ -54,16 +53,16 @@ READ_ONLY_TOOLS = {
     "skill_view",
 }
 
-EDIT_TOOLS = frozenset({"write", "delete_file", "edit"})
+EDIT_TOOLS = frozenset({"write", "delete", "edit"})
 DESTRUCTIVE_TOOLS = set(EDIT_TOOLS) | {"shell"}
 
 TOOL_CATALOG_GROUPS = (
-    ("Small always-on", frozenset(SMALL_ALWAYS_ON)),
-    ("L1 core", frozenset(TIER_L1)),
-    ("Tool discovery", frozenset(TIER_DISCOVERY)),
-    ("L3 advanced", frozenset(TIER_L3_ADVANCED)),
+    ("Always-on", frozenset(ALWAYS_ON)),
+    ("Core", frozenset(CORE)),
+    ("Tool discovery", frozenset(DISCOVERY)),
+    ("Advanced", frozenset(ADVANCED)),
 )
-FULL_TOOL_SET = set(SMALL_ALWAYS_ON) | set(TIER_L1) | set(TIER_DISCOVERY) | set(TIER_L3_ADVANCED)
+FULL_TOOL_SET = set(ALWAYS_ON) | set(CORE) | set(DISCOVERY) | set(ADVANCED)
 
 
 class ToolRegistry:
@@ -83,12 +82,12 @@ class ToolRegistry:
         """Bind a set of tools, optionally filtering by name.
 
         Args:
-            tools: Tool instances. When ``None``, defaults to :const:`LOCAL_TOOLS`.
+            tools: Tool instances. When ``None``, defaults to :const:`BUILTIN_TOOLS`.
             include: If given, only tools whose names appear in this iterable
                      are activated. The full set remains available for later
                      activation via :meth:`activate_mcp` or :meth:`register_dynamic`.
         """
-        self._all_tools: list[BaseTool] = list(tools) if tools is not None else list(LOCAL_TOOLS)
+        self._all_tools: list[BaseTool] = list(tools) if tools is not None else list(BUILTIN_TOOLS)
         self._include: set[str] | None = set(include) if include else None
         self._tool_map: dict[str, BaseTool] = {t.name: t for t in self._all_tools}
         self._mcp_catalog: dict[str, dict[str, Any]] = {}
@@ -310,4 +309,4 @@ def coding_tools(*, include: list[str] | None = None) -> ToolRegistry:
     Args:
         include: Tool names to include. When ``None``, all SDK tools are active.
     """
-    return ToolRegistry(LOCAL_TOOLS, include=include)
+    return ToolRegistry(BUILTIN_TOOLS, include=include)

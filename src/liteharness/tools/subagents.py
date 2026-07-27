@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from liteharness.session_context import get_session_context
 
-DEFAULT_AGENT_TOOLS = ("read", "grep", "glob", "web_search", "webfetch", "skill_view")
+DEFAULT_AGENT_TOOLS = ("read", "grep", "glob", "web_search", "fetch_url", "skill_view")
 MAX_BATCH_TASKS = 8
 DEFAULT_MAX_CONCURRENCY = 3 # max concurrent subagents to run
 MAX_CONCURRENCY = 8
@@ -69,8 +69,8 @@ def _build_subagent_prompt(agent_name: str, agent_body: str, parent_context: str
     rt = get_session_context()
     template = DEFAULT_SUBAGENT_TEMPLATE
     cfg = rt.agent_config
-    if cfg is not None and cfg.task_prompts.subagent:
-        src = cfg.task_prompts.subagent
+    if cfg is not None and cfg.aux_prompts.subagent:
+        src = cfg.aux_prompts.subagent
         if callable(src):
             template = src()
         else:
@@ -183,7 +183,7 @@ async def spawn_subagent(
 ) -> str:
     """Run one or more isolated sub-agents for parallel investigation and wait for results."""
     started = time.time()
-    runtime = _check_runtime()
+    runtime = _require_subagent_model()
     if isinstance(runtime, str):
         return _call_error(runtime, started, 0)
 
@@ -243,7 +243,7 @@ def _call_error(message: str, started: float, task_count: int) -> str:
     return _format_batch_error(message, duration_ms, task_count)
 
 
-def _check_runtime() -> Any | str:
+def _require_subagent_model() -> Any | str:
     model = _subagent_model.get()
     if model is None:
         return "no model available for subagent"
@@ -429,7 +429,7 @@ async def _invoke_subagent(
         app = build_graph(
             child_cfg,
             thread_id=thread_id,
-            agent_mode="act",
+            mode="act",
             git_available=False,
         )
         result = await app.ainvoke(
@@ -437,7 +437,7 @@ async def _invoke_subagent(
                 "messages": [HumanMessage(content=prepared.agent_prompt)],
                 "approval_declined": False,
                 "todos": [],
-                "agent_mode": "act",
+                "mode": "act",
             },
             config={"configurable": {"thread_id": thread_id}},
         )

@@ -69,7 +69,7 @@ class PromptLayersConfig:
             Optional domain/architecture description for the model.
         ``l2_header``:
             Heading for the L2 block (default ``"PROJECT CONTEXT"``).
-        ``include_git_flag``:
+        ``include_git_line``:
             Append ``"Git repository: yes/no"`` to the L2 block.
     """
 
@@ -86,7 +86,7 @@ class PromptLayersConfig:
     # L2: Stable context block
     l2_context: str | InstructionSource | None = None
     l2_header: str = "PROJECT CONTEXT"  # Change it based on project domain
-    include_git_flag: bool = True       # For coding agent it's True
+    include_git_line: bool = True       # For coding agent it's True
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "PromptLayersConfig":
@@ -222,7 +222,7 @@ class PromptLayers:
         """
         sections = [self.config.l2_header]
 
-        if self.config.include_git_flag and git_available is not None:
+        if self.config.include_git_line and git_available is not None:
             sections.append(f"Git repository: {'yes' if git_available else 'no'}")
 
         l2 = self.config.l2_context
@@ -364,7 +364,7 @@ def _project_memory_section(text) -> str:
             f"explicitly overrides):\n{text.strip()}")
 
 @dataclass
-class TaskPrompts:
+class AuxPrompts:
     """Templates for auxiliary model calls (not the main agent loop).
 
     Each field is an ``InstructionSource`` (``str``, ``Path``, or

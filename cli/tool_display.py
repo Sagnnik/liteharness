@@ -26,7 +26,7 @@ _READ_DEFAULT_LIMIT = 400  # mirrors tools/fs.py READ_FILE_DEFAULT_LIMIT
 _SHELL_DEFAULT_TIMEOUT = 30
 _SHELL_DEFAULT_OUTPUT_CHARS = 12_000
 _WEB_SEARCH_DEFAULT_MAX_RESULTS = 5
-_WEBFETCH_DEFAULT_MAX_CHARACTERS = 12_000
+_FETCH_URL_DEFAULT_MAX_CHARACTERS = 12_000
 _SEARCH_TOOLS_DEFAULT_LIMIT = 5
 
 
@@ -195,12 +195,12 @@ def _web_search_token(args: dict[str, Any]) -> str:
     return _join_parts(*parts)
 
 
-def _webfetch_token(args: dict[str, Any]) -> str:
+def _fetch_url_token(args: dict[str, Any]) -> str:
     parts = [_truncate_arg(str(args.get("url", "")), 80)]
     max_characters = int(
-        args.get("max_characters", _WEBFETCH_DEFAULT_MAX_CHARACTERS) or _WEBFETCH_DEFAULT_MAX_CHARACTERS
+        args.get("max_characters", _FETCH_URL_DEFAULT_MAX_CHARACTERS) or _FETCH_URL_DEFAULT_MAX_CHARACTERS
     )
-    if max_characters != _WEBFETCH_DEFAULT_MAX_CHARACTERS:
+    if max_characters != _FETCH_URL_DEFAULT_MAX_CHARACTERS:
         parts.append(str(max_characters))
     return _join_parts(*parts)
 
@@ -334,12 +334,12 @@ def format_tool_args(name: str, args: Any) -> str:
         return _path_token(args)
     if name == "edit":
         return _edit_token(args)
-    if name == "delete_file":
+    if name == "delete":
         return _path_token(args)
     if name == "web_search":
         return _web_search_token(args)
-    if name == "webfetch":
-        return _webfetch_token(args)
+    if name == "fetch_url":
+        return _fetch_url_token(args)
     if name == "search_tools":
         return _search_tools_token(args)
     if name == "add_tools":

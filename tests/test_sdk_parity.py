@@ -45,7 +45,7 @@ def test_coding_overlay_mode_switch_uses_act_template():
     overlay = CodingOverlay(act_mode_template="MODE SWITCH\nDo the work.")
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -63,7 +63,7 @@ def test_coding_overlay_no_persistent_act_mode():
     overlay = CodingOverlay(act_mode_template="should not appear every turn")
     ctx = OverlayContext(
         thread_id="t1",
-        agent_mode="act",
+        mode="act",
         messages=[],
         todos=[],
         session_memory="",
@@ -125,18 +125,18 @@ def test_preview_context_system_and_l3(tmp_path: Path):
         options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
         overlay=CodingOverlay(plan_mode_template="PLAN BODY"),
     )
-    session = agent.session(thread_id="t-preview", agent_mode="act", git_available=False)
+    session = agent.session(thread_id="t-preview", mode="act", git_available=False)
 
     async def _run():
         act = await session.preview_context()
         assert isinstance(act, ContextPreview)
         assert "L0" in act.system_message
-        assert act.agent_mode == "act"
+        assert act.mode == "act"
         assert "plan_mode" not in act.overlay_sections
         assert act.overlay_reminder == "" or "<system-reminder>" in act.overlay_reminder
 
         plan = await session.preview_context(mode="plan")
-        assert plan.agent_mode == "plan"
+        assert plan.mode == "plan"
         assert "plan_mode" in plan.overlay_sections
         assert "PLAN BODY" in plan.overlay
         assert plan.overlay_reminder.startswith("<system-reminder>")
@@ -153,7 +153,7 @@ def test_plan_mode_gates_writes_without_mode_config(tmp_path: Path):
         modes=None,
     )
     assert agent.config.modes is None
-    rt = make_nodes(agent.config, thread_id="t-plan-gate", agent_mode="plan", git_available=False)
+    rt = make_nodes(agent.config, thread_id="t-plan-gate", mode="plan", git_available=False)
 
     async def _run():
         ai = AIMessage(
@@ -166,9 +166,9 @@ def test_plan_mode_gates_writes_without_mode_config(tmp_path: Path):
                 }
             ],
         )
-        route = await rt.route_after_agent({"messages": [ai], "agent_mode": "plan"})
+        route = await rt.route_after_agent({"messages": [ai], "mode": "plan"})
         assert route == "tools"
-        out = await rt.tools_node({"messages": [ai], "agent_mode": "plan", "todos": []})
+        out = await rt.tools_node({"messages": [ai], "mode": "plan", "todos": []})
         msgs = out["messages"]
         assert len(msgs) == 1
         assert "Unavailable in plan mode" in msgs[0].content
@@ -186,7 +186,7 @@ def test_plan_mode_readonly_false_allows_mutating_tools(tmp_path: Path):
         ),
         modes=ModeConfig(plan_mode_readonly=False),
     )
-    rt = make_nodes(agent.config, thread_id="t-plan-rw", agent_mode="plan", git_available=False)
+    rt = make_nodes(agent.config, thread_id="t-plan-rw", mode="plan", git_available=False)
 
     async def _run():
         ai = AIMessage(
@@ -199,9 +199,9 @@ def test_plan_mode_readonly_false_allows_mutating_tools(tmp_path: Path):
                 }
             ],
         )
-        route = await rt.route_after_agent({"messages": [ai], "agent_mode": "plan"})
+        route = await rt.route_after_agent({"messages": [ai], "mode": "plan"})
         assert route == "tools"
-        out = await rt.tools_node({"messages": [ai], "agent_mode": "plan", "todos": []})
+        out = await rt.tools_node({"messages": [ai], "mode": "plan", "todos": []})
         assert "Unavailable in plan mode" not in out["messages"][0].content
 
     asyncio.run(_run())
@@ -227,7 +227,7 @@ def test_approval_session_and_never_persist(tmp_path: Path):
     )
     cfg = agent.config
     cfg.thread_store.auto_save = True
-    rt = make_nodes(cfg, thread_id="t-appr", agent_mode="act", git_available=False)
+    rt = make_nodes(cfg, thread_id="t-appr", mode="act", git_available=False)
 
     async def _run():
         # Destructive shell cmds not in allow/deny lists → ask
@@ -257,7 +257,7 @@ def test_tools_node_returns_todos():
     agent = _agent()
     cfg = agent.config
     thread_id = "t-todos"
-    rt = make_nodes(cfg, thread_id=thread_id, agent_mode="act", git_available=False)
+    rt = make_nodes(cfg, thread_id=thread_id, mode="act", git_available=False)
 
     set_current_thread(thread_id)
     set_thread_todos(thread_id, [{"id": "1", "content": "a", "status": "pending"}])
@@ -278,7 +278,7 @@ def test_tools_node_returns_todos():
             tool_calls=[{"name": "todo", "args": {}, "id": "t1"}],
         )
         out = await rt.tools_node(
-            {"messages": [ai], "todos": [], "agent_mode": "act"}
+            {"messages": [ai], "todos": [], "mode": "act"}
         )
         assert "todos" in out
         assert out["todos"][0]["status"] == "completed"
@@ -304,7 +304,7 @@ def test_git_snapshot_passed_to_overlay(tmp_path: Path):
         ),
     )
     cfg = agent.config
-    rt = make_nodes(cfg, thread_id="t-git", agent_mode="act", git_available=True)
+    rt = make_nodes(cfg, thread_id="t-git", mode="act", git_available=True)
 
     async def _run():
         class _Bound:
@@ -319,7 +319,7 @@ def test_git_snapshot_passed_to_overlay(tmp_path: Path):
                 {
                     "messages": [HumanMessage(content="hi")],
                     "todos": [],
-                    "agent_mode": "act",
+                    "mode": "act",
                     "force_compact": False,
                     "activate_skills": [],
                     "mode_switch": "",
@@ -800,8 +800,8 @@ def test_mode_override_is_turn_only_and_restores(tmp_path: Path):
     plan->act compaction checkpoint for the next turn).
     """
     agent = _bindable_agent(tmp_path, "plan text")
-    session = agent.session(thread_id="t-mode", agent_mode="act")
-    assert session.agent_mode == "act"
+    session = agent.session(thread_id="t-mode", mode="act")
+    assert session.mode == "act"
 
     async def _run():
         async for _ in session.stream("hi", mode="plan"):
@@ -810,7 +810,7 @@ def test_mode_override_is_turn_only_and_restores(tmp_path: Path):
     asyncio.run(_run())
 
     # Restore: the override was this-turn-only.
-    assert session.agent_mode == "act", "mode override leaked across turns"
+    assert session.mode == "act", "mode override leaked across turns"
 
 
 def test_pending_skills_consumed_and_cleared_after_turn():
@@ -932,7 +932,7 @@ def test_get_state_and_get_messages(tmp_path: Path):
     async def _run():
         state = await session.get_state()
         messages = await session.get_messages()
-        todos = await session.aget_todos()
+        todos = await session.get_todos()
         return state, messages, todos
 
     state, messages, todos = asyncio.run(_run())

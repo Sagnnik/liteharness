@@ -48,12 +48,12 @@ def _with_working_state_tail(messages, overlay) -> list[BaseMessage]:
             return result
     return result + [HumanMessage(content=reminder)]
 
-def _needs_approval(name, args, options, perms, tools_reg: ToolRegistry) -> bool:
+def _needs_approval(name, args, options, permission_store, tools_reg: ToolRegistry) -> bool:
     """Decide whether to ask the user for approval before running a tool."""
     if not options.enable_approval: 
         return False
 
-    d = perms.check(name, args)
+    d = permission_store.check(name, args)
     if d in ("allow", "deny"): 
         return False
     

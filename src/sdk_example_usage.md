@@ -14,7 +14,7 @@ Construct agents with `NessAgent(...)` kwargs (builds an `AgentSpec` internally)
 
 ## Minimal coding agent (zero boilerplate)
 
-`tools=` and `overlay=` are both optional. The SDK ships with a fully wired `CodingOverlay` (plan/act blocks, git snapshot, compaction note, todos, session memory, loaded skills) and defaults `TaskPrompts` (compaction / reflection / subagent / thread_summary / init_memory) to internal instruction texts — so a bare agent is a working coding agent.
+`tools=` and `overlay=` are both optional. The SDK ships with a fully wired `CodingOverlay` (plan/act blocks, git snapshot, compaction note, todos, session memory, loaded skills) and defaults `AuxPrompts` (compaction / reflection / subagent / thread_summary / init_memory) to internal instruction texts — so a bare agent is a working coding agent.
 
 ```python
 from liteharness import NessAgent, PromptLayersConfig
@@ -23,9 +23,9 @@ from langchain_openai import ChatOpenAI
 agent = NessAgent(
     model=ChatOpenAI(model="gpt-4o"),
     prompt=PromptLayersConfig(),   # default L0 from liteharness.instructions.L0_HARNESS
-    # tools=      omitted -> all SDK built-in tools (LOCAL_TOOLS)
+    # tools=      omitted -> all SDK built-in tools (BUILTIN_TOOLS)
     # overlay=    omitted -> CodingOverlay (plan/act, git, todos, compaction, ...)
-    # task_prompts= omitted -> defaults to liteharness.instructions.{COMPACTION,REFLECTION,...}
+    # aux_prompts= omitted -> defaults to liteharness.instructions.{COMPACTION,REFLECTION,...}
 )
 session = agent.session(thread_id="proj-1")
 # session.toggle_mode() flips plan <-> act using the SDK's default plan/act instruction texts
@@ -35,7 +35,7 @@ await session.run("Plan then implement: add a rate limiter on /api/login")
 ### Default overlay
 
 - If `overlay=` is omitted, the agent is configured with `CodingOverlay` (`from liteharness import CodingOverlay`). It renders:
-  - `<plan-mode path=".ness/plans/">...</plan-mode>` when `session.agent_mode == "plan"`, using `liteharness.instructions.PLAN_MODE` (or `modes.plan_mode_template` if you supply a `ModeConfig`)
+  - `<plan-mode path=".ness/plans/">...</plan-mode>` when `session.mode == "plan"`, using `liteharness.instructions.PLAN_MODE` (or `modes.plan_mode_template` if you supply a `ModeConfig`)
   - `mode_switch` on the first act turn after a plan->act toggle, using `liteharness.instructions.ACT_MODE` (or `modes.act_mode_template`)
   - `git`, `compaction`, `todos`, `session_memory`, `loaded_skills`, and `skill_request` sections from the `OverlayContext`
 - To **opt out of L3 entirely** pass `overlay=NoOverlay()` (apps that need no working-state overlay, or want to drive everything from the model alone).
@@ -54,7 +54,7 @@ agent = NessAgent(
     model=...,
     prompt=PromptLayersConfig(l0=my_l0, persona="..."),
     # or override only one task prompt:
-    # task_prompts=TaskPrompts(compaction=my_compaction_template),
+    # aux_prompts=AuxPrompts(compaction=my_compaction_template),
 )
 ```
 
@@ -128,7 +128,7 @@ agent = NessAgent(
         "persona": "Precise, citation-first research assistant for Acme internal docs.",
         "l2_context": kb_catalog.describe(),     # app-supplied; not auto-loaded
         "l2_header": "KNOWLEDGE BASE",
-        "include_git_flag": False,
+        "include_git_line": False,
         "include_skill_catalog": False,
     },
     skills_dir=None,
@@ -165,7 +165,7 @@ from liteharness import (
     OverlayProvider, OverlayContext,
 )
 from langchain_openai import ChatOpenAI
-from my_tools import web_search, webfetch, save_note, spawn_subagent, build_report
+from my_tools import web_search, fetch_url, save_note, spawn_subagent, build_report
 
 
 class ResearchOverlay(OverlayProvider):
@@ -190,7 +190,7 @@ agent = NessAgent(
     model=ChatOpenAI(model="gpt-4o"),
     compaction_model=ChatOpenAI(model="gpt-4o-mini"),
     reflection_model=ChatOpenAI(model="gpt-4o-mini"),
-    tools=[web_search, webfetch, save_note, spawn_subagent, build_report],
+    tools=[web_search, fetch_url, save_note, spawn_subagent, build_report],
     prompt={
         "l0": (
             "You are a research analyst. Work in phases: scope → gather → synthesize. "
@@ -200,13 +200,13 @@ agent = NessAgent(
         "persona": "Thorough, skeptical analyst producing structured reports.",
         "l2_context": f"Research brief: {brief}\nDeadline: {deadline}\nOutput format: markdown",
         "l2_header": "RESEARCH BRIEF",
-        "include_git_flag": False,
+        "include_git_line": False,
     },
     skills_dir=Path("./skills/research"),
     subagents=SubagentConfig(
         prompt_template=RESEARCH_SUBAGENT_PROMPT,
         max_parallel=3,
-        default_tools=("web_search", "webfetch", "save_note"),
+        default_tools=("web_search", "fetch_url", "save_note"),
         default_timeout_seconds=600,
     ),
     overlay=ResearchOverlay(),
@@ -284,7 +284,7 @@ agent = NessAgent(
         "l2_context": f"Project: {project_name}\nStyle: {style_guide}\n"
                       f"Duration target: {target_duration}s\nResolution: {resolution}",
         "l2_header": "VIDEO BRIEF",
-        "include_git_flag": False,
+        "include_git_line": False,
     },
     modes=None,
     subagents=SubagentConfig(
@@ -380,7 +380,7 @@ agent = NessAgent.from_spec(AgentSpec(
         "persona": "Empathetic, efficient support specialist. Concise responses.",
         "l2_context": "Product: Acme SaaS\nSupport hours: 24/7\nEscalation channel: #support-escalations",
         "l2_header": "SUPPORT CONTEXT",
-        "include_git_flag": False,
+        "include_git_line": False,
         "include_skill_catalog": True,
     },
     skills_dir=Path("./skills/support"),
@@ -472,7 +472,7 @@ These contracts keep the L0–L2 prefix cache and compaction splice correct:
 - **`session.metadata` identity.** `make_nodes` snapshots the metadata dict at
   graph build. In-place mutation of `session.metadata` is visible on later
   turns; reassignment (`session.metadata = {...}`) needs `rebuild_graph()`.
-- **Plan write gating.** When `agent_mode == "plan"` and
+- **Plan write gating.** When `mode == "plan"` and
   `ModeConfig.plan_mode_readonly` is true (default, including when
   `modes is None`), state-changing tools are denied. Set
   `ModeConfig(plan_mode_readonly=False)` to allow writes in plan mode.
@@ -559,12 +559,12 @@ async def resume_thread(session, thread_id: str, *, vision: bool | None = None) 
     events = store.load_thread_events(thread_id)
     if not events:
         return False
-    perms = session.agent.config.permission_store
+    permission_store = session.agent.config.permission_store
     messages = events_to_messages(
         events,
         store.list_subagents(thread_id),
         vision=vision,
-        perms=perms,
+        permission_store=permission_store,
     )
     session.thread_id = thread_id
     session.reset_checkpointer()
@@ -593,7 +593,7 @@ assert ok
 messages = await session2.get_messages()  # public read — no app.aget_state needed
 ```
 
-Public reads on `Session`: `get_state()`, `get_messages()`, `aget_todos()`,
+Public reads on `Session`: `get_state()`, `get_messages()`, `get_todos()`,
 `refresh_context_snapshot()`.
 
 ---

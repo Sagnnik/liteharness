@@ -38,7 +38,7 @@ from liteharness_cli.coding_session import CodingSession
 from liteharness_cli.config import context_window_for, make_sdk_cost_tracker, settings
 from liteharness_cli.prompts import (
     default_prompt_layers,
-    default_task_prompts,
+    default_aux_prompts,
     plan_act_modes,
 )
 
@@ -65,15 +65,15 @@ def build_coding_agent(
         "compaction_model": create_compaction_model(thread_id),
         "reflection_model": create_reflection_model(thread_id),
         "prompt": default_prompt_layers(l2_context=l2_context),
-        "task_prompts": default_task_prompts(),
+        "aux_prompts": default_aux_prompts(),
         "modes": plan_act_modes(plans_dir=ness_dir / "plans"),
         "hooks_config": ness_dir / "hooks.json",
         "skills_dir": ness_dir / "skills",
         "options": NessAgentOptions(
             context_window=context_window_for(active_model_name()),
             compaction_token_budget=settings.compaction_token_budget,
-            compaction_output_reserve_tokens=settings.compaction_output_reserve_tokens,
-            compaction_input_reserve_tokens=settings.compaction_input_reserve_tokens,
+            compaction_output_reserve=settings.compaction_output_reserve,
+            compaction_input_reserve=settings.compaction_input_reserve,
             enable_approval=settings.enable_approval,
             auto_save_threads=settings.auto_save_threads,
             reflection_token_ratio=settings.reflection_token_ratio,
@@ -94,7 +94,7 @@ def build_coding_agent(
 def build_coding_session(
     *,
     thread_id: str,
-    agent_mode: str = "act",
+    mode: str = "act",
     vision: bool | None = None,
     git_available: bool | None = None,
     metadata: dict[str, Any] | None = None,
@@ -109,7 +109,7 @@ def build_coding_session(
     return CodingSession(
         agent,
         thread_id=thread_id,
-        agent_mode=agent_mode,
+        mode=mode,
         vision=vision,
         git_available=git_available,
         metadata=metadata,

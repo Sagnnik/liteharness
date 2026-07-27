@@ -15,7 +15,7 @@ from liteharness.compaction import (
     apply_force_floor,
     calculate_context_pressure,
     compaction_label,
-    format_compaction_overlay_note,
+    compaction_overlay_note,
 )
 from liteharness.graph.builder import build_graph
 from liteharness.graph.helpers import _effective_conversation
@@ -156,7 +156,7 @@ class Session:
         agent,
         *,
         thread_id,
-        agent_mode="act",
+        mode="act",
         metadata=None,
         git_available=None,
         vision: bool | None = None,
@@ -169,7 +169,7 @@ class Session:
             agent: A :class:`NessAgent` instance whose config drives tools,
                    models, prompts, and permissions.
             thread_id: Unique identifier for this conversation thread.
-            agent_mode: Initial mode (``"act"`` or ``"plan"``).
+            mode: Initial mode (``"act"`` or ``"plan"``).
             metadata: Arbitrary key-value pairs surfaced in the system prompt.
             git_available: Whether the project has a git repo.
             vision: Whether image attachments should be forwarded to the model.
@@ -198,7 +198,7 @@ class Session:
         """
         self.agent = agent
         self.thread_id = thread_id
-        self.agent_mode = agent_mode
+        self.mode = mode
         self.metadata = dict(metadata or {})
         self.git_available = git_available
         self._cfg = agent.config
@@ -276,7 +276,7 @@ class Session:
         return build_graph(
             self._cfg,
             thread_id=self.thread_id,
-            agent_mode=self.agent_mode,
+            mode=self.mode,
             git_available=self.git_available,
             checkpointer=self.checkpointer,
             metadata=self.metadata,
@@ -344,26 +344,21 @@ class Session:
         When switching from ``"plan"`` to ``"act"``, a pre-flight compaction
         checkpoint is scheduled for the next :meth:`run` or :meth:`stream`.
         """
-        if mode == self.agent_mode:
+        if mode == self.mode:
             return
-        if mode == "act" and self.agent_mode == "plan":
+        if mode == "act" and self.mode == "plan":
             self._pending_act_checkpoint = True
         else:
             self._pending_act_checkpoint = False
-        self.agent_mode = mode
+        self.mode = mode
 
     def toggle_mode(self) -> str:
-        """Flip ``"act"`` ↔ ``"plan"`` (CLI Shift+Tab semantics). Returns the new mode."""
-        if self.agent_mode == "act":
+        """Flip ``"act"`` <-> ``"plan"`` (CLI Shift+Tab semantics). Returns the new mode."""
+        if self.mode == "act":
             self.set_mode("plan")
         else:
             self.set_mode("act")
-        return self.agent_mode
-
-    @property
-    def mode(self) -> str:
-        """The current session mode (``"act"`` or ``"plan"``)."""
-        return self.agent_mode
+        return self.mode
 
     def active_skills(self, names: Sequence[str]) -> None:
         """Replace the pending skill list for the next turn (replace-all)."""
@@ -406,7 +401,7 @@ class Session:
             self._cfg.reflection_model or self._cfg.model,
             memory=self._cfg.memory_store,
             persistence=self._cfg.thread_store,
-            task_prompts=self._cfg.task_prompts,
+            aux_prompts=self._cfg.aux_prompts,
             tracer=self._cfg.tracer,
             tracing=self._cfg.tracing,
         )
@@ -430,7 +425,7 @@ class Session:
         state = await self.get_state()
         return list(state.get("messages", []))
 
-    async def aget_todos(self) -> list[dict[str, Any]]:
+    async def get_todos(self) -> list[dict[str, Any]]:
         """Gets the todos from the current graph state."""
         state = await self.get_state()
         return list(state.get("todos", []))
@@ -487,7 +482,7 @@ class Session:
         model_name = getattr(cfg.model, "model", "") or getattr(cfg.model, "model_name", "")
         compaction_note = ""
         if pressure is not None:
-            compaction_note = format_compaction_overlay_note(
+            compaction_note = compaction_overlay_note(
                 CompactionResult(
                     messages=conversation,
                     compacted=False,
@@ -502,7 +497,7 @@ class Session:
                 model_name=model_name,
             )
 
-        preview_mode = (mode or self.agent_mode or "act").lower()
+        preview_mode = (mode or self.mode or "act").lower()
         mode_switch = ""
         if self._pending_act_checkpoint and preview_mode == "act":
             mode_switch = "plan->act"
@@ -521,7 +516,7 @@ class Session:
         if overlay_provider is not None:
             overlay_ctx = OverlayContext(
                 thread_id=self.thread_id,
-                agent_mode=preview_mode,
+                mode=preview_mode,
                 messages=conversation,
                 todos=list(state.get("todos", [])),
                 session_memory=(
@@ -547,7 +542,7 @@ class Session:
             overlay=overlay,
             overlay_sections=dict(overlay_sections),
             overlay_reminder=wrap_system_reminder(overlay),
-            agent_mode=preview_mode,
+            mode=preview_mode,
         )
 
     async def _context_pressure_snapshot(
@@ -680,7 +675,7 @@ class Session:
         payload = {
             "messages": [*initial, user_message],
             "approval_declined": False,
-            "agent_mode": self.agent_mode,
+            "mode": self.mode,
             "force_compact": self._consume_force_compact(),
             "activate_skills": skills,
             "mode_switch": mode_switch,
@@ -940,7 +935,7 @@ class Session:
             TURN,
             attributes={
                 THREAD_ID: self.thread_id,
-                AGENT_MODE: self.agent_mode,
+                AGENT_MODE: self.mode,
                 GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
                 GEN_AI_OPERATION_NAME: "agent",
             },
@@ -950,12 +945,12 @@ class Session:
                 # the prior mode and restore it in the ``finally`` below via a
                 # direct assignment (NOT ``set_mode`` — that would schedule a
                 # spurious plan->act compaction checkpoint on the next turn).
-                prior_mode = self.agent_mode
-                mode_overridden = bool(mode and mode != self.agent_mode)
+                prior_mode = self.mode
+                mode_overridden = bool(mode and mode != self.mode)
                 if mode_overridden:
                     self.set_mode(mode)
                 mode_switch = ""
-                if self._pending_act_checkpoint and self.agent_mode == "act":
+                if self._pending_act_checkpoint and self.mode == "act":
                     self._pending_act_checkpoint = False
                     mode_switch = "plan->act"
                     await self._maybe_checkpoint_before_act()
@@ -1051,7 +1046,7 @@ class Session:
                     # has ended.
                     for queued in self._drain_queue():
                         yield queued, assistant_text
-                elif self.agent_mode == "plan":
+                elif self.mode == "plan":
                     # Plan-turn emission: when an adapter hook is installed, it
                     # takes the text directly; otherwise emit a ``plan_turn``
                     # SessionEvent so the caller can still observe the text.
@@ -1067,8 +1062,8 @@ class Session:
                 # Restore the session mode when a one-turn override was applied
                 # (see ``mode`` kwarg docstring). Direct assignment avoids
                 # ``set_mode``'s plan->act checkpoint side effect.
-                if mode_overridden and self.agent_mode != prior_mode:
-                    self.agent_mode = prior_mode
+                if mode_overridden and self.mode != prior_mode:
+                    self.mode = prior_mode
                 span.set_attribute(TURN_COUNT, self.turn_count)
                 last_usage = self._last_usage
                 if last_usage is not None:
@@ -1108,7 +1103,7 @@ class Session:
         
         self.turn_count += 1
         await self.refresh_context_snapshot()
-        todos = await self.aget_todos()
+        todos = await self.get_todos()
         return RunResult(
             assistant_message=assistant_text,
             usage=self._last_usage,

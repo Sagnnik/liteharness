@@ -7,7 +7,7 @@ from urllib.parse import urlparse, urlunparse
 Decision = Literal["allow", "deny", "ask"]
 SHELL_TOOL = "shell"
 SHELL_COMMAND_ACTIONS = {"run", "start"}
-WEBFETCH_TOOL = "webfetch"
+FETCH_URL_TOOL = "fetch_url"
 RuleScope = Literal["always", "session"]
 
 DEFAULT_RULES = {
@@ -52,7 +52,7 @@ class PermissionStore:
                           Defaults to ``cwd``.
         """
         self.ness_dir = Path(ness_dir)
-        self.perms_file = self.ness_dir / "permissions.json"
+        self.permissions_file = self.ness_dir / "permissions.json"
         self.project_root = (project_root or Path.cwd()).resolve()
         self._session_rules: dict[str, list[str]] = {"allow": [], "deny": []}
 
@@ -134,12 +134,12 @@ class PermissionStore:
         self._session_rules["deny"].clear()
 
     def _load(self) -> dict:
-        if not self.perms_file.exists():
+        if not self.permissions_file.exists():
             self.ness_dir.mkdir(parents=True, exist_ok=True)
             self._save(DEFAULT_RULES)
             return json.loads(json.dumps(DEFAULT_RULES))
         try:
-            data = json.loads(self.perms_file.read_text(encoding="utf-8"))
+            data = json.loads(self.permissions_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             data = {}
         for key in ("allow", "deny", "ask"):
@@ -149,7 +149,7 @@ class PermissionStore:
 
     def _save(self, rules: dict) -> None:
         self.ness_dir.mkdir(parents=True, exist_ok=True)
-        self.perms_file.write_text(json.dumps(rules, indent=2), encoding="utf-8")
+        self.permissions_file.write_text(json.dumps(rules, indent=2), encoding="utf-8")
 
     def remove_rule(self, bucket: Literal["allow", "deny"], index: int) -> str:
         """Remove a persisted rule at *index* from the given *bucket*.
@@ -200,7 +200,7 @@ class PermissionStore:
         """Build the pattern-matching key for a tool call.
 
         Format: ``tool:action:detail`` for shell, ``tool:url=<normalized>``
-        for webfetch, or ``tool:key1=val1,key2=val2`` for everything else.
+        for fetch_url, or ``tool:key1=val1,key2=val2`` for everything else.
         Used internally by :meth:`check_with_rule` and :meth:`_matches`.
         """
         if tool == SHELL_TOOL:
@@ -210,8 +210,8 @@ class PermissionStore:
             parts = [f"{key}={args[key]}" for key in sorted(args) if key != "action"]
             detail = ",".join(parts) if parts else "*"
             return f"{SHELL_TOOL}:{action}:{detail}"
-        if tool == WEBFETCH_TOOL:
-            return f"{WEBFETCH_TOOL}:url={self._normalize_permission_url(str(args.get('url') or ''))}"
+        if tool == FETCH_URL_TOOL:
+            return f"{FETCH_URL_TOOL}:url={self._normalize_permission_url(str(args.get('url') or ''))}"
         if not args:
             return tool
         parts = [f"{key}={args[key]}" for key in sorted(args)]
@@ -228,7 +228,7 @@ class PermissionStore:
         This is used by the permission-prompt flow to pre-fill a rule when
         the user chooses to remember their decision.
         """
-        if tool == WEBFETCH_TOOL:
+        if tool == FETCH_URL_TOOL:
             return self.pattern_key(tool, args)
         if tool != SHELL_TOOL:
             return self.pattern_key(tool, args)
@@ -335,6 +335,6 @@ class PermissionStore:
             if key_action in SHELL_COMMAND_ACTIONS:
                 return self._shell_command_matches(rule_detail, key_detail)
             return fnmatch.fnmatch(key_detail, rule_detail)
-        if rule_tool == WEBFETCH_TOOL:
+        if rule_tool == FETCH_URL_TOOL:
             return key_args == rule_args
         return fnmatch.fnmatch(key_args, rule_args)

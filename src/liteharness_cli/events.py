@@ -64,7 +64,7 @@ def _subagent_batch_text(subagents: list[dict[str, Any]]) -> str:
     return "\n".join(lines).strip()
 
 
-def _maybe_enrich_spawn_subagent_result(
+def _enrich_spawn_subagent_result(
     tool_name: str,
     result: str,
     subagents: list[dict[str, Any]],
@@ -82,7 +82,7 @@ def events_to_messages(
     subagents: list[dict[str, Any]] | None = None,
     *,
     vision: bool | None = None,
-    perms: PermissionStore | None = None,
+    permission_store: PermissionStore | None = None,
 ) -> list[BaseMessage]:
     """Rebuild the LangGraph transcript from saved events.
 
@@ -116,8 +116,8 @@ def events_to_messages(
             content = event.get("content", "")
             text = content if isinstance(content, str) else str(content)
             # Re-expand @file mentions against current disk on replay.
-            if perms is not None:
-                text = expand_documents(text, perms)
+            if permission_store is not None:
+                text = expand_documents(text, permission_store)
             images = event.get("images") or []
             if images and idx not in answered_user_indices and vision is not False:
                 blocks: list[dict[str, Any]] = [
@@ -150,7 +150,7 @@ def events_to_messages(
                 call_id = str(pending_calls[0].get("id") or "")
                 pending_calls = pending_calls[1:]
             tool_name = str(event.get("tool") or "")
-            result = _maybe_enrich_spawn_subagent_result(
+            result = _enrich_spawn_subagent_result(
                 tool_name,
                 str(event.get("result") or ""),
                 subagents,

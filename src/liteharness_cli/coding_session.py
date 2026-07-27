@@ -58,7 +58,7 @@ class CodingSession:
         agent,
         *,
         thread_id: str,
-        agent_mode: str = "act",
+        mode: str = "act",
         vision: bool | None = None,
         git_available: bool | None = None,
         metadata: dict[str, Any] | None = None,
@@ -73,7 +73,7 @@ class CodingSession:
 
         self.thread_store = self.cfg.thread_store
         self.cost_tracker = self.cfg.cost_tracker
-        self.perms = self.cfg.permission_store
+        self.permission_store = self.cfg.permission_store
 
         # (/memory, /user, /init, /hooks, /skill, /mcp).
         self.memory_store = self.cfg.memory_store
@@ -84,7 +84,7 @@ class CodingSession:
         # Build the underlying SDK Session and install the per-Session hooks (on_plan_turn and on_interrupt).
         self._session = agent.session(
             thread_id=thread_id,
-            agent_mode=agent_mode,
+            mode=mode,
             metadata=metadata,
             git_available=git_available,
             vision=vision,
@@ -214,8 +214,8 @@ class CodingSession:
     async def refresh_context_snapshot(self) -> dict[str, Any]:
         return await self._session.refresh_context_snapshot()
 
-    async def aget_todos(self) -> list[dict[str, Any]]:
-        return await self._session.aget_todos()
+    async def get_todos(self) -> list[dict[str, Any]]:
+        return await self._session.get_todos()
 
     async def get_state(self) -> dict[str, Any]:
         return await self._session.get_state()
@@ -280,7 +280,7 @@ class CodingSession:
         """
         self._plan_turn_texts = []
         cleaned = _IMAGE_PLACEHOLDER_RE.sub("", user_text or "").strip()
-        expanded = expand_documents(cleaned, self.perms)
+        expanded = expand_documents(cleaned, self.permission_store)
 
         # Per-turn rollback checkpoint: snapshot files + the per-thread
         # session-memory file BEFORE the agent acts. ``create_file_checkpoint``
@@ -367,7 +367,7 @@ class CodingSession:
         attribute after an override turn, so the Session is always the source
         of truth for "which mode is this turn running in".
         """
-        if self._session.agent_mode == "plan" and partial_text.strip():
+        if self._session.mode == "plan" and partial_text.strip():
             self._handle_plan_turn_text(partial_text + _INTERRUPTED_SUFFIX)
         return partial_text
 
@@ -474,7 +474,7 @@ class CodingSession:
             events,
             subagents,
             vision=self._vision,
-            perms=self.perms,
+            permission_store=self.permission_store,
         )
         if replay_cost:
             restore_cost_from_events(events, self.cost_tracker)
@@ -605,7 +605,7 @@ def _extract_mutated_paths(name: str, args: dict) -> list[str]:
     if not args:
         return []
     n = (name or "").lower()
-    if n in ("edit", "write", "delete_file", "auto_format"):
+    if n in ("edit", "write", "delete", "auto_format"):
         p = args.get("path")
         return [str(p)] if p else []
     if n == "shell":

@@ -48,7 +48,7 @@ def set_active_model(model_name: str) -> str | None:
     """
     global _overrides
     base = _overrides or ModelOverrides()
-    current_effort = cast(str | None, _resolved("reasoning_effort"))
+    current_effort = cast(str | None, _resolved_setting("reasoning_effort"))
     coerced = coerce_reasoning_effort(model_name, current_effort)
     if coerced != current_effort:
         if coerced is not None:
@@ -76,7 +76,7 @@ def set_active_reasoning_effort(reasoning_effort: ReasoningEffort) -> None:
     settings.reasoning_effort = reasoning_effort
 
 
-def _resolved(field: str) -> str | int | None:
+def _resolved_setting(field: str) -> str | int | None:
     if _overrides is not None:
         value = getattr(_overrides, field, None)
         if value is not None:
@@ -85,15 +85,15 @@ def _resolved(field: str) -> str | int | None:
 
 
 def active_model_name() -> str:
-    return cast(str, _resolved("model_name"))
+    return cast(str, _resolved_setting("model_name"))
 
 
 def active_reasoning_effort() -> ReasoningEffort:
-    return cast(ReasoningEffort, _resolved("reasoning_effort"))
+    return cast(ReasoningEffort, _resolved_setting("reasoning_effort"))
 
 
-def effective_openrouter_session_id(thread_id: str, *, suffix: str = "") -> str:
-    base = _resolved("openrouter_session_id") or thread_id
+def openrouter_session(thread_id: str, *, suffix: str = "") -> str:
+    base = _resolved_setting("openrouter_session_id") or thread_id
     if suffix:
         return f"{base}:{suffix}"
     return cast(str, base)
@@ -119,18 +119,18 @@ def build_chat_model(
     model_name: str | None = None,
     session_suffix: str = "",
 ) -> ChatOpenRouter:
-    resolved_model = cast(str, model_name or _resolved("model_name"))
+    resolved_model = cast(str, model_name or _resolved_setting("model_name"))
     model_kwargs: dict[str, Any] = {
         "model": resolved_model,
-        "api_key": _resolved("openai_api_key"),
-        "session_id": effective_openrouter_session_id(thread_id, suffix=session_suffix),
+        "api_key": _resolved_setting("openai_api_key"),
+        "session_id": openrouter_session(thread_id, suffix=session_suffix),
     }
-    model_kwargs.update(_reasoning_kwargs(resolved_model, _resolved("reasoning_effort")))
-    base_url = _resolved("openai_base_url")
+    model_kwargs.update(_reasoning_kwargs(resolved_model, _resolved_setting("reasoning_effort")))
+    base_url = _resolved_setting("openai_base_url")
     if base_url:
         model_kwargs["base_url"] = base_url
 
-    model_kwargs["max_retries"] = _resolved("api_max_retries")
+    model_kwargs["max_retries"] = _resolved_setting("api_max_retries")
     return ChatOpenRouter(**model_kwargs)
 
 
@@ -145,12 +145,12 @@ def create_compaction_model(thread_id: str) -> ChatOpenRouter:
 def create_reflection_model(thread_id: str) -> ChatOpenRouter:
     return build_chat_model(
         thread_id,
-        model_name=cast(str, _resolved("reflection_model_name")),
+        model_name=cast(str, _resolved_setting("reflection_model_name")),
         session_suffix="reflection",
     )
 
 
-def validate_reasoning_effort_for_model(model_name: str, reasoning_effort: str) -> None:
+def validate_effort(model_name: str, reasoning_effort: str) -> None:
     allowed = reasoning_efforts_for_model(model_name)
     if not allowed:
         raise ValueError(f"model {model_name!r} does not support reasoning effort")

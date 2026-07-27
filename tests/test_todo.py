@@ -101,7 +101,7 @@ class RenderTodosTests(unittest.TestCase):
         overlay = CodingOverlay()
         ctx = OverlayContext(
             thread_id="t",
-            agent_mode="act",
+            mode="act",
             messages=[],
             todos=[],
             session_memory="",
@@ -115,7 +115,7 @@ class RenderTodosTests(unittest.TestCase):
         overlay = CodingOverlay()
         ctx = OverlayContext(
             thread_id="t",
-            agent_mode="act",
+            mode="act",
             messages=[],
             todos=[{"id": "1", "content": "Ship it", "status": "pending"}],
             session_memory="",

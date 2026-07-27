@@ -199,7 +199,7 @@ class ChromeMixin:
             return
 
     def _prompt_prefix(self):
-        mode = self.agent_mode
+        mode = self.mode
         style = "class:prompt.mode.plan" if mode == "plan" else "class:prompt.mode"
         return [(style, f"{mode} "), ("class:prompt", "> ")]
 

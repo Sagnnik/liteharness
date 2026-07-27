@@ -59,7 +59,7 @@ class ContextPreview:
     overlay_reminder: str
     """``overlay`` wrapped with :func:`~liteharness.context.overlay.wrap_system_reminder`."""
 
-    agent_mode: str
+    mode: str
     """Mode used for this preview (``\"act\"`` or ``\"plan\"``)."""
 
 

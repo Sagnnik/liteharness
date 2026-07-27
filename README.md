@@ -23,14 +23,14 @@ Useful environment variables:
 - `SESSION_END_REFLECTION`: run a final reflection pass when a session ends (default off). Mid-session reflection is still controlled by `REFLECTION_TOKEN_RATIO`.
 - `REFLECTION_TOKEN_RATIO`: fraction of the usable context budget that must accumulate in new messages before a background reflection run (default `0.4`; set `0` to disable).
 - `API_MAX_RETRIES`: retries for chat API calls (default `3`).
-- `COMPACTION_OUTPUT_RESERVE_TOKENS`: output reserve subtracted from the model context window (default `8192`).
-- `COMPACTION_INPUT_RESERVE_TOKENS`: input/system/tool reserve subtracted from the model context window (default `4096`).
+- `COMPACTION_OUTPUT_RESERVE`: output reserve subtracted from the model context window (default `8192`).
+- `COMPACTION_INPUT_RESERVE`: input/system/tool reserve subtracted from the model context window (default `4096`).
 - `COMPACTION_TOKEN_BUDGET`: fallback compaction budget when the model context window is unknown (default `120000`).
 - `OPENROUTER_SESSION_ID`: optional stable prompt-cache session id. Defaults to the active LiteHarness thread id.
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
-- `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `webfetch` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
+- `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
 CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`. Use `/config` in-session to switch model, reasoning effort, keys, approval, autosave, and session-end reflection (persisted to `.env`).
 
@@ -81,10 +81,10 @@ Plan-mode workflow:
 
 Session tool tiers (same set bound in both modes):
 
-- Small always-on: `todo`, `question`
-- L1 core: file (`read`, `write`, `delete_file`, `edit`), search, web (`web_search`, `webfetch`), and shell
+- Always-on: `todo`, `question`, `skill_view`
+- Core: file (`read`, `write`, `delete`, `edit`), search, web (`web_search`, `fetch_url`), and shell
 - Tool discovery: `search_tools`, `add_tools` for loading deferred MCP tools on demand
-- L3 advanced: `spawn_subagent`
+- Advanced: `spawn_subagent`
 - Loaded MCP tools: any `mcp__*` tool activated this session (deferred by default; load via `search_tools`/`add_tools` or `/mcp <server> [tool]`)
 
 ## Memory
@@ -180,11 +180,11 @@ Skill loading is two-stage. A one-line catalog of every available skill (`name: 
 
 Deny rules win over allow rules. Rules are evaluated in order: persistent deny, session deny, persistent allow, session allow, then ask. Shell command allow/deny rules reject commands with unquoted shell operators (`;`, `&&`, `|`, `>`, `<`, newlines, etc.) so chained or redirect commands fall through to ask instead of matching a prefix rule.
 
-`web_search:*` is allowed by default. `webfetch` asks for approval per normalized URL; approving one URL does not approve a different path or query, and changing `max_characters` does not require a new approval.
+`web_search:*` is allowed by default. `fetch_url` asks for approval per normalized URL; approving one URL does not approve a different path or query, and changing `max_characters` does not require a new approval.
 
 ### Web search providers
 
-`web_search` and `webfetch` pick a provider automatically:
+`web_search` and `fetch_url` pick a provider automatically:
 
 | Provider | When used | Notes |
 |----------|-----------|-------|
@@ -240,7 +240,7 @@ Tools are exposed as `mcp__<server>__<tool>`. The startup header shows connected
 
 ```markdown
 ---
-tools: [read, grep, glob, web_search, webfetch]
+tools: [read, grep, glob, web_search, fetch_url]
 ---
 ```
 
@@ -252,7 +252,7 @@ Subagents live in `.ness/agents/<name>.md`:
 
 ```markdown
 ---
-tools: [read, grep, glob, web_search, webfetch]
+tools: [read, grep, glob, web_search, fetch_url]
 ---
 You are a read-only explorer. Return concise findings with file references.
 ```

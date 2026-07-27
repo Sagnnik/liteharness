@@ -52,7 +52,7 @@ def coding(tmp_path: Path):
     return CodingSession(
         _make_agent(tmp_path),
         thread_id="t-cli-1",
-        agent_mode="act",
+        mode="act",
         vision=False,
     )
 
@@ -97,7 +97,7 @@ def test_resume_bootstraps_via_session_bootstrap(tmp_path: Path):
     coding = CodingSession(
         _make_agent(tmp_path),
         thread_id="t-resume-1",
-        agent_mode="act",
+        mode="act",
     )
 
     # Seed a prior thread with events we can resume from.
@@ -278,11 +278,11 @@ def test_expand_documents_on_send_and_replay(tmp_path: Path):
             auto_save_threads=False,
         ),
     )
-    coding = CodingSession(agent, thread_id="t-mentions", agent_mode="act")
+    coding = CodingSession(agent, thread_id="t-mentions", mode="act")
 
     from liteharness_cli.mentions import expand_documents
 
-    expanded = expand_documents("@alpha.txt see this", coding.perms)
+    expanded = expand_documents("@alpha.txt see this", coding.permission_store)
     assert "ALPHA-CONTENT-v1" in expanded
     assert "@alpha.txt" in expanded  # tag preserved verbatim
 
@@ -290,7 +290,7 @@ def test_expand_documents_on_send_and_replay(tmp_path: Path):
     # re-expands against the (now-modified) disk file.
     events = [{"kind": "user", "content": "@alpha.txt see this"}]
     (tmp_path / "alpha.txt").write_text("ALPHA-CONTENT-v2", encoding="utf-8")
-    msgs = events_to_messages(events, perms=coding.perms)
+    msgs = events_to_messages(events, permission_store=coding.permission_store)
     assert msgs, "events_to_messages produced no messages"
     assert "ALPHA-CONTENT-v2" in str(msgs[0].content)
     assert "ALPHA-CONTENT-v1" not in str(msgs[0].content)
@@ -349,7 +349,7 @@ def test_first_turn_seq_zero_records_mutation(tmp_path: Path):
     turn whose tail must be drained, not an inert sentinel.
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-seqzero", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-seqzero", mode="act"
     )
     coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "x"})
     coding.thread_store.save_checkpoint(coding.thread_id, 0, "HEAD", "")
@@ -371,8 +371,8 @@ def test_shared_agent_sessions_record_own_thread_mutations(tmp_path: Path):
     records only its own thread's tool rows with no dispatch machinery.
     """
     agent = _make_agent(tmp_path)
-    a = CodingSession(agent, thread_id="thread-A", agent_mode="act")
-    b = CodingSession(agent, thread_id="thread-B", agent_mode="act")
+    a = CodingSession(agent, thread_id="thread-A", mode="act")
+    b = CodingSession(agent, thread_id="thread-B", mode="act")
 
     for sess, path in ((a, "a_file.py"), (b, "b_file.py")):
         sess.thread_store.append_event(sess.thread_id, {"kind": "user", "content": "x"})
@@ -400,7 +400,7 @@ def test_run_turn_records_mutations_from_tool_log(tmp_path: Path):
     even though the adapter only sees the stream, not the graph internals.
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-drain-e2e", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-drain-e2e", mode="act"
     )
 
     async def _fake_stream(*a, **k):
@@ -436,7 +436,7 @@ def test_subagent_active_suppresses_stream_events(tmp_path: Path):
     forward SessionEvents to the caller (spinner hygiene).
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-sub-suppress", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-sub-suppress", mode="act"
     )
 
     async def _fake_stream(*a, **k):
@@ -470,7 +470,7 @@ def test_act_mode_interrupted_turn_writes_no_plan_file(tmp_path: Path, monkeypat
     through ``run_turn`` as pure pass-through. Neither may append plan text.
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-act-interrupt", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-act-interrupt", mode="act"
     )
     coding.set_mode("act")
 
@@ -507,7 +507,7 @@ def test_plan_mode_interrupted_turn_writes_plan_file(tmp_path: Path):
     the same partial text a second time when the event flows through.
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-plan-interrupt", agent_mode="plan"
+        _make_agent(tmp_path), thread_id="t-plan-interrupt", mode="plan"
     )
 
     async def _fake_stream(*a, **k):
@@ -542,15 +542,15 @@ def test_on_interrupt_uses_live_session_mode(tmp_path: Path):
     so an act-mode override turn never writes a plan file (and vice versa).
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-mode-interrupt", agent_mode="plan"
+        _make_agent(tmp_path), thread_id="t-mode-interrupt", mode="plan"
     )
     # Simulate a one-turn mode="act" override: session temporarily in act
     # while the adapter attribute still says plan.
-    coding._session.agent_mode = "act"
+    coding._session.mode = "act"
     coding._on_interrupt("partial text")
     assert coding._plan_turn_texts == [], "act-mode override turn appended plan text"
 
-    coding._session.agent_mode = "plan"
+    coding._session.mode = "plan"
     coding._on_interrupt("partial text")
     assert len(coding._plan_turn_texts) == 1
 
@@ -561,7 +561,7 @@ def test_compaction_durable_log_not_skipped_on_early_break(tmp_path: Path):
     now run before each yield, so the row is written even on early break.
     """
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-earlybreak", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-earlybreak", mode="act"
     )
 
     async def _fake_stream(*a, **k):
@@ -622,7 +622,7 @@ def test_run_turn_persists_placeholder_stripped_text(tmp_path: Path):
         "docs about the [Image #9] marker", encoding="utf-8"
     )
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-strip", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-strip", mode="act"
     )
 
     seen = {}
@@ -673,7 +673,7 @@ def test_resume_unknown_thread_returns_false_and_keeps_current(tmp_path: Path):
     """Resuming a thread with no persisted events is a no-op (the TUI shows
     "No saved thread") — the current thread is NOT archived or switched."""
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-live", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-live", mode="act"
     )
     coding.thread_store.append_event("t-live", {"kind": "user", "content": "x"})
 
@@ -685,7 +685,7 @@ def test_resume_unknown_thread_returns_false_and_keeps_current(tmp_path: Path):
 def test_resume_archives_current_thread_on_switch(tmp_path: Path):
     """Switching threads finalizes + archives the abandoned one (CLI parity)."""
     coding = CodingSession(
-        _make_agent(tmp_path), thread_id="t-old", agent_mode="act"
+        _make_agent(tmp_path), thread_id="t-old", mode="act"
     )
     coding.thread_store.append_event("t-old", {"kind": "user", "content": "old"})
     coding.thread_store.append_event("t-new", {"kind": "user", "content": "new"})
@@ -759,7 +759,7 @@ def test_rollback_rebuilds_graph_state_from_events(tmp_path: Path):
     survived in graph state and the surviving history appeared twice.
     """
     agent = _make_bindable_agent(tmp_path, ["r-one", "r-two", "r-three"])
-    coding = CodingSession(agent, thread_id="t-rb", agent_mode="act")
+    coding = CodingSession(agent, thread_id="t-rb", mode="act")
 
     _run(_collect(coding.run_turn("turn-one")))
     _run(_collect(coding.run_turn("turn-two")))

@@ -1,5 +1,5 @@
 ---
-tools: [read, grep, glob, web_search, webfetch]
+tools: [read, grep, glob, web_search, fetch_url]
 ---
 Return a detailed findings report with:
 - File:line citations for every claim

@@ -65,12 +65,12 @@ def _install_registry(tmp_path: Path, reg: ToolRegistry) -> ToolRegistry:
     ness = tmp_path / ".ness"
     ness.mkdir(parents=True, exist_ok=True)
     options = NessAgentOptions(project_root=tmp_path, ness_dir=ness)
-    perms = PermissionStore(ness_dir=ness, project_root=tmp_path)
+    permission_store = PermissionStore(ness_dir=ness, project_root=tmp_path)
     store = ThreadStore(threads_dir=ness / "threads", auto_save=False)
     cfg = SimpleNamespace(tool_registry=reg)
     set_session_context(
         SessionContext(
-            permissions=perms,
+            permissions=permission_store,
             options=options,
             thread_store=store,
             ness_dir=ness,

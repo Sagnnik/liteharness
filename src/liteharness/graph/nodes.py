@@ -15,9 +15,9 @@ from liteharness.graph.helpers import (
     _tool_event,
 )
 from liteharness.compaction import (
-    compact_messages_progressively,
+    progressive_compact,
     compaction_label,
-    format_compaction_overlay_note,
+    compaction_overlay_note,
     resolve_token_count,
     resolve_usable_context_budget,
 )
@@ -63,28 +63,28 @@ from liteharness.tools.todo import render_todos
 class NodesRuntime:
     """Mutable container that carry the states between the nodes.
     These states need to outlive single node call but cannot remain in the AgentState."""
-    def __init__(self, config, *, thread_id, agent_mode = "act", git_available, metadata = None):
+    def __init__(self, config, *, thread_id, mode = "act", git_available, metadata = None):
         self.cfg = config
         self.thread_id = thread_id
-        self.resolved_mode = (agent_mode or "act").lower()
+        self.resolved_mode = (mode or "act").lower()
         self.repo_has_git = git_available == True
         self._last_sections: dict[str, str] = {}
         self.reflection_tasks: set[asyncio.Task] = set()
         self.metadata: Mapping[str, Any] = metadata if metadata is not None else {}
 
-def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, metadata = None) -> NodesRuntime:
-    rt = NodesRuntime(config, thread_id=thread_id, agent_mode=agent_mode, git_available=git_available, metadata=metadata)
+def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadata = None) -> NodesRuntime:
+    rt = NodesRuntime(config, thread_id=thread_id, mode=mode, git_available=git_available, metadata=metadata)
     # objects of the backends created in the NessAgentConfig
     tools_reg = config.tool_registry
     skills_loader = config.skill_loader
-    perms = config.permission_store
+    permission_store = config.permission_store
     hooks = config.hook_runner
     cost = config.cost_tracker
     memory = config.memory_store
     persist = config.thread_store
     prompts = config.prompts
     overlay_provider = config.overlay
-    task_prompts = config.task_prompts
+    aux_prompts = config.aux_prompts
     options = config.options
     tracer = config.tracer
     main_model = config.model
@@ -131,7 +131,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         token_estimate = await asyncio.to_thread(resolve_token_count, [system] + conversation, known_input_tokens=state.get("last_input_tokens") or None)
 
         force_compact = bool(state.get("force_compact"))
-        compaction = await compact_messages_progressively(
+        compaction = await progressive_compact(
             conversation,
             known_input_tokens=token_estimate,
             summary_model=compaction_model,
@@ -143,12 +143,12 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             persistence=persist,
             tracer=tracer,
             tracing=config.tracing,
-            compaction_prompt=task_prompts.compaction
+            compaction_prompt=aux_prompts.compaction
         )
         if compaction.compacted: 
             conversation = compaction.messages
 
-        compaction_note = format_compaction_overlay_note(
+        compaction_note = compaction_overlay_note(
             compaction,
             options=options,
             had_stored_compaction=bool(state.get("compacted_messages")),
@@ -166,7 +166,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             from liteharness.context.overlay import OverlayContext, render_overlay_delta
             overlay_context = OverlayContext(
                 thread_id=thread_id,
-                agent_mode=(state.get("agent_mode") or rt.resolved_mode),
+                mode=(state.get("mode") or rt.resolved_mode),
                 messages=conversation,
                 todos=state.get("todos", []),
                 session_memory=memory.load_session(thread_id) if not memory.disabled else "",
@@ -293,10 +293,10 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
                 "tool_calls": response.tool_calls or []
             }
         )
-        _maybe_schedule_reflection(rt, state, messages + [response], model_name)
+        _schedule_reflection_if_due(rt, state, messages + [response], model_name)
         ci = consume_reflection_message_index(thread_id)
         if ci is not None: 
-            updates["last_reflected_message_index"] = ci
+            updates["last_reflection_index"] = ci
         
         return updates
 
@@ -304,7 +304,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
     async def approval_gate(state: AgentState) -> AgentState:
         """The approval gate node that handles the approval logic."""
         calls = extract_tool_calls(state["messages"][-1])
-        gated = [(n, a, cid) for n, a, cid in calls if _needs_approval(n, a, options, perms, tools_reg)]
+        gated = [(n, a, cid) for n, a, cid in calls if _needs_approval(n, a, options, permission_store, tools_reg)]
         
         if not gated: 
             return {"approval_declined": False}
@@ -318,22 +318,22 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             decision = await ah(name, args)
 
             if decision == "always":
-                rule = perms.default_rule_for(name, args)
-                perms.persist_rule(rule, "allow")
+                rule = permission_store.default_rule_for(name, args)
+                permission_store.persist_rule(rule, "allow")
                 persist.append_event(
                     thread_id, {"kind": "approval", "tool": name, "decision": "always", "rule": rule}
                 )
                 continue
             if decision == "session":
-                rule = perms.default_rule_for(name, args)
-                perms.persist_rule(rule, "allow", scope="session")
+                rule = permission_store.default_rule_for(name, args)
+                permission_store.persist_rule(rule, "allow", scope="session")
                 persist.append_event(
                     thread_id, {"kind": "approval", "tool": name, "decision": "session", "rule": rule}
                 )
                 continue
             if decision == "never":
-                rule = perms.default_rule_for(name, args)
-                perms.persist_rule(rule, "deny")
+                rule = permission_store.default_rule_for(name, args)
+                permission_store.persist_rule(rule, "deny")
                 persist.append_event(
                     thread_id, {"kind": "approval", "tool": name, "decision": "never", "rule": rule}
                 )
@@ -369,7 +369,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
 
         # store tool results in a list of ToolMessage objects
         results: list[ToolMessage] = []
-        cur_mode = (state.get("agent_mode") or rt.resolved_mode).lower()
+        cur_mode = (state.get("mode") or rt.resolved_mode).lower()
         newly_loaded_names: set[str] = set()
         # Fresh catalog for loaded_skills eligibility (matches skill_view context).
         all_skills = skills_loader.load()
@@ -398,7 +398,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
                 continue
 
             # if the tool is denied by a permission rule then return the denied messages
-            decision, rule = perms.check_with_rule(name, args)
+            decision, rule = permission_store.check_with_rule(name, args)
             if decision == "deny":
                 content = f"Denied by permission rule: {rule}"
                 results.append(ToolMessage(tool_call_id=call_id, name=name, content=content))
@@ -492,7 +492,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
         if not calls: 
             return END
 
-        cur = (state.get("agent_mode") or rt.resolved_mode).lower()
+        cur = (state.get("mode") or rt.resolved_mode).lower()
 
         # Plan-mode mutating tools skip the approval gate (still denied in tools_node
         # when plan_mode_readonly is on).
@@ -507,7 +507,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
             return "tools"
 
         # if the approval is enabled and the tool needs approval then return the approval gate node
-        if options.enable_approval and any(_needs_approval(n, a, options, perms, tools_reg) for n, a, _ in calls):
+        if options.enable_approval and any(_needs_approval(n, a, options, permission_store, tools_reg) for n, a, _ in calls):
             return "approval_gate"
         
         return "tools"
@@ -526,7 +526,7 @@ def make_nodes(config, *, thread_id, agent_mode = "act", git_available = None, m
 
 
 
-def _maybe_schedule_reflection(
+def _schedule_reflection_if_due(
     rt: NodesRuntime, 
     state: AgentState, 
     messages: list[BaseMessage], 
@@ -536,7 +536,7 @@ def _maybe_schedule_reflection(
     
     if is_reflection_running(rt.thread_id): 
         return
-    since = int(state.get("last_reflected_message_index", 0) or 0) # get the last reflected message index
+    since = int(state.get("last_reflection_index", 0) or 0)
     delta = _reflection_token_delta(messages, since)
     ratio = float(rt.cfg.options.reflection_token_ratio or 0)
     if ratio <= 0: 
@@ -553,11 +553,11 @@ def _maybe_schedule_reflection(
             messages,
             rt.cfg.reflection_model or rt.cfg.model,
             sum(1 for m in messages if m.type == "human"),
-            last_reflected_message_index=since,
+            last_reflection_index=since,
             todos=render_todos(todos),
             memory=rt.cfg.memory_store,
             persistence=rt.cfg.thread_store,
-            task_prompts=rt.cfg.task_prompts,
+            aux_prompts=rt.cfg.aux_prompts,
             tracer=rt.cfg.tracer,
             tracing=rt.cfg.tracing,
         )

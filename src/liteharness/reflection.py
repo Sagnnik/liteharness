@@ -49,7 +49,7 @@ class ReflectionResult:
     bullets: tuple[str, ...] = ()
 
 def consume_reflection_message_index(thread_id: str) -> int | None:
-    """Pop index written by last successful reflection. Agent stores it in `last_reflected_message_index`"""
+    """Pop index written by last successful reflection. Agent stores it in `last_reflection_index`"""
     return _completed_indices.pop(thread_id, None)
 
 
@@ -127,11 +127,11 @@ async def run_reflection_gate(
     model,
     user_message_count: int,
     *,
-    last_reflected_message_index: int = 0,
+    last_reflection_index: int = 0,
     todos: str = "",
     memory=None,
     persistence=None,
-    task_prompts=None,
+    aux_prompts=None,
     tracer=None,
     tracing=None,
 ) -> ReflectionResult:
@@ -148,14 +148,14 @@ async def run_reflection_gate(
     # if the lock is not held, acquire it
     async with lock:
         msg_list = list(messages)
-        since = max(0, int(last_reflected_message_index or 0))
+        since = max(0, int(last_reflection_index or 0))
         recent = msg_list[since:]
 
         if not recent: 
             return ReflectionResult()
         # load_session already returns "- bullet" lines; use as-is.
         bullets_txt = memory.load_session(thread_id) if memory else ""
-        tmpl = (task_prompts.reflection if task_prompts else None)
+        tmpl = (aux_prompts.reflection if aux_prompts else None)
         todos_txt = (todos or "").strip() or "No todos"
         
         prompt = tmpl.format(
@@ -238,7 +238,7 @@ async def finalize_session_reflection(
     *,
     memory=None,
     persistence=None,
-    task_prompts=None,
+    aux_prompts=None,
     tracer=None,
     tracing=None,
 ) -> ReflectionResult:
@@ -271,11 +271,11 @@ async def finalize_session_reflection(
         messages,
         model,
         user_count,
-        last_reflected_message_index=int(state.get("last_reflected_message_index", 0) or 0),
+        last_reflection_index=int(state.get("last_reflection_index", 0) or 0),
         todos=render_todos(state.get("todos", [])),
         memory=memory,
         persistence=persistence,
-        task_prompts=task_prompts,
+        aux_prompts=aux_prompts,
         tracer=tracer,
         tracing=tracing,
     )

@@ -48,7 +48,7 @@ async def question(
     and at least two options with labels. Mark the best option with
     ``recommended: true``. Returns the questions with the chosen answers.
     """
-    normalized = _questions_to_handler_payload(questions)
+    normalized = _question_payload(questions)
 
     handler = _question_handler.get()
     if handler is None:
@@ -65,7 +65,7 @@ async def question(
     return _format_answers(normalized, answers)
 
 
-def _questions_to_handler_payload(questions: list[QuestionItem]) -> list[dict[str, Any]]:
+def _question_payload(questions: list[QuestionItem]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for idx, item in enumerate(questions, 1):
         options = []

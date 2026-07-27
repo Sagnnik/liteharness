@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from liteharness.persistence import ThreadStore
-from liteharness_cli.events import _maybe_enrich_spawn_subagent_result, events_to_messages
+from liteharness_cli.events import _enrich_spawn_subagent_result, events_to_messages
 
 
 class SessionStorageTests(unittest.TestCase):
@@ -216,7 +216,7 @@ class ResumeReplayTests(unittest.TestCase):
                 "output": "detailed findings from subagent run",
             }
         ]
-        enriched = _maybe_enrich_spawn_subagent_result("spawn_subagent", short, subagents)
+        enriched = _enrich_spawn_subagent_result("spawn_subagent", short, subagents)
         self.assertIn("detailed findings", enriched)
         self.assertGreater(len(enriched), len(short))
 

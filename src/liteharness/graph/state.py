@@ -10,10 +10,10 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     approval_declined: bool
     todos: list[dict]
-    agent_mode: str
+    mode: str
     activate_skills: list[str]  
     loaded_skills: list[dict]
-    last_reflected_message_index: int
+    last_reflection_index: int
     compacted_messages: list[BaseMessage]
     compaction_message_count: int
     force_compact: bool
