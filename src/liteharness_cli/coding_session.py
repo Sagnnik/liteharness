@@ -293,7 +293,6 @@ class CodingSession:
 
         # Persist the user event and key the checkpoint by its seq. The
         # persisted text is the placeholder-stripped (but still @tagged)
-        # prose — matching the original CLI's ``persist_text``.
         user_event: dict[str, Any] = {"kind": "user", "content": cleaned}
         if images:
             user_event["images"] = list(images)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import tempfile
@@ -5,8 +7,10 @@ import time
 import unittest
 from pathlib import Path
 
-import permissions
-import tools.shell as shell
+import liteharness.tools.shell as shell
+from liteharness.session_context import get_session_context
+
+from tests.sdk_fixtures import SessionContextTestMixin
 
 
 def _field(result: str, name: str) -> str:
@@ -14,22 +18,20 @@ def _field(result: str, name: str) -> str:
     return match.group(1) if match else ""
 
 
-class ShellToolTests(unittest.TestCase):
+def _shell_dir() -> Path:
+    return get_session_context().ness_dir / "shells"
+
+
+class ShellToolTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._project_root = shell.PROJECT_ROOT
-        self._permissions_project_root = permissions.PROJECT_ROOT
-        self._shell_dir = shell.SHELL_DIR
         self._home = os.environ.get("HOME")
-        shell.PROJECT_ROOT = self.root
-        permissions.PROJECT_ROOT = self.root
-        shell.SHELL_DIR = self.root / ".ness" / "shells"
+        self.install_ctx(Path(self._tmp.name))
         shell._job_processes.clear()
 
     def tearDown(self) -> None:
         try:
-            jobs = shell._load_jobs(shell.SHELL_DIR)
+            jobs = shell._load_jobs(_shell_dir())
             for job_id, job in jobs.items():
                 if job.get("status") != "running":
                     continue
@@ -44,13 +46,11 @@ class ShellToolTests(unittest.TestCase):
             except OSError:
                 pass
         shell._job_processes.clear()
-        shell.PROJECT_ROOT = self._project_root
-        permissions.PROJECT_ROOT = self._permissions_project_root
-        shell.SHELL_DIR = self._shell_dir
         if self._home is None:
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = self._home
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_shell_run_success_and_no_persistent_cwd(self) -> None:
@@ -193,7 +193,7 @@ class ShellToolTests(unittest.TestCase):
         )
         job_id = _field(started, "job_id")
         self._wait_for_path(self.root / "ready.pid")
-        jobs = shell._load_jobs(shell.SHELL_DIR)
+        jobs = shell._load_jobs(_shell_dir())
         pgid = shell._optional_int(jobs[job_id].get("pgid"))
         self.assertIsNotNone(pgid)
         lost_procs = list(shell._job_processes.values())
@@ -209,7 +209,7 @@ class ShellToolTests(unittest.TestCase):
     def test_refresh_keeps_lost_process_table_job_running_when_group_exists(self) -> None:
         started = shell.shell.invoke({"action": "start", "command": "sleep 10"})
         job_id = _field(started, "job_id")
-        jobs = shell._load_jobs(shell.SHELL_DIR)
+        jobs = shell._load_jobs(_shell_dir())
         pgid = shell._optional_int(jobs[job_id].get("pgid"))
         self.assertIsNotNone(pgid)
         lost_procs = list(shell._job_processes.values())

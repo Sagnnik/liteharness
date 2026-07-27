@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import tempfile
@@ -9,8 +11,10 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 
 from langchain_core.messages import AIMessage
 
-from tools import subagents
-from tools.subagents import set_subagent_runtime, spawn_subagent, subagent_runs_active
+import liteharness.tools.subagents as subagents
+from liteharness.tools.subagents import set_subagent_runtime, spawn_subagent, subagent_runs_active
+
+from tests.sdk_fixtures import SessionContextTestMixin
 
 
 class ConcurrentEchoModel:
@@ -38,18 +42,20 @@ class ConcurrentEchoModel:
             self.in_flight -= 1
 
 
-class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
+class SubagentToolTests(SessionContextTestMixin, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.old_agents_dir = subagents.AGENTS_DIR
-        self.agents_dir = Path(self.temp.name) / "agents"
-        self.agents_dir.mkdir(parents=True)
-        subagents.AGENTS_DIR = self.agents_dir
+        root = Path(self.temp.name)
+        self.install_ctx(root, tools=["read", "grep", "glob", "write"])
+        self.agents_dir = self.ctx.ness_dir / "agents"
+        self.agents_dir.mkdir(parents=True, exist_ok=True)
         set_subagent_runtime(None)
+        subagents._global_concurrency_semaphore = None
 
     def tearDown(self):
-        subagents.AGENTS_DIR = self.old_agents_dir
         set_subagent_runtime(None)
+        subagents._global_concurrency_semaphore = None
+        self.uninstall_ctx()
         self.temp.cleanup()
 
     def write_agent(self, name: str, tools: list[str], body: str = "Return concise findings.") -> None:
@@ -198,13 +204,13 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
                 seen["state_agent_mode"] = state["agent_mode"]
                 return {"messages": [AIMessage(content="thread ok")]}
 
-        def fake_build_graph(_model, tools, thread_id, agent_mode=None, **_kwargs):
+        def fake_build_graph(cfg, thread_id, agent_mode=None, **_kwargs):
             seen["thread_id"] = thread_id
             seen["agent_mode"] = agent_mode
-            seen["tool_names"] = ",".join(tool.name for tool in tools)
+            seen["tool_names"] = ",".join(tool.name for tool in cfg.tools)
             return FakeApp()
 
-        with mock.patch("agent.build_graph", side_effect=fake_build_graph):
+        with mock.patch("liteharness.graph.builder.build_graph", side_effect=fake_build_graph):
             result = await spawn_subagent.ainvoke(
                 {"tasks": [{"name": "explore", "prompt": "inspect"}]}
             )
@@ -246,22 +252,14 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 0)
 
     async def test_global_concurrency_cap_limits_across_concurrent_calls(self):
-        # Reset the cached global semaphore so this test installs its own loop-bound one.
         subagents._global_concurrency_semaphore = None
-        try:
-            subagents._global_concurrency_semaphore = None
-        except Exception:
-            pass
 
         self.write_agent("explore", ["read"])
-        # Slower model so tasks actually contend on the global semaphore.
         model = ConcurrentEchoModel(delay=0.2)
         set_subagent_runtime(model)
 
         cap = subagents.MAX_CONCURRENCY
-        # Two batch calls of `cap` tasks each, fired concurrently. The global cap
-        # must keep max_in_flight <= cap, even though each call alone could run
-        # all `cap` tasks at once.
+
         async def fire_batch():
             return await spawn_subagent.ainvoke(
                 {
@@ -276,10 +274,10 @@ class SubagentToolTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.gather(fire_batch(), fire_batch())
 
-        # cap tasks per call * 2 calls = 2*cap tasks; in-flight never exceeds cap
         self.assertEqual(model.calls, cap * 2)
         self.assertLessEqual(model.max_in_flight, cap)
         self.assertEqual(subagent_runs_active(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

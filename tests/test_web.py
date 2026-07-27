@@ -1,27 +1,29 @@
+from __future__ import annotations
+
 import json
 import os
 import socket
-import sys
+import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-import tools.web as web
-from tools.web import (
+import liteharness.tools.web as web
+from liteharness.tools.web import (
     DuckDuckGoProvider,
     ExaProvider,
     ProviderError,
     UrlValidationError,
     _validate_url,
-    webfetch,
     get_provider,
     reset_provider,
     web_search,
+    webfetch,
 )
+
+from tests.sdk_fixtures import SessionContextTestMixin, set_exa_key
 
 _SAMPLE_DDG_HTML = """
 <html><body>
@@ -96,14 +98,19 @@ class ValidateUrlTests(unittest.TestCase):
             _validate_url("https://docs.python.org/3/")
 
 
-class WebSearchTests(unittest.TestCase):
+class WebSearchTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.install_ctx(Path(self._tmp.name), exa_api_key=None)
         reset_provider()
 
+    def tearDown(self) -> None:
+        self.uninstall_ctx()
+        self._tmp.cleanup()
+
     def test_fallback_without_exa_key(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=False, exa_api_key=None)):
-            with mock.patch.object(web.requests, "post", return_value=_response(200, text=_SAMPLE_DDG_HTML)):
-                result = json.loads(web_search.invoke({"query": "python asyncio"}))
+        with mock.patch.object(web.requests, "post", return_value=_response(200, text=_SAMPLE_DDG_HTML)):
+            result = json.loads(web_search.invoke({"query": "python asyncio"}))
 
         self.assertEqual(result["provider"], "duckduckgo")
         self.assertEqual(len(result["results"]), 1)
@@ -131,9 +138,10 @@ class WebSearchTests(unittest.TestCase):
                 }
             ]
         }
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")):
-            with mock.patch.object(ExaProvider, "_request", return_value=response) as exa_request:
-                result = json.loads(web_search.invoke({"query": "python asyncio"}))
+        set_exa_key(self.ctx, "test")
+        reset_provider()
+        with mock.patch.object(ExaProvider, "_request", return_value=response) as exa_request:
+            result = json.loads(web_search.invoke({"query": "python asyncio"}))
 
         self.assertEqual(result["provider"], "exa")
         self.assertEqual(result["query"], "python asyncio")
@@ -145,20 +153,27 @@ class WebSearchTests(unittest.TestCase):
         self.assertEqual(exa_request.call_args.args[1]["numResults"], 5)
 
     def test_api_error_is_redacted(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")):
-            with mock.patch.object(
-                ExaProvider,
-                "_request",
-                side_effect=ProviderError("status 500: secret body"),
-            ):
-                result = json.loads(web_search.invoke({"query": "python"}))
+        set_exa_key(self.ctx, "test")
+        reset_provider()
+        with mock.patch.object(
+            ExaProvider,
+            "_request",
+            side_effect=ProviderError("status 500: secret body"),
+        ):
+            result = json.loads(web_search.invoke({"query": "python"}))
         self.assertEqual(result["category"], "api")
         self.assertIn("Web search error", result["error"])
 
 
-class FetchUrlTests(unittest.TestCase):
+class FetchUrlTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.install_ctx(Path(self._tmp.name), exa_api_key=None)
         reset_provider()
+
+    def tearDown(self) -> None:
+        self.uninstall_ctx()
+        self._tmp.cleanup()
 
     def test_validation_failure(self) -> None:
         result = json.loads(webfetch.invoke({"url": "http://127.0.0.1/secret"}))
@@ -176,7 +191,6 @@ class FetchUrlTests(unittest.TestCase):
         fetch_response.url = "https://docs.python.org/3/"
 
         with (
-            mock.patch.object(web, "settings", SimpleNamespace(has_exa=False, exa_api_key=None)),
             mock.patch.object(web.socket, "getaddrinfo", return_value=[_addr("93.184.216.34")]),
             mock.patch.object(web.requests, "get", return_value=fetch_response),
             mock.patch.object(web.trafilatura, "extract", return_value="# Python 3 documentation\n\nOverview"),
@@ -198,8 +212,9 @@ class FetchUrlTests(unittest.TestCase):
             ],
             "statuses": [],
         }
+        set_exa_key(self.ctx, "test")
+        reset_provider()
         with (
-            mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")),
             mock.patch.object(web.socket, "getaddrinfo", return_value=[_addr("93.184.216.34")]),
             mock.patch.object(ExaProvider, "_request", return_value=response) as exa_request,
         ):
@@ -214,8 +229,9 @@ class FetchUrlTests(unittest.TestCase):
         self.assertEqual(exa_request.call_args.args[1]["text"]["maxCharacters"], 12000)
 
     def test_api_error_from_statuses(self) -> None:
+        set_exa_key(self.ctx, "test")
+        reset_provider()
         with (
-            mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")),
             mock.patch.object(web.socket, "getaddrinfo", return_value=[_addr("93.184.216.34")]),
             mock.patch.object(
                 ExaProvider,
@@ -229,32 +245,34 @@ class FetchUrlTests(unittest.TestCase):
         self.assertIn("error", result)
 
     def test_exa_request_retries_transient_status(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")):
-            with (
-                mock.patch.object(web.time, "sleep") as sleep,
-                mock.patch.object(
-                    web.requests,
-                    "post",
-                    side_effect=[
-                        _response(503, {"error": "temporary"}),
-                        _response(200, {"results": []}),
-                    ],
-                ) as post,
-            ):
-                result = ExaProvider()._request("/search", {"query": "python"})
+        set_exa_key(self.ctx, "test")
+        reset_provider()
+        with (
+            mock.patch.object(web.time, "sleep") as sleep,
+            mock.patch.object(
+                web.requests,
+                "post",
+                side_effect=[
+                    _response(503, {"error": "temporary"}),
+                    _response(200, {"results": []}),
+                ],
+            ) as post,
+        ):
+            result = ExaProvider()._request("/search", {"query": "python"})
 
         self.assertEqual(result, {"results": []})
         self.assertEqual(post.call_count, 2)
         sleep.assert_called_once()
 
     def test_exa_request_timeout_category(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")):
-            with (
-                mock.patch.object(web.time, "sleep"),
-                mock.patch.object(web.requests, "post", side_effect=web.requests.Timeout("timed out")),
-            ):
-                with self.assertRaises(ProviderError) as ctx:
-                    ExaProvider()._request("/search", {"query": "python"})
+        set_exa_key(self.ctx, "test")
+        reset_provider()
+        with (
+            mock.patch.object(web.time, "sleep"),
+            mock.patch.object(web.requests, "post", side_effect=web.requests.Timeout("timed out")),
+        ):
+            with self.assertRaises(ProviderError) as ctx:
+                ExaProvider()._request("/search", {"query": "python"})
 
         self.assertEqual(ctx.exception.category, "timeout")
 
@@ -264,32 +282,37 @@ class FetchUrlTests(unittest.TestCase):
         self.assertTrue(detail.endswith("..."))
 
     def test_error_redaction_removes_api_key(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(exa_api_key="secret-key")):
-            detail = web._redact_error("request failed with secret-key")
+        set_exa_key(self.ctx, "secret-key")
+        detail = web._redact_error("request failed with secret-key")
         self.assertNotIn("secret-key", detail)
         self.assertIn("[REDACTED]", detail)
 
 
-class ProviderTests(unittest.TestCase):
+class ProviderTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.install_ctx(Path(self._tmp.name), exa_api_key=None)
         reset_provider()
 
+    def tearDown(self) -> None:
+        self.uninstall_ctx()
+        self._tmp.cleanup()
+
     def test_get_provider_uses_exa_when_key_set(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")):
-            self.assertIsInstance(get_provider(), ExaProvider)
+        set_exa_key(self.ctx, "test")
+        reset_provider()
+        self.assertIsInstance(get_provider(), ExaProvider)
 
     def test_get_provider_uses_duckduckgo_without_key(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=False, exa_api_key=None)):
-            self.assertIsInstance(get_provider(), DuckDuckGoProvider)
+        self.assertIsInstance(get_provider(), DuckDuckGoProvider)
 
     def test_reset_provider_switches_after_settings_change(self) -> None:
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=False, exa_api_key=None)):
-            self.assertIsInstance(get_provider(), DuckDuckGoProvider)
+        self.assertIsInstance(get_provider(), DuckDuckGoProvider)
 
-        with mock.patch.object(web, "settings", SimpleNamespace(has_exa=True, exa_api_key="test")):
-            self.assertIsInstance(get_provider(), DuckDuckGoProvider)
-            reset_provider()
-            self.assertIsInstance(get_provider(), ExaProvider)
+        set_exa_key(self.ctx, "test")
+        self.assertIsInstance(get_provider(), DuckDuckGoProvider)
+        reset_provider()
+        self.assertIsInstance(get_provider(), ExaProvider)
 
     def test_resolve_ddg_redirect_url(self) -> None:
         href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpath"

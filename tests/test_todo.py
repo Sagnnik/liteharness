@@ -6,12 +6,9 @@ import uuid
 
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-from langchain_core.messages import AIMessage, HumanMessage
-
-from agent import build_graph
-from tools import get_tools_for_names
-from context import build_working_state_sections, render_todos
-from tools.todo import get_thread_todos, set_current_thread, set_thread_todos, todo
+from liteharness.context.coding_overlay import CodingOverlay
+from liteharness.context.overlay import OverlayContext
+from liteharness.tools.todo import get_thread_todos, render_todos, set_current_thread, set_thread_todos, todo
 
 
 class TodoToolTests(unittest.TestCase):
@@ -84,66 +81,6 @@ class TodoToolTests(unittest.TestCase):
             todo.invoke({})
 
 
-class TodoGraphTests(unittest.IsolatedAsyncioTestCase):
-    async def test_todo_updates_graph_state_and_next_context_overlay(self):
-        class TodoModel:
-            def __init__(self):
-                self.calls = 0
-                self.bound_tools = []
-                self.seen_messages = []
-
-            def bind_tools(self, tools):
-                self.bound_tools = list(tools)
-                return self
-
-            async def ainvoke(self, messages):
-                self.calls += 1
-                self.seen_messages.append(list(messages))
-                if self.calls == 1:
-                    return AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "todo",
-                                "args": {
-                                    "todos": [
-                                        {"id": "2", "content": "Inserted first", "status": "pending"},
-                                        {"id": "1", "content": "Existing", "status": "pending"},
-                                    ]
-                                },
-                                "id": "call-1",
-                            }
-                        ],
-                    )
-                return AIMessage(content="done")
-
-        thread_id = f"todo-graph-{uuid.uuid4().hex}"
-        model = TodoModel()
-        app = build_graph(model, tools=get_tools_for_names(["todo"]), thread_id=thread_id)
-        result = await app.ainvoke(
-            {
-                "messages": [HumanMessage(content="track this")],
-                "approval_declined": False,
-                "todos": [{"id": "1", "content": "Existing", "status": "pending"}],
-            },
-            config={"configurable": {"thread_id": thread_id}},
-        )
-
-        self.assertEqual(
-            result["todos"],
-            [
-                {"id": "2", "content": "Inserted first", "status": "pending"},
-                {"id": "1", "content": "Existing", "status": "pending"},
-            ],
-        )
-        working_state_tail = model.seen_messages[1][-1]
-        self.assertEqual(working_state_tail.type, "human")
-        self.assertIn("<system-reminder>", working_state_tail.content)
-        self.assertIn("- [pending] 2: Inserted first", working_state_tail.content)
-        self.assertIn("- [pending] 1: Existing", working_state_tail.content)
-        self.assertNotIn("TODOS\nNo todos", working_state_tail.content)
-
-
 class RenderTodosTests(unittest.TestCase):
     def test_render_todos_omits_completed(self):
         todos = [
@@ -161,17 +98,33 @@ class RenderTodosTests(unittest.TestCase):
         self.assertEqual(render_todos(None), "")
 
     def test_working_state_overlay_omits_todos_section_when_empty(self):
-        sections = build_working_state_sections("act", todos=render_todos([]))
-        overlay = "\n\n".join(sections.values())
-        self.assertNotIn("TODOS", overlay)
+        overlay = CodingOverlay()
+        ctx = OverlayContext(
+            thread_id="t",
+            agent_mode="act",
+            messages=[],
+            todos=[],
+            session_memory="",
+            compaction_note="",
+            mode_switch="",
+        )
+        sections = overlay.sections({}, ctx)
+        self.assertNotIn("todos", sections)
 
     def test_working_state_overlay_includes_active_todos(self):
-        sections = build_working_state_sections(
-            "act",
-            todos=render_todos([{"id": "1", "content": "Ship it", "status": "pending"}]),
+        overlay = CodingOverlay()
+        ctx = OverlayContext(
+            thread_id="t",
+            agent_mode="act",
+            messages=[],
+            todos=[{"id": "1", "content": "Ship it", "status": "pending"}],
+            session_memory="",
+            compaction_note="",
+            mode_switch="",
         )
-        overlay = "\n\n".join(sections.values())
-        self.assertIn("TODOS\n- [pending] 1: Ship it", overlay)
+        sections = overlay.sections({}, ctx)
+        self.assertIn("todos", sections)
+        self.assertIn("TODOS\n- [pending] 1: Ship it", sections["todos"])
 
 
 if __name__ == "__main__":

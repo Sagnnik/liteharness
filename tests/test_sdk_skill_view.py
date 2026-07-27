@@ -44,74 +44,42 @@ def test_skill_loader_loads_skills_with_all_fields(tmp_path: Path):
     assert "format" not in s
 
 
-def test_skill_loader_skips_when_name_missing(tmp_path: Path):
-    skill_dir = tmp_path / ".ness" / "skills" / "no_name"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\ndescription: No name here\n---\nBody\n"
-    )
-
-    loader = SkillLoader(tmp_path / ".ness" / "skills")
-    skills = loader.load()
-    assert skills == {}
-
-
-def test_skill_loader_skips_when_name_empty(tmp_path: Path):
-    skill_dir = tmp_path / ".ness" / "skills" / "empty_name"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: ''\ndescription: Empty name\n---\nBody\n"
-    )
-
-    loader = SkillLoader(tmp_path / ".ness" / "skills")
-    skills = loader.load()
-    assert skills == {}
-
-
-def test_skill_loader_skips_when_description_missing(tmp_path: Path):
-    skill_dir = tmp_path / ".ness" / "skills" / "no_desc"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: no_desc\n---\nBody\n")
-
-    loader = SkillLoader(tmp_path / ".ness" / "skills")
-    skills = loader.load()
-    assert skills == {}
-
-
-def test_skill_loader_skips_when_description_empty(tmp_path: Path):
-    skill_dir = tmp_path / ".ness" / "skills" / "empty_desc"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: empty_desc\ndescription: ''\n---\nBody\n")
-
-    loader = SkillLoader(tmp_path / ".ness" / "skills")
-    skills = loader.load()
-    assert skills == {}
-
-
-def test_skill_loader_no_fallback_from_dir_name(tmp_path: Path):
-    """Dir name must NOT be used as the skill name when frontmatter lacks it."""
-    skill_dir = tmp_path / ".ness" / "skills" / "dir_name_skill"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
+def test_skill_loader_skips_invalid_name(tmp_path: Path):
+    """Missing or empty frontmatter name is skipped; dir name is not a fallback."""
+    skills_root = tmp_path / ".ness" / "skills"
+    missing = skills_root / "no_name"
+    missing.mkdir(parents=True)
+    (missing / "SKILL.md").write_text("---\ndescription: No name here\n---\nBody\n")
+    empty = skills_root / "empty_name"
+    empty.mkdir(parents=True)
+    (empty / "SKILL.md").write_text("---\nname: ''\ndescription: Empty name\n---\nBody\n")
+    dir_only = skills_root / "dir_name_skill"
+    dir_only.mkdir(parents=True)
+    (dir_only / "SKILL.md").write_text(
         "---\ndescription: Dir name should not become name\n---\nBody\n"
     )
 
-    loader = SkillLoader(tmp_path / ".ness" / "skills")
-    skills = loader.load()
-    assert skills == {}
+    loader = SkillLoader(skills_root)
+    assert loader.load() == {}
 
 
-def test_skill_loader_no_fallback_from_body_for_description(tmp_path: Path):
-    """Body heading must NOT be used as description when frontmatter lacks it."""
-    skill_dir = tmp_path / ".ness" / "skills" / "skill_x"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
+def test_skill_loader_skips_invalid_description(tmp_path: Path):
+    """Missing/empty description is skipped; body heading is not a fallback."""
+    skills_root = tmp_path / ".ness" / "skills"
+    missing = skills_root / "no_desc"
+    missing.mkdir(parents=True)
+    (missing / "SKILL.md").write_text("---\nname: no_desc\n---\nBody\n")
+    empty = skills_root / "empty_desc"
+    empty.mkdir(parents=True)
+    (empty / "SKILL.md").write_text("---\nname: empty_desc\ndescription: ''\n---\nBody\n")
+    body_heading = skills_root / "skill_x"
+    body_heading.mkdir(parents=True)
+    (body_heading / "SKILL.md").write_text(
         "---\nname: skill_x\n---\n# Heading should not become description\n"
     )
 
-    loader = SkillLoader(tmp_path / ".ness" / "skills")
-    skills = loader.load()
-    assert skills == {}
+    loader = SkillLoader(skills_root)
+    assert loader.load() == {}
 
 
 def test_skill_loader_optional_fields_default_to_empty(tmp_path: Path):

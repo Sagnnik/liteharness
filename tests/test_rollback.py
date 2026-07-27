@@ -4,10 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import memory
-import rollback
-import session
-from config import settings
+from liteharness.persistence import ThreadStore
+import liteharness_cli.rollback as rollback
 
 
 def _git_init(path: Path) -> None:
@@ -24,35 +22,33 @@ class RollbackSmokeTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.ness_dir = Path(self._tmpdir.name) / "ness"
         self.ness_dir.mkdir()
-        memory.NESS_DIR = self.ness_dir
-        session.THREADS_DIR = self.ness_dir / "threads"
-        session.THREADS_DB = session.THREADS_DIR / "threads.db"
-        self._old_autosave = settings.auto_save_threads
-        settings.auto_save_threads = True
+        self.store = ThreadStore(threads_dir=self.ness_dir / "threads", auto_save=True)
         self.cwd = Path(self._tmpdir.name) / "repo"
         self.cwd.mkdir()
         _git_init(self.cwd)
 
     def tearDown(self) -> None:
-        settings.auto_save_threads = self._old_autosave
         self._tmpdir.cleanup()
 
     def test_save_checkpoint_and_truncate(self) -> None:
-        seq = session.append_event("session-rb", {"kind": "user", "content": "first turn"})
-        session.save_checkpoint("session-rb", seq, git_hash="abc123", mem_snapshot="initial")
-        checkpoint = session.get_checkpoint("session-rb", seq)
+        seq = self.store.append_event("session-rb", {"kind": "user", "content": "first turn"})
+        self.store.save_checkpoint("session-rb", seq, git_hash="abc123", mem_snapshot="initial")
+        checkpoint = self.store.get_checkpoint("session-rb", seq)
         self.assertEqual(checkpoint["git_hash"], "abc123")
         self.assertEqual(checkpoint["mem_snapshot"], "initial")
 
-        session.append_event("session-rb", {"kind": "assistant", "content": "reply"})
-        later = session.append_event("session-rb", {"kind": "user", "content": "second turn"})
-        session.save_checkpoint("session-rb", later, git_hash="def456", mem_snapshot="later")
-        session.truncate_after("session-rb", later)
+        self.store.append_event("session-rb", {"kind": "assistant", "content": "reply"})
+        later = self.store.append_event("session-rb", {"kind": "user", "content": "second turn"})
+        self.store.save_checkpoint("session-rb", later, git_hash="def456", mem_snapshot="later")
+        self.store.truncate_after("session-rb", later)
 
-        events = session.load_thread_events("session-rb")
-        self.assertEqual([e["content"] for e in events if e["kind"] in {"user", "assistant"}], ["first turn", "reply"])
-        self.assertIsNone(session.get_checkpoint("session-rb", later))
-        self.assertIsNotNone(session.get_checkpoint("session-rb", seq))
+        events = self.store.load_thread_events("session-rb")
+        self.assertEqual(
+            [e["content"] for e in events if e["kind"] in {"user", "assistant"}],
+            ["first turn", "reply"],
+        )
+        self.assertIsNone(self.store.get_checkpoint("session-rb", later))
+        self.assertIsNotNone(self.store.get_checkpoint("session-rb", seq))
 
     def test_restore_paths_surgical(self) -> None:
         (self.cwd / "src.txt").write_text("v1")

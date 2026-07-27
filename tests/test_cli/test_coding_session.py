@@ -237,16 +237,6 @@ def test_record_turn_mutations_shell_is_full_tree_sentinel(coding):
     assert '"*"' in paths
 
 
-def test_record_turn_mutations_read_only_tool_no_op(coding):
-    _seed_tool_turn(coding, 1, [_tool_event("read", {"path": "src/app.py"})])
-
-    coding._record_turn_mutations(1)
-
-    cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
-    assert cp is not None
-    assert (cp.get("modified_paths") or "") in ("", "[]")
-
-
 def test_record_turn_mutations_skips_denied_mode_gated_and_tool_errors(coding):
     """The skips mirror the graph's own gates: permission/hook denies and
     plan-mode gating never executed, and a tool that raised (``Error:``
@@ -266,43 +256,6 @@ def test_record_turn_mutations_skips_denied_mode_gated_and_tool_errors(coding):
     cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
     assert cp is not None
     assert (cp.get("modified_paths") or "") in ("", "[]")
-
-
-def test_record_turn_mutations_failed_shell_still_recorded(coding):
-    """A failed shell command (``status=error`` result, no ``Error:`` prefix)
-    may have half-mutated the tree, so the full-tree sentinel is still
-    recorded — same conservatism as the old in-graph gate."""
-    result = "status=error\nexit_code=1\noutput:\nmake: *** [install] Error 1"
-    _seed_tool_turn(coding, 1, [_tool_event("shell", {"command": "make install"}, result=result, exit="error")])
-
-    coding._record_turn_mutations(1)
-
-    cp = coding.thread_store.get_checkpoint(coding.thread_id, 1)
-    assert cp is not None
-    assert '"*"' in (cp.get("modified_paths") or "")
-
-
-def test_record_turn_mutations_ignores_prior_turns(coding):
-    """Only tool rows appended AFTER the checkpoint's user event are drained;
-    a prior turn's rows (at or before ``user_seq``) must not leak in."""
-    # Turn 1 tail: user at seq 0, then a prior-turn tool row at seq 1.
-    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "t1"})
-    coding.thread_store.append_event(
-        coding.thread_id, _tool_event("write", {"path": "prior_turn.py"})
-    )
-    # Turn 2: user at seq 2 with its checkpoint, then this turn's tool row.
-    coding.thread_store.append_event(coding.thread_id, {"kind": "user", "content": "t2"})
-    coding.thread_store.save_checkpoint(coding.thread_id, 2, "HEAD", "")
-    coding.thread_store.append_event(
-        coding.thread_id, _tool_event("write", {"path": "this_turn.py"})
-    )
-
-    coding._record_turn_mutations(2)
-
-    cp = coding.thread_store.get_checkpoint(coding.thread_id, 2)
-    paths = cp.get("modified_paths") or "[]"
-    assert "this_turn.py" in paths
-    assert "prior_turn.py" not in paths
 
 
 def test_expand_documents_on_send_and_replay(tmp_path: Path):

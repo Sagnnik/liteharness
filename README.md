@@ -50,27 +50,15 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 
 ## Architecture
 
-- `cli/main.py` and `cli/tui/`: full-screen TUI, slash commands, streaming, and clipboard handling.
-- `agent.py`: LangGraph loop: agent, approval gate, tool executor.
-- `context.py`: layered prompt assembly from `instructions/` templates.
-- `instructions/`: markdown templates for L0/L1 prompt layers, modes, compaction, reflection, and subagents.
-- `compaction.py`: progressive context compaction by context pressure.
-- `reflection.py`: background session-memory reflection with structured output (semantic distillation).
-- `memory.py`: NESS.md, USER.md, and per-thread session memory helpers.
-- `tools/`: local tools for files, search, web (`web_search`, `webfetch` via Exa or DuckDuckGo fallback), shell, todos, user clarification (`question`), and subagents.
-- `permissions.py`: `.ness/permissions.json` allow/deny/ask matching.
-- `src/liteharness/hooks.py`: `.ness/hooks.json` (and in-memory) `preToolUse` / `postToolUse` hooks.
-- `mcp_client.py`: stdio MCP startup and namespaced MCP tool wrappers.
-- `session.py`: SQLite thread storage (`threads.db`) for events, metadata, and subagent links.
-- `src/liteharness/skills.py`: `SKILL.md` skill discovery; bodies load via the `skill_view` tool.
-- `config.py`: settings, model pricing, and cost/cache tracking.
-- `parsers.py`: native tool-call extraction.
+- `cli/`: Textual TUI entry (`cli.main`), streaming, slash commands, and clipboard handling.
+- `src/liteharness/`: SDK — LangGraph agent loop, tools (files, search, web, shell, todos, `question`, subagents), permissions, memory, persistence, prompt layers/overlays, MCP, skills, hooks, compaction, reflection, and tracing.
+- `src/liteharness_cli/`: coding adapter — `build_coding_agent` / `CodingSession`, chat model factory, settings/pricing, rollback, and git worktree bootstrap.
 
 ## Prompt Layers
 
 LiteHarness splits context into four layers to keep prompt caching stable:
 
-1. **L0 harness** (`build_l0`): NESS identity, universal rules, output format, and tool-calling protocol.
+1. **L0 harness** (`PromptLayers` / `L0_HARNESS`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
 3. **L2 project context**: app-supplied domain/repo structure (`PromptLayersConfig.l2_context`); not auto-loaded by bare `Session`.
 4. **L3 working state** (`CodingOverlay` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, session memory, skill-request hints, and loaded-skill summaries. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.

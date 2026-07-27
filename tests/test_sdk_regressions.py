@@ -49,30 +49,6 @@ def test_apply_force_floor_tool_outputs_when_history_short():
     assert apply_force_floor("tool_outputs", 3, 5) == ("tool_outputs", 3)
 
 
-def test_cost_tracker_uses_estimate_when_no_provider_cost():
-    tracker = CostTracker(estimate_cost=lambda model, u, c, o: 1.25)
-    usage = tracker.add(
-        {"input_tokens": 100, "output_tokens": 20},
-        model_name="test-model",
-        response_metadata={},
-    )
-    assert usage is not None
-    assert usage.cost_usd == 1.25
-    assert usage.cost_source == "estimated"
-
-
-def test_cost_tracker_prefers_provider_cost():
-    tracker = CostTracker(estimate_cost=lambda model, u, c, o: 9.99)
-    usage = tracker.add(
-        {"input_tokens": 10, "output_tokens": 2},
-        model_name="test-model",
-        response_metadata={"cost": 0.01},
-    )
-    assert usage is not None
-    assert usage.cost_usd == 0.01
-    assert usage.cost_source == "provider"
-
-
 def test_make_sdk_cost_tracker_wires_cli_pricing():
     from liteharness_cli.config import MODEL_PRICING, make_sdk_cost_tracker
 

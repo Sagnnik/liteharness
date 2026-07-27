@@ -20,7 +20,6 @@ from liteharness import (
     setup_ness_structure,
 )
 from liteharness.hooks import HookRunner
-from liteharness.instructions import L0_HARNESS
 from liteharness_cli.config import settings
 from liteharness_cli.factory import build_coding_agent
 
@@ -170,20 +169,6 @@ def test_hook_register_and_clear():
     runner.clear_registered()
     ok2, msg2 = runner.run("postToolUse", {"tool": "read", "args": {}, "result": "x"})
     assert msg2 == ""
-
-
-def test_l0_no_longer_mentions_trigger_match():
-    assert "trigger match" not in L0_HARNESS
-    assert "skill_view" in L0_HARNESS
-
-
-def test_hooks_module_doc_no_aspirational_events():
-    import liteharness.hooks as hooks_mod
-
-    src = Path(hooks_mod.__file__).read_text(encoding="utf-8")
-    assert "atUserMessage" not in src
-    assert "atSessionStart" not in src
-    assert "preToolUse" in src
 
 
 def test_cmd_skill_stages_via_coding():

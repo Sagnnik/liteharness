@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tools.ask import question, set_question_runtime
+from liteharness.tools.ask import question, set_question_runtime
 
 
 class QuestionToolTests(unittest.IsolatedAsyncioTestCase):

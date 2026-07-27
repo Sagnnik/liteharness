@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,11 +10,10 @@ from unittest import mock
 
 from pydantic import BaseModel
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-import permissions
-from tools.fs import (
+from liteharness.permissions import DEFAULT_RULES, PermissionStore
+from liteharness.tools.fs import (
     delete_file,
     edit,
     glob,
@@ -21,21 +21,21 @@ from tools.fs import (
     write,
 )
 
+from tests.sdk_fixtures import SessionContextTestMixin
+
 
 def _tool_json_schema(tool: Any) -> dict[str, Any]:
     args_schema = cast(type[BaseModel], tool.args_schema)
     return args_schema.model_json_schema()
 
 
-class DeleteFileTests(unittest.TestCase):
+class DeleteFileTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_deletes_existing_file(self) -> None:
@@ -65,7 +65,7 @@ class DeleteFileTests(unittest.TestCase):
 
     def test_refuses_ness_paths(self) -> None:
         ness = self.root / ".ness"
-        ness.mkdir()
+        ness.mkdir(exist_ok=True)
         targets = {
             "permissions.json": "{}",
             "hooks.json": "{}",
@@ -93,15 +93,13 @@ class DeleteFileTests(unittest.TestCase):
             outside_parent.rmdir()
 
 
-class ReadFileTests(unittest.TestCase):
+class ReadFileTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_default_limit_truncates_large_files(self) -> None:
@@ -121,15 +119,13 @@ class ReadFileTests(unittest.TestCase):
         self.assertIn("truncated", result)
 
 
-class WriteFileTests(unittest.TestCase):
+class WriteFileTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name), format_on_write=False)
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_writes_normal_file(self) -> None:
@@ -145,15 +141,13 @@ class WriteFileTests(unittest.TestCase):
                 self.assertFalse((self.root / rel).exists())
 
 
-class EditTests(unittest.TestCase):
+class EditTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name), format_on_write=False)
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_applies_single_edit(self) -> None:
@@ -285,15 +279,13 @@ class EditTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "ALPHA\nbeta\nALPHA\n")
 
 
-class GlobFilesTests(unittest.TestCase):
+class GlobFilesTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_finds_files_without_git_repo(self) -> None:
@@ -314,14 +306,28 @@ class GlobFilesTests(unittest.TestCase):
 
 class DeleteFilePermissionTests(unittest.TestCase):
     def test_shell_run_rm_denied_by_default(self) -> None:
-        with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
-            decision, rule = permissions.check_with_rule("shell", {"action": "run", "command": "rm old_file.py"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ness = root / ".ness"
+            ness.mkdir()
+            store = PermissionStore(ness_dir=ness, project_root=root)
+            with mock.patch.object(store, "_load", return_value=DEFAULT_RULES.copy()):
+                decision, rule = store.check_with_rule(
+                    "shell", {"action": "run", "command": "rm old_file.py"}
+                )
         self.assertEqual(decision, "deny")
         self.assertEqual(rule, "shell:run:rm*")
 
     def test_shell_start_rm_rf_still_denied(self) -> None:
-        with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
-            decision, rule = permissions.check_with_rule("shell", {"action": "start", "command": "rm -rf build/"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ness = root / ".ness"
+            ness.mkdir()
+            store = PermissionStore(ness_dir=ness, project_root=root)
+            with mock.patch.object(store, "_load", return_value=DEFAULT_RULES.copy()):
+                decision, rule = store.check_with_rule(
+                    "shell", {"action": "start", "command": "rm -rf build/"}
+                )
         self.assertEqual(decision, "deny")
         self.assertEqual(rule, "shell:start:rm*")
 

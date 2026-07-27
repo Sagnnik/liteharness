@@ -90,7 +90,6 @@ def test_plan_act_mode_switch_consumed_once():
     session.set_mode("plan")
     assert session.mode == "plan"
     session.set_mode("act")
-    assert session._pending_act_checkpoint is True
 
     async def _run():
         # _build_run_payload now takes a pre-built HumanMessage and a
@@ -102,7 +101,6 @@ def test_plan_act_mode_switch_consumed_once():
             mode_switch="plan->act",
         )
         assert payload["mode_switch"] == "plan->act"
-        assert session._pending_act_checkpoint is True  # not consumed by payload builder
         payload2, _ = await session._build_run_payload(
             HumanMessage(content="again"),
             active_skills=None,
@@ -118,7 +116,6 @@ def test_toggle_mode():
     session = agent.session(thread_id="t-toggle")
     assert session.toggle_mode() == "plan"
     assert session.toggle_mode() == "act"
-    assert session._pending_act_checkpoint is True
 
 
 def test_preview_context_system_and_l3(tmp_path: Path):
@@ -814,8 +811,6 @@ def test_mode_override_is_turn_only_and_restores(tmp_path: Path):
 
     # Restore: the override was this-turn-only.
     assert session.agent_mode == "act", "mode override leaked across turns"
-    # And no plan->act compaction checkpoint was scheduled as a side effect.
-    assert session._pending_act_checkpoint is False
 
 
 def test_pending_skills_consumed_and_cleared_after_turn():

@@ -5,9 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
-import memory
-import session
-from config import settings
+from liteharness.persistence import ThreadStore
 from liteharness_cli.events import _maybe_enrich_spawn_subagent_result, events_to_messages
 
 
@@ -15,19 +13,14 @@ class SessionStorageTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.ness_dir = Path(self._tmpdir.name)
-        memory.NESS_DIR = self.ness_dir
-        session.THREADS_DIR = self.ness_dir / "threads"
-        session.THREADS_DB = session.THREADS_DIR / "threads.db"
-        self._old_autosave = settings.auto_save_threads
-        settings.auto_save_threads = True
+        self.store = ThreadStore(threads_dir=self.ness_dir / "threads", auto_save=True)
 
     def tearDown(self) -> None:
-        settings.auto_save_threads = self._old_autosave
         self._tmpdir.cleanup()
 
     def test_append_and_load_roundtrip(self) -> None:
-        session.append_event("session-abc", {"kind": "user", "content": "hello"})
-        session.append_event(
+        self.store.append_event("session-abc", {"kind": "user", "content": "hello"})
+        self.store.append_event(
             "session-abc",
             {
                 "kind": "assistant",
@@ -35,7 +28,7 @@ class SessionStorageTests(unittest.TestCase):
                 "tool_calls": [{"name": "read", "args": {"path": "a"}, "id": "call-1"}],
             },
         )
-        session.append_event(
+        self.store.append_event(
             "session-abc",
             {
                 "kind": "tool",
@@ -48,7 +41,7 @@ class SessionStorageTests(unittest.TestCase):
             },
         )
 
-        events = session.load_thread_events("session-abc")
+        events = self.store.load_thread_events("session-abc")
         self.assertEqual(len(events), 3)
         self.assertEqual(events[0]["kind"], "user")
         self.assertIn("t", events[0])
@@ -56,8 +49,8 @@ class SessionStorageTests(unittest.TestCase):
         self.assertEqual(events[2]["result"], "file contents")
 
     def test_usage_updates_thread_aggregates(self) -> None:
-        session.append_event("session-cost", {"kind": "user", "content": "hi"})
-        session.append_event(
+        self.store.append_event("session-cost", {"kind": "user", "content": "hi"})
+        self.store.append_event(
             "session-cost",
             {
                 "kind": "usage",
@@ -69,7 +62,7 @@ class SessionStorageTests(unittest.TestCase):
             },
         )
 
-        rows = session.list_threads(5)
+        rows = self.store.list_threads(5)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["turn_count"], 1)
         self.assertEqual(rows[0]["input_tokens"], 100)
@@ -78,31 +71,31 @@ class SessionStorageTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["total_cost_usd"], 0.01)
 
     def test_list_threads_filters_to_session_prefix(self) -> None:
-        session.append_event("session-visible", {"kind": "user", "content": "a"})
-        session.append_event("subagent-explore-deadbeef", {"kind": "user", "content": "b"})
-        session.append_event("todo-graph-abc", {"kind": "user", "content": "c"})
+        self.store.append_event("session-visible", {"kind": "user", "content": "a"})
+        self.store.append_event("subagent-explore-deadbeef", {"kind": "user", "content": "b"})
+        self.store.append_event("todo-graph-abc", {"kind": "user", "content": "c"})
 
-        rows = session.list_threads(10)
+        rows = self.store.list_threads(10)
         self.assertEqual([row["thread_id"] for row in rows], ["session-visible"])
         self.assertIsNone(self._thread_row("subagent-explore-deadbeef"))
-        self.assertEqual(session.load_thread_events("subagent-explore-deadbeef"), [])
+        self.assertEqual(self.store.load_thread_events("subagent-explore-deadbeef"), [])
 
     def test_archive_thread_idempotent(self) -> None:
-        session.append_event("session-archive", {"kind": "user", "content": "archive me please"})
-        first = session.archive_thread("session-archive")
-        second = session.archive_thread("session-archive")
+        self.store.append_event("session-archive", {"kind": "user", "content": "archive me please"})
+        first = self.store.archive_thread("session-archive")
+        second = self.store.archive_thread("session-archive")
         self.assertIn("Archived thread", first)
         self.assertIn("already archived", second)
 
     def test_subagent_registration(self) -> None:
-        session.append_event("session-parent", {"kind": "user", "content": "run subagents"})
-        session.register_subagent(
+        self.store.append_event("session-parent", {"kind": "user", "content": "run subagents"})
+        self.store.register_subagent(
             "session-parent",
             "subagent-explore-111",
             agent_name="explore",
             label="scan repo",
         )
-        session.complete_subagent(
+        self.store.complete_subagent(
             "subagent-explore-111",
             status="ok",
             output="found main.py",
@@ -111,21 +104,21 @@ class SessionStorageTests(unittest.TestCase):
 
         self.assertIsNotNone(self._thread_row("session-parent"))
         self.assertIsNone(self._thread_row("subagent-explore-111"))
-        rows = session.list_subagents("session-parent")
+        rows = self.store.list_subagents("session-parent")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["agent_name"], "explore")
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["output"], "found main.py")
 
     def test_subagent_usage_rolls_up_to_parent(self) -> None:
-        session.append_event("session-parent-cost", {"kind": "user", "content": "run subagents"})
-        session.register_subagent(
+        self.store.append_event("session-parent-cost", {"kind": "user", "content": "run subagents"})
+        self.store.register_subagent(
             "session-parent-cost",
             "subagent-explore-cost",
             agent_name="explore",
             label="scan",
         )
-        session.append_event(
+        self.store.append_event(
             "subagent-explore-cost",
             {
                 "kind": "usage",
@@ -137,8 +130,8 @@ class SessionStorageTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(session.load_thread_events("subagent-explore-cost"), [])
-        rows = session.list_threads(5)
+        self.assertEqual(self.store.load_thread_events("subagent-explore-cost"), [])
+        rows = self.store.list_threads(5)
         parent = next(row for row in rows if row["thread_id"] == "session-parent-cost")
         self.assertEqual(parent["input_tokens"], 50)
         self.assertEqual(parent["cached_input_tokens"], 10)
@@ -148,7 +141,7 @@ class SessionStorageTests(unittest.TestCase):
     def _thread_row(self, thread_id: str) -> dict | None:
         import sqlite3
 
-        with sqlite3.connect(session.THREADS_DB) as conn:
+        with sqlite3.connect(self.store.threads_db) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT thread_id FROM threads WHERE thread_id = ?",
@@ -161,14 +154,14 @@ class SessionStorageTests(unittest.TestCase):
 
         def worker(index: int) -> None:
             try:
-                session.append_event(
+                self.store.append_event(
                     "session-concurrent",
                     {"kind": "usage", "input_tokens": 1, "output_tokens": 1, "cost_usd": 0.0},
                 )
             except Exception as exc:
                 errors.append(exc)
 
-        session.append_event("session-concurrent", {"kind": "user", "content": "start"})
+        self.store.append_event("session-concurrent", {"kind": "user", "content": "start"})
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
         for thread in threads:
             thread.start()
@@ -176,13 +169,13 @@ class SessionStorageTests(unittest.TestCase):
             thread.join()
 
         self.assertEqual(errors, [])
-        events = session.load_thread_events("session-concurrent")
+        events = self.store.load_thread_events("session-concurrent")
         self.assertEqual(len(events), 9)
 
     def test_autosave_disabled_skips_writes(self) -> None:
-        settings.auto_save_threads = False
-        session.append_event("session-off", {"kind": "user", "content": "nope"})
-        self.assertFalse(session.THREADS_DB.exists())
+        store = ThreadStore(threads_dir=self.ness_dir / "threads-off", auto_save=False)
+        store.append_event("session-off", {"kind": "user", "content": "nope"})
+        self.assertFalse(store.threads_db.exists())
 
 
 class ResumeReplayTests(unittest.TestCase):
