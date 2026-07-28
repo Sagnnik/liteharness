@@ -21,8 +21,4 @@ assets/preview_logo.py
 # LiteHarness runtime data
 .ness/worktrees/
 .ness/threads/
-.ness/plans/
-.ness/shells/
-.ness/cli_history
-.ness/sessions/
-.ness/test_cli_history
+.ness/runtime/

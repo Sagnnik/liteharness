@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import cli.transcript as transcript_module
-from cli.header import header_lines
-from cli.models import TranscriptLine
-from cli.transcript import TranscriptMixin
+import liteharness_cli.tui.transcript as transcript_module
+from liteharness_cli.tui.header import header_lines
+from liteharness_cli.tui.models import TranscriptLine
+from liteharness_cli.tui.transcript import TranscriptMixin
 
 
 def _all_text(lines: list[TranscriptLine]) -> str:
@@ -164,7 +164,7 @@ class _HeaderHarness(TranscriptMixin):
 def _patch_addon_helpers() -> None:
     """Pin the lazy project/addons/version helpers to deterministic values."""
     transcript_module._header_project = lambda: "~/projects/liteharness"
-    transcript_module._header_addons_summary = lambda: "0 MCPs, 1 Skills"
+    transcript_module._header_addons_summary = lambda *args: "0 MCPs, 1 Skills"
     transcript_module._header_version = lambda: "0.1.0"
 
 

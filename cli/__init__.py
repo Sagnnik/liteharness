@@ -1,1 +1,0 @@
-"""LiteHarness CLI package."""

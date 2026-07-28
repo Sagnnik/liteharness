@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import unittest
 from argparse import Namespace
@@ -5,8 +7,8 @@ from unittest import mock
 
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-from config import settings
-import model
+from liteharness_cli import chat_model as model
+from liteharness_cli.config import settings
 
 
 class ModelFactoryTests(unittest.TestCase):
@@ -16,7 +18,7 @@ class ModelFactoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         model.configure_model(None)
 
-    @mock.patch("model.ChatOpenRouter")
+    @mock.patch("liteharness_cli.chat_model.ChatOpenRouter")
     def test_create_model_uses_settings(self, chat_openrouter) -> None:
         model.create_model("thread-1")
 
@@ -25,7 +27,7 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(kwargs["api_key"], settings.openai_api_key)
         self.assertEqual(kwargs["session_id"], "thread-1")
 
-    @mock.patch("model.ChatOpenRouter")
+    @mock.patch("liteharness_cli.chat_model.ChatOpenRouter")
     def test_create_model_applies_cli_overrides(self, chat_openrouter) -> None:
         model.configure_model(model.ModelOverrides(model_name="cli-model", openai_api_key="cli-key"))
         model.create_model("thread-2")
@@ -35,7 +37,7 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(kwargs["api_key"], "cli-key")
         self.assertEqual(kwargs["session_id"], "thread-2")
 
-    @mock.patch("model.ChatOpenRouter")
+    @mock.patch("liteharness_cli.chat_model.ChatOpenRouter")
     def test_create_model_passes_reasoning_effort(self, chat_openrouter) -> None:
         model.configure_model(
             model.ModelOverrides(
@@ -48,7 +50,7 @@ class ModelFactoryTests(unittest.TestCase):
         kwargs = chat_openrouter.call_args.kwargs
         self.assertEqual(kwargs["reasoning"], {"effort": "high"})
 
-    @mock.patch("model.ChatOpenRouter")
+    @mock.patch("liteharness_cli.chat_model.ChatOpenRouter")
     def test_create_model_omits_reasoning_for_non_reasoning_model(self, chat_openrouter) -> None:
         model.configure_model(
             model.ModelOverrides(
@@ -61,7 +63,7 @@ class ModelFactoryTests(unittest.TestCase):
         kwargs = chat_openrouter.call_args.kwargs
         self.assertNotIn("reasoning", kwargs)
 
-    @mock.patch("model.ChatOpenRouter")
+    @mock.patch("liteharness_cli.chat_model.ChatOpenRouter")
     def test_create_model_omits_reasoning_when_effort_is_none(self, chat_openrouter) -> None:
         model.configure_model(
             model.ModelOverrides(
@@ -85,7 +87,7 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertEqual(coerced, "high")
         self.assertEqual(model.active_reasoning_effort(), "high")
 
-    @mock.patch("model.ChatOpenRouter")
+    @mock.patch("liteharness_cli.chat_model.ChatOpenRouter")
     def test_create_reflection_model_uses_reflection_name(self, chat_openrouter) -> None:
         model.create_reflection_model("thread-3")
 

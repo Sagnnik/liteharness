@@ -7,6 +7,7 @@
     "write:*",
     "delete:*",
     "web_search:*",
+    "skill_view:*",
     "shell:jobs:*",
     "shell:read:*",
     "shell:run:pwd",
@@ -15,7 +16,9 @@
     "shell:run:git diff*",
     "shell:run:git log*",
     "shell:run:git show*",
-    "shell:run:cd*"
+    "shell:run:cd*",
+    "shell:run:pwd*",
+    "shell:run:nl*"
   ],
   "deny": [
     "shell:run:rm*",

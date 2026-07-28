@@ -1,13 +1,13 @@
+from __future__ import annotations
+
 import os
-import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-import git_context
+import liteharness.workspace.git_context as git_context
 
 
 class AutoGitSnapshotTests(unittest.TestCase):

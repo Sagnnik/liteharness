@@ -1,75 +1,95 @@
+"""TUI-side interrupted-turn rendering.
+
+The SDK owns checkpoint cleanup on cancel (covered by the SDK/adapter
+suites); these tests pin the TUI seam: an ``interrupted`` SessionEvent
+mid-turn stops the live stream, records the partial assistant text with the
+interrupted suffix for /copy, renders the cancel banner, and suppresses the
+normal usage/todos footer.
+"""
+
 from __future__ import annotations
 
 import asyncio
-import os
-from types import SimpleNamespace
 
-from cli import render
-from cli.session_app import CancelToken, SessionApp
+from liteharness.types import SessionEvent
 
-
-class _FakeApp:
-    def __init__(self, events: list[dict], *, trigger_token_after: int | None = None, token: CancelToken | None = None) -> None:
-        self._events = list(events)
-        self._trigger_token_after = trigger_token_after
-        self._token = token
-        self.updates: list[dict] = []
-
-    async def astream_events(self, payload, *, config=None, version="v2"):
-        if self._trigger_token_after == 0 and self._token is not None:
-            self._token.trigger()
-        for index, event in enumerate(self._events):
-            yield event
-            if self._trigger_token_after is not None and self._token is not None:
-                if index + 1 >= self._trigger_token_after:
-                    self._token.trigger()
-
-    async def aget_state(self, config):
-        return type("Snapshot", (), {"values": {"messages": []}})()
-
-    async def aupdate_state(self, config, updates):
-        self.updates.append(updates)
+from liteharness_cli.tui import render
 
 
-def _make_session_app() -> SessionApp:
-    os.environ.setdefault("OPENROUTER_API_KEY", "test")
-    return SessionApp(git_available=False)
-
-
-def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
-
-
-def test_cancel_token_is_set_reset_and_wait():
-    token = CancelToken()
-    assert token.is_set() is False
-    token.trigger()
-    assert token.is_set() is True
-    token.reset()
-    assert token.is_set() is False
-    token.trigger()
-    asyncio.run(token.wait())
-
-
-def test_cancel_mid_stream_records_interrupted_text(monkeypatch):
-    app = _make_session_app()
-    events = [
-        {"event": "on_chat_model_start", "name": "agent"},
-        {
-            "event": "on_chat_model_stream",
-            "name": "agent",
-            "data": {"chunk": SimpleNamespace(content="Partial assistant text")},
-        },
-    ]
-    fake = _FakeApp(events, trigger_token_after=2, token=app.cancel_token)
-    monkeypatch.setattr(app, "app", fake)
-
-    render.set_sink(None)
+def _run_turn(app, text: str = "do something") -> None:
+    render.set_sink(app)
     try:
-        _run(app.run_turn("do something"))
+        asyncio.run(app._run_turn(text, []))
     finally:
         render.set_sink(None)
+
+
+def _transcript_text(app) -> str:
+    return "\n".join(line.text for line in app._lines)
+
+
+def test_cancel_mid_stream_records_interrupted_text(make_app):
+    app = make_app()
+    app.coding.queue_events(
+        SessionEvent("assistant_delta", {"text": "Partial assistant text"}),
+        SessionEvent("interrupted", {"partial_text": "Partial assistant text"}),
+    )
+    _run_turn(app)
 
     assert app.assistant_history
     assert app.assistant_history[-1].endswith("[interrupted]")
     assert "Partial assistant text" in app.assistant_history[-1]
+
+
+def test_cancel_renders_banner_and_suppresses_footer(make_app, monkeypatch):
+    app = make_app()
+    footers: list[dict] = []
+    monkeypatch.setattr(
+        "liteharness_cli.tui.app.render.render_usage_footer", lambda usage: footers.append(usage)
+    )
+    app.coding.queue_events(
+        SessionEvent("assistant_delta", {"text": "half"}),
+        SessionEvent("usage", {"model": "m", "input_tokens": 10, "output_tokens": 5}),
+        SessionEvent("interrupted", {"partial_text": "half"}),
+    )
+    _run_turn(app)
+
+    assert "Turn interrupted by user." in _transcript_text(app)
+    assert footers == []
+
+
+def test_normal_turn_records_text_and_renders_footer(make_app, monkeypatch):
+    app = make_app()
+    footers: list[dict] = []
+    monkeypatch.setattr(
+        "liteharness_cli.tui.app.render.render_usage_footer", lambda usage: footers.append(usage)
+    )
+    app.coding.queue_events(
+        SessionEvent("assistant_delta", {"text": "hello "}),
+        SessionEvent("assistant_delta", {"text": "world"}),
+        SessionEvent("assistant_final", {"content": "hello world"}),
+        SessionEvent("usage", {"model": "m", "input_tokens": 12, "output_tokens": 3}),
+    )
+    _run_turn(app, "hi")
+
+    assert app.assistant_history[-1] == "hello world"
+    assert app.coding.turn_count == 1
+    assert footers == [
+        {
+            "model": "m",
+            "input_tokens": 12,
+            "uncached_input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 3,
+        }
+    ]
+
+
+def test_non_streamed_final_renders_panel(make_app):
+    """assistant_final with no preceding deltas (non-streaming model) still
+    lands in the transcript via the panel path."""
+    app = make_app()  # FakeCoding defaults to a final-only echo
+    _run_turn(app, "ping")
+
+    assert app.assistant_history[-1] == "echo ping"
+    assert "echo ping" in _transcript_text(app)

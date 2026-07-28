@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,18 +10,18 @@ from unittest import mock
 
 from pydantic import BaseModel
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-import permissions
-from tools.fs import (
-    EditItem,
-    delete_file,
+from liteharness.permissions import DEFAULT_RULES, PermissionStore
+from liteharness.tools.fs import (
+    delete,
     edit,
     glob,
     read,
     write,
 )
+
+from tests.sdk_fixtures import SessionContextTestMixin
 
 
 def _tool_json_schema(tool: Any) -> dict[str, Any]:
@@ -28,45 +29,43 @@ def _tool_json_schema(tool: Any) -> dict[str, Any]:
     return args_schema.model_json_schema()
 
 
-class DeleteFileTests(unittest.TestCase):
+class DeleteFileTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_deletes_existing_file(self) -> None:
         target = self.root / "old_module.py"
         target.write_text("x = 1\n", encoding="utf-8")
-        result = delete_file.invoke({"path": "old_module.py"})
+        result = delete.invoke({"path": "old_module.py"})
         self.assertEqual(result, "Deleted old_module.py")
         self.assertFalse(target.exists())
 
     def test_refuses_directory(self) -> None:
         (self.root / "pkg").mkdir()
-        result = delete_file.invoke({"path": "pkg"})
+        result = delete.invoke({"path": "pkg"})
         self.assertIn("directory", result)
         self.assertTrue((self.root / "pkg").is_dir())
 
     def test_refuses_missing_file(self) -> None:
-        result = delete_file.invoke({"path": "missing.txt"})
+        result = delete.invoke({"path": "missing.txt"})
         self.assertIn("does not exist", result)
 
     def test_refuses_git_paths(self) -> None:
         git_file = self.root / ".git" / "config"
         git_file.parent.mkdir(parents=True)
         git_file.write_text("[core]\n", encoding="utf-8")
-        result = delete_file.invoke({"path": ".git/config"})
+        result = delete.invoke({"path": ".git/config"})
         self.assertIn("protected", result)
         self.assertTrue(git_file.exists())
 
     def test_refuses_ness_paths(self) -> None:
         ness = self.root / ".ness"
-        ness.mkdir()
+        ness.mkdir(exist_ok=True)
         targets = {
             "permissions.json": "{}",
             "hooks.json": "{}",
@@ -76,7 +75,7 @@ class DeleteFileTests(unittest.TestCase):
             path = ness / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-            result = delete_file.invoke({"path": f".ness/{rel}"})
+            result = delete.invoke({"path": f".ness/{rel}"})
             with self.subTest(path=rel):
                 self.assertIn("protected", result)
                 self.assertTrue(path.exists())
@@ -86,7 +85,7 @@ class DeleteFileTests(unittest.TestCase):
         outside = outside_parent / "outside_delete_test.txt"
         outside.write_text("nope", encoding="utf-8")
         try:
-            result = delete_file.invoke({"path": str(outside)})
+            result = delete.invoke({"path": str(outside)})
             self.assertTrue(result.startswith("Error:"))
             self.assertTrue(outside.exists())
         finally:
@@ -94,15 +93,13 @@ class DeleteFileTests(unittest.TestCase):
             outside_parent.rmdir()
 
 
-class ReadFileTests(unittest.TestCase):
+class ReadFileTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_default_limit_truncates_large_files(self) -> None:
@@ -122,15 +119,13 @@ class ReadFileTests(unittest.TestCase):
         self.assertIn("truncated", result)
 
 
-class WriteFileTests(unittest.TestCase):
+class WriteFileTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name), format_on_write=False)
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_writes_normal_file(self) -> None:
@@ -146,46 +141,42 @@ class WriteFileTests(unittest.TestCase):
                 self.assertFalse((self.root / rel).exists())
 
 
-class EditTests(unittest.TestCase):
+class EditTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name), format_on_write=False)
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_applies_single_edit(self) -> None:
         target = self.root / "module.py"
         target.write_text("alpha\n", encoding="utf-8")
         result = edit.invoke(
-            {"path": "module.py", "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+            {"path": "module.py", "old_string": "alpha", "new_string": "beta"}
         )
         self.assertIn("Applied 1 edit", result)
         self.assertEqual(target.read_text(encoding="utf-8"), "beta\n")
 
-    def test_applies_multiple_edits(self) -> None:
+    def test_sequential_edits_via_multiple_calls(self) -> None:
         target = self.root / "module.py"
         target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-        result = edit.invoke(
-            {
-                "path": "module.py",
-                "edits": [
-                    {"old_string": "alpha", "new_string": "ALPHA"},
-                    {"old_string": "gamma", "new_string": "GAMMA"},
-                ],
-            }
+        first = edit.invoke(
+            {"path": "module.py", "old_string": "alpha", "new_string": "ALPHA"}
         )
-        self.assertIn("Applied 2 edits", result)
+        second = edit.invoke(
+            {"path": "module.py", "old_string": "gamma", "new_string": "GAMMA"}
+        )
+        self.assertIn("Applied 1 edit", first)
+        self.assertIn("Applied 1 edit", second)
         self.assertEqual(target.read_text(encoding="utf-8"), "ALPHA\nbeta\nGAMMA\n")
 
-    def test_empty_edits_is_error(self) -> None:
+    def test_missing_old_string_fails_schema(self) -> None:
         target = self.root / "module.py"
         target.write_text("alpha\n", encoding="utf-8")
-        result = edit.invoke({"path": "module.py", "edits": []})
-        self.assertIn("at least one edit", result)
+        with self.assertRaises(Exception):
+            edit.invoke({"path": "module.py", "new_string": "beta"})
         self.assertEqual(target.read_text(encoding="utf-8"), "alpha\n")
 
     def test_no_match_leaves_file_unchanged(self) -> None:
@@ -194,23 +185,20 @@ class EditTests(unittest.TestCase):
         result = edit.invoke(
             {
                 "path": "module.py",
-                "edits": [
-                    {"old_string": "alpha", "new_string": "ALPHA"},
-                    {"old_string": "nonexistent", "new_string": "X"},
-                ],
+                "old_string": "nonexistent",
+                "new_string": "X",
             }
         )
-        self.assertIn("Error: no match for edit 2", result)
+        self.assertIn("Error: no match for edit", result)
         self.assertEqual(target.read_text(encoding="utf-8"), "alpha\nbeta\n")
 
-    def test_schema_requires_edit_keys(self) -> None:
+    def test_schema_requires_old_and_new_string(self) -> None:
         schema = _tool_json_schema(edit)
-        edit_schema = schema["$defs"]["EditItem"]
-        self.assertEqual(edit_schema["required"], ["old_string", "new_string"])
         self.assertEqual(
-            {key for key, field in EditItem.model_fields.items() if field.is_required()},
-            {"old_string", "new_string"},
+            set(schema.get("required", [])),
+            {"path", "old_string", "new_string"},
         )
+        self.assertNotIn("edits", schema.get("properties", {}))
 
     def test_refuses_protected_paths(self) -> None:
         for rel in (".git/config", ".ness/NESS.md"):
@@ -219,27 +207,22 @@ class EditTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("alpha\n", encoding="utf-8")
                 result = edit.invoke(
-                    {"path": rel, "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+                    {"path": rel, "old_string": "alpha", "new_string": "beta"}
                 )
                 self.assertIn("protected", result)
                 self.assertEqual(target.read_text(encoding="utf-8"), "alpha\n")
 
     def test_fuzzy_match_below_threshold_leaves_file_unchanged(self) -> None:
         target = self.root / "module.py"
-        # 0.85-ish similarity — well below the 0.95 threshold
         target.write_text("def handle_request(request, response):\n    return response\n", encoding="utf-8")
         result = edit.invoke(
             {
                 "path": "module.py",
-                "edits": [
-                    {
-                        "old_string": "def handle_request(req, resp):\n    return resp\n",
-                        "new_string": "def handle_request(request, response):\n    return response\n",
-                    }
-                ],
+                "old_string": "def handle_request(req, resp):\n    return resp\n",
+                "new_string": "def handle_request(request, response):\n    return response\n",
             }
         )
-        self.assertIn("Error: no match for edit 1", result)
+        self.assertIn("Error: no match for edit", result)
         self.assertEqual(
             target.read_text(encoding="utf-8"),
             "def handle_request(request, response):\n    return response\n",
@@ -247,18 +230,13 @@ class EditTests(unittest.TestCase):
 
     def test_fuzzy_match_above_threshold_emits_loud_warning(self) -> None:
         target = self.root / "module.py"
-        # One-token difference: very high similarity, should trigger fuzzy match
         original = "def process_payment(amount, currency, customer):\n    pass\n"
         target.write_text(original, encoding="utf-8")
         result = edit.invoke(
             {
                 "path": "module.py",
-                "edits": [
-                    {
-                        "old_string": "def process_payment(amount, currency, custemer):\n    pass\n",
-                        "new_string": "def process_payment(amount, currency, customer):\n    return amount\n",
-                    }
-                ],
+                "old_string": "def process_payment(amount, currency, custemer):\n    pass\n",
+                "new_string": "def process_payment(amount, currency, customer):\n    return amount\n",
             }
         )
         self.assertIn("WARNING: FUZZY MATCH", result)
@@ -270,21 +248,44 @@ class EditTests(unittest.TestCase):
         target = self.root / "module.py"
         target.write_text("alpha\n", encoding="utf-8")
         result = edit.invoke(
-            {"path": "module.py", "edits": [{"old_string": "alpha", "new_string": "beta"}]}
+            {"path": "module.py", "old_string": "alpha", "new_string": "beta"}
         )
         self.assertNotIn("FUZZY", result)
         self.assertIn("Applied 1 edit", result)
 
+    def test_ambiguous_old_string_leaves_file_unchanged(self) -> None:
+        target = self.root / "module.py"
+        original = "alpha\nbeta\nalpha\n"
+        target.write_text(original, encoding="utf-8")
+        result = edit.invoke(
+            {"path": "module.py", "old_string": "alpha", "new_string": "ALPHA"}
+        )
+        self.assertIn("found 2 matches for old_string", result)
+        self.assertIn("replace_all=True", result)
+        self.assertEqual(target.read_text(encoding="utf-8"), original)
 
-class GlobFilesTests(unittest.TestCase):
+    def test_replace_all_updates_every_match(self) -> None:
+        target = self.root / "module.py"
+        target.write_text("alpha\nbeta\nalpha\n", encoding="utf-8")
+        result = edit.invoke(
+            {
+                "path": "module.py",
+                "old_string": "alpha",
+                "new_string": "ALPHA",
+                "replace_all": True,
+            }
+        )
+        self.assertIn("Applied 1 edit (2 replacements)", result)
+        self.assertEqual(target.read_text(encoding="utf-8"), "ALPHA\nbeta\nALPHA\n")
+
+
+class GlobFilesTests(SessionContextTestMixin, unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self._root_patch = mock.patch.object(permissions, "PROJECT_ROOT", self.root)
-        self._root_patch.start()
+        self.install_ctx(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._root_patch.stop()
+        self.uninstall_ctx()
         self._tmp.cleanup()
 
     def test_finds_files_without_git_repo(self) -> None:
@@ -305,14 +306,28 @@ class GlobFilesTests(unittest.TestCase):
 
 class DeleteFilePermissionTests(unittest.TestCase):
     def test_shell_run_rm_denied_by_default(self) -> None:
-        with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
-            decision, rule = permissions.check_with_rule("shell", {"action": "run", "command": "rm old_file.py"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ness = root / ".ness"
+            ness.mkdir()
+            store = PermissionStore(ness_dir=ness, project_root=root)
+            with mock.patch.object(store, "_load", return_value=DEFAULT_RULES.copy()):
+                decision, rule = store.check_with_rule(
+                    "shell", {"action": "run", "command": "rm old_file.py"}
+                )
         self.assertEqual(decision, "deny")
         self.assertEqual(rule, "shell:run:rm*")
 
     def test_shell_start_rm_rf_still_denied(self) -> None:
-        with mock.patch.object(permissions, "_load", return_value=permissions.DEFAULT_RULES.copy()):
-            decision, rule = permissions.check_with_rule("shell", {"action": "start", "command": "rm -rf build/"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ness = root / ".ness"
+            ness.mkdir()
+            store = PermissionStore(ness_dir=ness, project_root=root)
+            with mock.patch.object(store, "_load", return_value=DEFAULT_RULES.copy()):
+                decision, rule = store.check_with_rule(
+                    "shell", {"action": "start", "command": "rm -rf build/"}
+                )
         self.assertEqual(decision, "deny")
         self.assertEqual(rule, "shell:start:rm*")
 
