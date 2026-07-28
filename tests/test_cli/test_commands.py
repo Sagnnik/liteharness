@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 from liteharness_cli.config import settings
 
-from cli import render
-from cli.commands import dispatch
+from liteharness_cli.tui import render
+from liteharness_cli.tui.commands import dispatch
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
@@ -53,7 +53,7 @@ def test_config_action_can_update_persisted_setting(make_app):
         app._open_picker("config_action", "/config", index=0)
         items = app._config_action_items()
         app._menu_index = next(i for i, item in enumerate(items) if item.key == "approval")
-        with patch("cli.config_flow.write_env"):
+        with patch("liteharness_cli.tui.config_flow.write_env"):
             app._apply_picker_selection()
         assert settings.enable_approval is False
         assert app._menu_kind is None

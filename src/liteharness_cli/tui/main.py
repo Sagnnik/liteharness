@@ -1,10 +1,10 @@
-"""LiteHarness CLI entrypoint.
+"""LiteHarness CLI entrypoint (Ness).
 
 A clean, scrollable Rich + prompt_toolkit CLI. Run with:
 
-    uv run python -m cli.main
+    uv run ness
     # or
-    uv run python cli/main.py
+    uv run python -m liteharness_cli.tui.main
 
 The TUI is wired directly to the SDK stack: a
 :class:`~liteharness_cli.CodingSession` built via
@@ -21,11 +21,11 @@ import sys
 import uuid
 from pathlib import Path
 
-# Allow running both as `python -m cli.main` and `python cli/main.py` by making
-# sure the project root (which holds the cli package) is importable.
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+# Allow running as `python -m liteharness_cli.tui.main` (or a direct file path)
+# by making sure ``src/`` is on sys.path so ``liteharness_cli`` is importable.
+_SRC = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 
 def _bootstrap_worktree() -> None:
@@ -64,11 +64,11 @@ from liteharness_cli.chat_model import (
     validate_effort,
 )
 from liteharness_cli.config import REASONING_EFFORTS, settings
-from liteharness_cli.factory import build_coding_session
+from liteharness_cli.factory import build_coding_session, prepare_paths
 
-from cli import render
-from cli.app import TuiApp
-from cli.theme import build_console
+from liteharness_cli.tui import render
+from liteharness_cli.tui.app import TuiApp
+from liteharness_cli.tui.theme import build_console
 
 app = typer.Typer(add_completion=False, help="LiteHarness agent CLI")
 
@@ -178,7 +178,9 @@ def _check_prompt_budget(coding, git_available: bool) -> str | None:
 async def _main(*, resume_thread_id: str | None = None) -> None:
     git_available = is_git_repo()
 
-    mcp = MCPManager(project_root=Path.cwd())
+    paths = prepare_paths()
+
+    mcp = MCPManager(project_root=paths.project_root)
     await mcp.start()
 
     thread_id = f"session-{uuid.uuid4().hex[:8]}"
@@ -188,6 +190,7 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
         git_available=git_available,
         approval_handler=render.ask_approval,
         question_handler=render.ask_questions,
+        paths=paths,
     )
     coding.permission_store.clear_session_rules()
 
@@ -214,7 +217,7 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
     ui = TuiApp(
         coding,
         mcp=mcp,
-        history_path=Path(settings.ness_dir) / "cli_history",
+        history_path=paths.cli_history,
     )
     render.set_sink(ui)
     # The startup header is rendered by ``TuiApp`` once the transcript pane's
@@ -262,7 +265,7 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
 
         report = coding.cost_tracker.report()
         if resume_thread_id:
-            report += f"\nResume:  liteharness --resume {resume_thread_id}"
+            report += f"\nResume:  ness --resume {resume_thread_id}"
         build_console(file=sys.stdout).print(
             Panel(
                 report,

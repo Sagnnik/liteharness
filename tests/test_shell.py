@@ -19,7 +19,7 @@ def _field(result: str, name: str) -> str:
 
 
 def _shell_dir() -> Path:
-    return get_session_context().ness_dir / "shells"
+    return get_session_context().ness_dir / "runtime" / "shells"
 
 
 class ShellToolTests(SessionContextTestMixin, unittest.TestCase):

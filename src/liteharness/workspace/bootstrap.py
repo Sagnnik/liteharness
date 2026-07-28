@@ -5,21 +5,22 @@ from pathlib import Path
 
 from liteharness.permissions import DEFAULT_RULES
 
+# Project-local directories created under ``.ness/``.
+# Global USER.md / plans live outside the project (see liteharness_cli.paths).
 NESS_SUBDIRS = (
-    "sessions",
     "agents",
     "commands",
     "skills",
-    "plans",
     "threads",
-    "shells",
+    "runtime/sessions",
+    "runtime/shells",
 )
 
 
 def setup_ness_structure(ness_dir: Path) -> list[str]:
-    """Create the standard ``.ness/`` tree and default config files.
+    """Create the standard project ``.ness/`` tree and default config files.
 
-    Creates directories (sessions/agents/commands/skills/plans/threads/shells)
+    Creates directories (agents/commands/skills/threads/runtime/sessions|shells)
     and default ``permissions.json``, ``hooks.json``, and ``mcp.json`` when
     missing. Returns a list of paths that were created.
     """

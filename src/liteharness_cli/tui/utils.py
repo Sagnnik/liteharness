@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import set_key
 from prompt_toolkit.application import get_app
 
-from cli.constants import ENV_PATH
+from liteharness_cli.tui.constants import ENV_PATH
 
 
 def write_env(key: str, value: str) -> None:

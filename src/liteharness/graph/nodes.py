@@ -401,7 +401,12 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             decision, rule = permission_store.check_with_rule(name, args)
             if decision == "deny":
                 content = f"Denied by permission rule: {rule}"
-                results.append(ToolMessage(tool_call_id=call_id, name=name, content=content))
+                results.append(ToolMessage(
+                    tool_call_id=call_id,
+                    name=name,
+                    content=content,
+                    additional_kwargs={"duration_ms": 0},
+                ))
                 persist.append_event(thread_id, _tool_event(name, args, content, 0, call_id=call_id, exit_status="denied"))
                 continue
 
@@ -409,7 +414,12 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             ok, msg = hooks.run("preToolUse", {"tool": name, "args": args, "thread_id": thread_id})
             # if the hook vetoed the tool use then return the denied messages
             if not ok:
-                results.append(ToolMessage(tool_call_id=call_id, name=name, content=f"Hook veto: {msg}"))
+                results.append(ToolMessage(
+                    tool_call_id=call_id,
+                    name=name,
+                    content=f"Hook veto: {msg}",
+                    additional_kwargs={"duration_ms": 0},
+                ))
                 persist.append_event(thread_id, _tool_event(name, args, msg, 0, call_id=call_id, exit_status="denied"))
                 continue
 
@@ -462,7 +472,12 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             _ok, hook_msg = hooks.run("postToolUse", {"tool": name, "args": args, "result": content, "thread_id": thread_id})
             if hook_msg:
                 content = hook_msg + "\n\n" + content if content.strip() else hook_msg
-            results.append(ToolMessage(tool_call_id=call_id, name=name, content=content))
+            results.append(ToolMessage(
+                tool_call_id=call_id,
+                name=name,
+                content=content,
+                additional_kwargs={"duration_ms": dur},
+            ))
             # append the ToolMessage to the results list and append the event to the event log
             persist.append_event(thread_id, _tool_event(name, args, content, dur, call_id=call_id))
 

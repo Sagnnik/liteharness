@@ -13,13 +13,13 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Iterable, Protocol
 
-# ``AssistantStream`` lives in cli.stream next to ``TuiAssistantStream`` (the
+# ``AssistantStream`` lives in liteharness_cli.tui.stream next to ``TuiAssistantStream`` (the
 # live assistant-stream class it coordinates reasoning with). Re-exported here so
 # existing ``render.AssistantStream`` references keep resolving. Imported below
 # the stdlib imports and above the local definitions to keep all imports
-# grouped; safe because ``cli.stream`` only accesses ``cli.render`` lazily
+# grouped; safe because ``liteharness_cli.tui.stream`` only accesses ``liteharness_cli.tui.render`` lazily
 # (via ``stream._active_sink``), so module-level load order has no cycle.
-from cli.stream import AssistantStream
+from liteharness_cli.tui.stream import AssistantStream
 
 
 class StreamSink(Protocol):
@@ -162,7 +162,7 @@ class _NullSink:
         return ""
 
     async def run_config(self) -> Any:
-        from cli.config_flow import ConfigResult
+        from liteharness_cli.tui.config_flow import ConfigResult
 
         result = ConfigResult()
         result.note("/config is available only in the interactive TUI.")

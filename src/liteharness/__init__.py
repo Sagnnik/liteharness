@@ -7,6 +7,7 @@ from liteharness.types import (
     RunResult, SessionEvent, UsageEvent, ApprovalHandler,
     QuestionHandler,
     PlanTurnHandler, InterruptHandler, ContextPreview,
+    aggregate_usage,
 )
 from liteharness.context.layers import PromptLayers, PromptLayersConfig, AuxPrompts
 from liteharness.context.overlay import OverlayContext, OverlayProvider, render_overlay_delta, wrap_system_reminder
@@ -34,7 +35,7 @@ __all__ = [
     "NessAgent", "NessAgentConfig", "AgentSpec", "Session",
     "NessAgentOptions", "MemoryConfig", "ModeConfig", "SubagentConfig", "PermissionRules",
     "RunResult", "SessionEvent", "UsageEvent", "ApprovalHandler", "QuestionHandler",
-    "PlanTurnHandler", "InterruptHandler", "ContextPreview",
+    "PlanTurnHandler", "InterruptHandler", "ContextPreview", "aggregate_usage",
     "PromptLayers", "PromptLayersConfig", "AuxPrompts",
     "OverlayContext", "OverlayProvider", "render_overlay_delta", "wrap_system_reminder",
     "CodingOverlay", "NoOverlay", "AgentState",

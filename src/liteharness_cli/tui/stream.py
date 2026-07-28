@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from cli.app import TuiApp
+    from liteharness_cli.tui.app import TuiApp
 
 STREAM_FLUSH_INTERVAL_S = 0.05
 STREAM_FLUSH_CHARS = 256
@@ -89,12 +89,12 @@ class Thinking:
 def _active_sink():
     """Lazy accessor for ``render._sink()``.
 
-    Imported lazily so ``cli.stream`` does not depend on ``cli.render`` at
-    module load time (``render`` itself imports ``cli.stream`` for the
+    Imported lazily so ``liteharness_cli.tui.stream`` does not depend on ``liteharness_cli.tui.render`` at
+    module load time (``render`` itself imports ``liteharness_cli.tui.stream`` for the
     ``AssistantStream`` re-export). The indirection mirrors the original
     in-method ``import time`` pattern but for the sink registry.
     """
-    from cli.render import _sink
+    from liteharness_cli.tui.render import _sink
 
     return _sink()
 

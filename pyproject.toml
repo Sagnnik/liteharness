@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/liteharness", "src/liteharness_cli", "cli"]
+packages = ["src/liteharness", "src/liteharness_cli"]
 
 [project]
 name = "liteharness"
@@ -12,33 +12,33 @@ description = "LiteHarness is an experimental, hackable agent harness."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "asyncio>=4.0.0",
     "beautifulsoup4>=4.15.0",
-    "exa-py>=2.13.2",
     "langchain-core>=1.4.0",
     "langchain-openai>=1.2.2",
     "langchain-openrouter>=0.2.3",
     "langgraph>=1.2.1",
     "mcp>=1.27.1",
-    "openai>=2.38.0",
     "Pillow>=10.0.0",
     "platformdirs>=4.0.0",
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "pyperclip>=1.11.0",
-    "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
     "rich>=12.6.0",
-    "textual>=3.0.0",
     "trafilatura>=2.1.0",
     "typer>=0.24.2",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
 [project.scripts]
-liteharness = "cli.main:main"
+ness = "liteharness_cli.tui.main:main"
 
 [project.optional-dependencies]
 tracing = [
@@ -48,5 +48,5 @@ tracing = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]

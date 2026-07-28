@@ -3,18 +3,18 @@ from __future__ import annotations
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 
-from cli import mentions as mention_mod
-from cli.config_flow import ConfigResult
-from cli.command_catalog import COMMAND_CATALOG
-from cli.constants import (
+from liteharness_cli.tui import mentions as mention_mod
+from liteharness_cli.tui.config_flow import ConfigResult
+from liteharness_cli.tui.command_catalog import COMMAND_CATALOG
+from liteharness_cli.tui.constants import (
     MENU_DESC_COL,
     MENU_MAX_ROWS,
     MENTION_MAX_ROWS,
     MENTION_MENU,
     PICKER_MODES,
 )
-from cli.models import MenuItem
-from cli.utils import term_width
+from liteharness_cli.tui.models import MenuItem
+from liteharness_cli.tui.utils import term_width
 from liteharness_cli.chat_model import active_model_name, active_reasoning_effort
 from liteharness_cli.config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
 

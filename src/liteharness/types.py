@@ -12,6 +12,29 @@ class UsageEvent:
     cached_input_tokens: int
     output_tokens: int
     cost_usd: float | None
+    calls: int = 1
+
+
+def aggregate_usage(events: list[UsageEvent]) -> UsageEvent | None:
+    """Sum per-call :class:`UsageEvent` values into one turn-level snapshot.
+
+    ``model`` is the sole model when every event agrees, otherwise ``\"*\"``.
+    ``cost_usd`` is the sum of known costs, or ``None`` when no event reported cost.
+    """
+    if not events:
+        return None
+    models = {e.model for e in events}
+    cost_vals = [e.cost_usd for e in events if e.cost_usd is not None]
+    return UsageEvent(
+        model=next(iter(models)) if len(models) == 1 else "*",
+        input_tokens=sum(e.input_tokens for e in events),
+        uncached_input_tokens=sum(e.uncached_input_tokens for e in events),
+        cached_input_tokens=sum(e.cached_input_tokens for e in events),
+        output_tokens=sum(e.output_tokens for e in events),
+        cost_usd=sum(cost_vals) if cost_vals else None,
+        calls=sum(e.calls for e in events),
+    )
+
 
 @dataclass(frozen=True)
 class SessionEvent:
@@ -35,8 +58,11 @@ class SessionEvent:
 class RunResult:
     assistant_message: str
     usage: UsageEvent | None
+    """Last LLM call of the turn (back-compat). Prefer :attr:`usage_total` for cost."""
     todos: list[dict[str, Any]]
     events: list[SessionEvent]
+    usage_total: UsageEvent | None = None
+    """Sum of every LLM call in the turn. ``None`` when no usage was reported."""
 
 
 @dataclass(frozen=True)

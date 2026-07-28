@@ -35,7 +35,7 @@ await session.run("Plan then implement: add a rate limiter on /api/login")
 ### Default overlay
 
 - If `overlay=` is omitted, the agent is configured with `CodingOverlay` (`from liteharness import CodingOverlay`). It renders:
-  - `<plan-mode path=".ness/plans/">...</plan-mode>` when `session.mode == "plan"`, using `liteharness.instructions.PLAN_MODE` (or `modes.plan_mode_template` if you supply a `ModeConfig`)
+  - `<plan-mode path="...">...</plan-mode>` when `session.mode == "plan"`, using `liteharness.instructions.PLAN_MODE` (or `modes.plan_mode_template` if you supply a `ModeConfig`). The coding CLI sets `modes.plans_dir` to the global `plans/<project-slug>/` directory; the SDK default string is `.ness/plans/`.
   - `mode_switch` on the first act turn after a plan->act toggle, using `liteharness.instructions.ACT_MODE` (or `modes.act_mode_template`)
   - `git`, `compaction`, `todos`, `session_memory`, `loaded_skills`, and `skill_request` sections from the `OverlayContext`
 - To **opt out of L3 entirely** pass `overlay=NoOverlay()` (apps that need no working-state overlay, or want to drive everything from the model alone).

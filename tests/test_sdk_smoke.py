@@ -17,6 +17,7 @@ def test_import_liteharness_public_api():
         "ContextPreview",
         "NoopTracer",
         "CostTracker",
+        "aggregate_usage",
         "PromptLayers",
         "ToolRegistry",
         "coding_tools",

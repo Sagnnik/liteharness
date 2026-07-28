@@ -3,7 +3,7 @@ Reflection triggers:
 1. Token delta since last reflection exceeds reflection_token_ratio * usable budget
 2. Session exit (finalize_session_reflection)
 
-Job: distill recent work into up to 2 bullet points -> ./ness/sessions/mem_<thread_id>.md
+Job: distill recent work into up to 2 bullet points -> .ness/runtime/sessions/mem_<thread_id>.md
 Bullets are injected into L3 system-reminder overlay on subsequent turns.
 """
 

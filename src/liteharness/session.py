@@ -40,6 +40,7 @@ from liteharness.types import (
     RunResult,
     SessionEvent,
     UsageEvent,
+    aggregate_usage,
 )
 
 _active_session: ContextVar["Session | None"] = ContextVar(
@@ -47,6 +48,19 @@ _active_session: ContextVar["Session | None"] = ContextVar(
 )
 
 PLAN_COMPACTION_CHECKPOINT_RATIO = 0.75
+
+
+def _tool_end_data(msg: Any) -> dict[str, Any]:
+    """Build ``tool_end`` SessionEvent data, including tool duration when present."""
+    data: dict[str, Any] = {
+        "name": getattr(msg, "name", "tool"),
+        "content": str(getattr(msg, "content", "")),
+        "id": getattr(msg, "tool_call_id", None),
+    }
+    kwargs = getattr(msg, "additional_kwargs", None) or {}
+    if "duration_ms" in kwargs and kwargs["duration_ms"] is not None:
+        data["duration_ms"] = int(kwargs["duration_ms"])
+    return data
 
 
 def _messages_from_event(event: dict) -> list[Any]:
@@ -116,8 +130,9 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
         cfg.question_handler = _question
 
     # Internal usage channel: the agent node reports per-call token/cost
-    # usage here; the bridge stores ``_last_usage`` on the active session
-    # (feeding ``RunResult.usage`` / tracing spans) and queues a ``usage``
+    # usage here; the bridge stores ``_last_usage`` / accumulates
+    # ``_turn_usages`` on the active session (feeding ``RunResult.usage`` /
+    # ``RunResult.usage_total`` / tracing spans) and queues a ``usage``
     # SessionEvent for the caller. Not a user-facing hook — the same data
     # already reaches consumers via the SessionEvent stream, the durable
     # ``usage`` log, and the cost tracker.
@@ -125,6 +140,7 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
         sess = _active_session.get()
         if sess is not None:
             sess._last_usage = event
+            sess._turn_usages.append(event)
             sess._add_queue(
                 "usage",
                 {
@@ -134,6 +150,7 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
                     "cached_input_tokens": event.cached_input_tokens,
                     "output_tokens": event.output_tokens,
                     "cost_usd": event.cost_usd,
+                    "calls": event.calls,
                 },
             )
 
@@ -210,6 +227,7 @@ class Session:
         self.context_total = 0
         self._event_queue: asyncio.Queue[SessionEvent] = asyncio.Queue()
         self._last_usage: UsageEvent | None = None
+        self._turn_usages: list[UsageEvent] = []
 
         self.checkpointer = (
             self._cfg.checkpoint_factory() if self._cfg.checkpoint_factory else MemorySaver()
@@ -761,11 +779,7 @@ class Session:
                     (
                         SessionEvent(
                             "tool_end",
-                            {
-                                "name": getattr(msg, "name", "tool"),
-                                "content": str(getattr(msg, "content", "")),
-                                "id": getattr(msg, "tool_call_id", None),
-                            },
+                            _tool_end_data(msg),
                         ),
                         assistant_text,
                     )
@@ -920,8 +934,9 @@ class Session:
 
         # sets up a runtime context for this session
         self._install_session_runtime()
-        # reset the last usage
+        # reset per-turn usage (last call + turn aggregate)
         self._last_usage = None
+        self._turn_usages = []
         # reset the cooperative cancel token — a stale trigger from a prior
         # turn must not abort this one.
         self._cancel_token.clear()
@@ -1065,11 +1080,11 @@ class Session:
                 if mode_overridden and self.mode != prior_mode:
                     self.mode = prior_mode
                 span.set_attribute(TURN_COUNT, self.turn_count)
-                last_usage = self._last_usage
-                if last_usage is not None:
-                    span.set_attribute(INPUT_TOKENS, last_usage.input_tokens)
-                    span.set_attribute(OUTPUT_TOKENS, last_usage.output_tokens)
-                    span.set_attribute(COST_USD, last_usage.cost_usd or 0)
+                turn_usage = aggregate_usage(self._turn_usages) or self._last_usage
+                if turn_usage is not None:
+                    span.set_attribute(INPUT_TOKENS, turn_usage.input_tokens)
+                    span.set_attribute(OUTPUT_TOKENS, turn_usage.output_tokens)
+                    span.set_attribute(COST_USD, turn_usage.cost_usd or 0)
                 # remove the active session object from memory or contextvar
                 _active_session.reset(token)
 
@@ -1109,6 +1124,7 @@ class Session:
             usage=self._last_usage,
             todos=todos,
             events=events,
+            usage_total=aggregate_usage(self._turn_usages),
         )
 
     async def stream(

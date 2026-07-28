@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cli.tool_display import format_shell_output, format_tool_args
+from liteharness_cli.tui.tool_display import format_shell_output, format_tool_args
 
 
 def test_format_shell_output_marks_validation_errors_as_error() -> None:

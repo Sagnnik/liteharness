@@ -7,9 +7,9 @@ from typing import Any
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli.theme import RICH_THEME
-from cli.formatting import _format_duration
-from cli.models import TranscriptLine
+from liteharness_cli.tui.theme import RICH_THEME
+from liteharness_cli.tui.formatting import _format_duration
+from liteharness_cli.tui.models import TranscriptLine
 
 _STATUS_MARKER: dict[str, str] = {
     "completed": "[x]",
@@ -262,7 +262,7 @@ def _reasoning_header_line(text: str, *, expanded: bool) -> TranscriptLine:
 
 
 def _reasoning_block_lines(text: str, *, elapsed: float, expanded: bool, width: int) -> list[TranscriptLine]:
-    # Duration label uses the shared formatter from cli.formatting so any
+    # Duration label uses the shared formatter from liteharness_cli.tui.formatting so any
     # "Worked / Thinking for Nm Ns" UX stays byte-identical across surfaces.
     header = _reasoning_header_line(_format_duration(elapsed), expanded=expanded)
     if not expanded:

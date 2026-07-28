@@ -30,7 +30,7 @@ def _project_root() -> Path:
 
 
 def _shell_dir() -> Path:
-    return get_session_context().ness_dir / "shells"
+    return get_session_context().ness_dir / "runtime" / "shells"
 
 
 def _validate_path(path: str) -> str:
@@ -151,7 +151,7 @@ def _shell_run(command: str, timeout: int = 30, max_output_chars: int = DEFAULT_
 
 
 def _shell_start(command: str, name: str = "") -> str:
-    """Start a background command via bash and log output under .ness/shells."""
+    """Start a background command via bash and log output under .ness/runtime/shells."""
     started = time.monotonic()
     if not command.strip():
         return _format_result(

@@ -26,12 +26,12 @@ from liteharness_cli.chat_model import (
 from liteharness_cli.config import settings
 from liteharness_cli.prompts import build_init_memory_prompt
 
-from cli import render
-from cli.config_flow import run_config
-from cli.command_catalog import COMMAND_CATALOG
+from liteharness_cli.tui import render
+from liteharness_cli.tui.config_flow import run_config
+from liteharness_cli.tui.command_catalog import COMMAND_CATALOG
 
 if TYPE_CHECKING:
-    from cli.app import TuiApp
+    from liteharness_cli.tui.app import TuiApp
 
 CommandHandler = Callable[["TuiApp", str], Awaitable[None]]
 
@@ -118,10 +118,17 @@ async def cmd_skill(app: "TuiApp", args: str) -> None:
 async def cmd_init(app: "TuiApp", args: str) -> None:
     force = _flag(args, "force", "--force")
     memory = app.coding.memory_store
+    from liteharness_cli.paths import ensure_global_config, resolve_paths
+
+    paths = resolve_paths(
+        project_root=app.coding.project_root,
+        ness_dir=app.coding.ness_dir,
+    )
     created = setup_ness_structure(app.coding.ness_dir)
+    created.extend(ensure_global_config(paths))
     if created:
         render.render_notice(
-            f"Initialized .ness/ ({', '.join(created)})",
+            f"Initialized .ness/ + global config ({', '.join(created)})",
             title="init",
         )
     with render.thinking("generating NESS.md"):

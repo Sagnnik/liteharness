@@ -62,7 +62,7 @@ RICH_THEME = Theme(
         "table.header": f"bold {BLUE}",
         "table.dim": GRAY_DIM,
         # markdown (rendered by Rich into the TUI via the ANSI bridge in
-        # cli.markdown; these keys brand Rich's Markdown element styles)
+        # liteharness_cli.tui.markdown; these keys brand Rich's Markdown element styles)
         "markdown.h1": f"bold {LAVENDER}",
         "markdown.h2": f"bold {LAVENDER}",
         "markdown.h3": f"bold {LAVENDER}",

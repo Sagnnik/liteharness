@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from cli.models import MenuItem
+    from liteharness_cli.tui.models import MenuItem
 
 # Project root for path resolution (the CLI process cwd after any worktree
 # bootstrap chdir). Mirrors the old root-level permissions.PROJECT_ROOT.
@@ -128,7 +128,7 @@ def filter_files(query: str, files: list[Path], limit: int) -> "list[MenuItem]":
     Empty query: most-recently-modified first (mtime desc), so the menu
     surfaces what the user just touched.
     """
-    from cli.models import MenuItem
+    from liteharness_cli.tui.models import MenuItem
 
     query = (query or "").lower()
 

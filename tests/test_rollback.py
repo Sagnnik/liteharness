@@ -60,7 +60,7 @@ class RollbackSmokeTests(unittest.TestCase):
 
     def test_restore_mem_file_writes_snapshot(self) -> None:
         rollback.restore_mem_file(self.ness_dir, "session-x", "- a\n- b\n")
-        path = self.ness_dir / "sessions" / "mem_session-x.md"
+        path = self.ness_dir / "runtime" / "sessions" / "mem_session-x.md"
         self.assertTrue(path.exists())
         self.assertEqual(path.read_text(), "- a\n- b\n")
 

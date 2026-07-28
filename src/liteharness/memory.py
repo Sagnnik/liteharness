@@ -1,8 +1,8 @@
 """
 There are 3 main memory files:
 - NESS.md: project memory (durable, human-managed) (L1)
-- sessions/mem_<thread_id>.md: episodic per-session memory (session-durable, agent-managed) (L3)
-- USER.md: cross-repo identity / preferences (L1, human-authored only)
+- runtime/sessions/mem_<thread_id>.md: episodic per-session memory (session-durable, agent-managed) (L3)
+- USER.md: cross-repo identity / preferences (L1, human-authored only; CLI stores globally)
 """
 
 from __future__ import annotations
@@ -67,7 +67,10 @@ class MemoryStore:
         self.project_root = (project_root or Path.cwd()).resolve()
         self.ness_file = config.project_memory or self.ness_dir / "NESS.md"
         self.user_file = config.user_memory or self.ness_dir / "USER.md"
-        self.session_dir = config.session_memory_dir or self.ness_dir / "sessions"
+        self.session_dir = (
+            config.session_memory_dir
+            or self.ness_dir / "runtime" / "sessions"
+        )
 
     @property
     def disabled(self) -> bool:
@@ -183,7 +186,7 @@ class MemoryStore:
         self.user_file.write_text(text.strip() + "\n", encoding="utf-8")
         return f"Wrote {self.user_file}"
 
-    # session memory (sessions/mem_<thread_id>.md)
+    # session memory (runtime/sessions/mem_<thread_id>.md)
     def _session_path(self, thread_id: str) -> Path:
         return self.session_dir / f"mem_{thread_id}.md"
 

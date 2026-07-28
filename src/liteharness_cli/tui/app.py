@@ -19,21 +19,21 @@ from liteharness.types import SessionEvent
 from liteharness_cli.chat_model import active_model_name
 from liteharness_cli.config import settings
 
-from cli import render
-from cli.commands import dispatch
-from cli.config_flow import ConfigResult
-from cli.theme import PTK_STYLE_RULES
-from cli.chrome import ChromeMixin
-from cli.config_flow import ConfigFlowMixin
-from cli.constants import ESCAPE_KEY_FLUSH_TIMEOUT, KEY_BINDING_TIMEOUT, PICKER_MODES
-from cli.keys import build_key_bindings
-from cli.pickers import MenuMixin
-from cli.models import MenuItem, TranscriptLine
-from cli.prompts import PromptMixin
-from cli.transcript import TranscriptMixin
-from cli.turn_renderer import TurnRenderer
-from cli.utils import display_cwd
-from cli.widgets import TranscriptStore, TranscriptViewportControl
+from liteharness_cli.tui import render
+from liteharness_cli.tui.commands import dispatch
+from liteharness_cli.tui.config_flow import ConfigResult
+from liteharness_cli.tui.theme import PTK_STYLE_RULES
+from liteharness_cli.tui.chrome import ChromeMixin
+from liteharness_cli.tui.config_flow import ConfigFlowMixin
+from liteharness_cli.tui.constants import ESCAPE_KEY_FLUSH_TIMEOUT, KEY_BINDING_TIMEOUT, PICKER_MODES
+from liteharness_cli.tui.keys import build_key_bindings
+from liteharness_cli.tui.pickers import MenuMixin
+from liteharness_cli.tui.models import MenuItem, TranscriptLine
+from liteharness_cli.tui.prompts import PromptMixin
+from liteharness_cli.tui.transcript import TranscriptMixin
+from liteharness_cli.tui.turn_renderer import TurnRenderer
+from liteharness_cli.tui.utils import display_cwd
+from liteharness_cli.tui.widgets import TranscriptStore, TranscriptViewportControl
 
 if TYPE_CHECKING:
     from liteharness.mcp import MCPManager
@@ -492,7 +492,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
     def _start_initial_header_task(self) -> None:
         """Render the startup header once the transcript pane's real width is known.
 
-        ``session.render_header()`` is normally called from ``cli.main._main``
+        ``session.render_header()`` is normally called from ``liteharness_cli.tui.main._main``
         before the TUI starts running. At that point ``_transcript_render_width``
         is still 0, so ``append_header`` falls back to ``shutil``s terminal width,
         which can differ from the actual transcript pane width reported on the

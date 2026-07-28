@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cli.tool_display import (
+from liteharness_cli.tui.tool_display import (
     BATCHABLE_TOOL_CALLS,
     format_batched_tool_args,
     format_tool_args,
@@ -10,8 +10,8 @@ from cli.tool_display import (
     should_show_tool_call,
     should_show_tool_result,
 )
-from cli.formatting import USER_STYLE, user_message_lines
-from cli.markdown import (
+from liteharness_cli.tui.formatting import USER_STYLE, user_message_lines
+from liteharness_cli.tui.markdown import (
     _REASONING_COLLAPSED_STYLE,
     _diff_transcript_lines,
     _reasoning_block_lines,
@@ -20,14 +20,14 @@ from cli.markdown import (
     markdown_transcript_lines,
     todos_transcript_lines,
 )
-from cli.models import TranscriptLine
-from cli.stream import Thinking, TuiAssistantStream
-from cli.utils import term_height, term_width
+from liteharness_cli.tui.models import TranscriptLine
+from liteharness_cli.tui.stream import Thinking, TuiAssistantStream
+from liteharness_cli.tui.utils import term_height, term_width
 
 
 # Module-level TranscriptLine row builders (``_diff_transcript_lines``,
 # ``_shell_output_lines``, ``_tagged_lines``, ``_reasoning_block_lines`` and
-# their helpers) live in cli.markdown alongside ``markdown_transcript_lines``
+# their helpers) live in liteharness_cli.tui.markdown alongside ``markdown_transcript_lines``
 # and ``todos_transcript_lines``, so every "build TranscriptLines from data"
 # routine sits in one module. Imported back here for the TranscriptMixin sink
 # methods below.
@@ -35,7 +35,7 @@ from cli.utils import term_height, term_width
 
 def _header_project() -> str:
     """CWD-with-branch string for the header's Project cell."""
-    from cli.utils import display_cwd
+    from liteharness_cli.tui.utils import display_cwd
 
     return display_cwd()
 
@@ -92,7 +92,7 @@ class TranscriptMixin:
     ``RenderSink`` via ``render.set_sink``. Methods are grouped by concern
     and separated by banner comments inline:
 
-    - Tagged/diff/shell/reasoning line builders       (module scope: cli.markdown)
+    - Tagged/diff/shell/reasoning line builders       (module scope: liteharness_cli.tui.markdown)
     - Sink entry points (high-level render calls)   (append_header, append_user)
     - Resize + reflow machinery                     (_on_transcript_render_width...)
     - Tagged render sink methods                     (append_notice, append_warning, ...)
@@ -123,7 +123,7 @@ class TranscriptMixin:
             session_end_reflection,
         )  # surfaced elsewhere (not in the new header)
         width = self._transcript_render_width or term_width()
-        from cli.header import header_lines
+        from liteharness_cli.tui.header import header_lines
 
         source = {
             "mode": mode,
@@ -220,7 +220,7 @@ class TranscriptMixin:
         block = self._header_block
         if block is None or width == block["width"]:
             return
-        from cli.header import header_lines
+        from liteharness_cli.tui.header import header_lines
 
         rows = header_lines(width=width, show_logo=width >= 96, **block["source"])
         if rows:
@@ -251,7 +251,7 @@ class TranscriptMixin:
         self._reflow_user_blocks_for_width(width)
 
     def _expected_user_band_width(self, width: int | None = None) -> int:
-        from cli.formatting import user_band_width
+        from liteharness_cli.tui.formatting import user_band_width
 
         return user_band_width(width=width if width is not None else term_width())
 
@@ -673,7 +673,7 @@ class TranscriptMixin:
         self._append_transcript(*_diff_transcript_lines(diff_text, title))
 
     def append_shell_output(self, content: str) -> None:
-        from cli.tool_display import format_shell_output
+        from liteharness_cli.tui.tool_display import format_shell_output
 
         header, body = format_shell_output(content)
         title = f"shell {header}".strip()

@@ -2,7 +2,7 @@
 
 One ``TurnRenderer`` per user turn. It consumes the
 :class:`~liteharness.types.SessionEvent` stream produced by
-:meth:`liteharness_cli.CodingSession.run_turn` and drives the ``cli.render``
+:meth:`liteharness_cli.CodingSession.run_turn` and drives the ``liteharness_cli.tui.render``
 facade, owning the per-turn render state that used to live in SessionApp's
 ``astream_events`` dispatch:
 
@@ -25,8 +25,8 @@ from typing import Any
 
 from liteharness.types import SessionEvent
 
-from cli import render
-from cli.tool_display import extract_diff_section, extract_edit_summary
+from liteharness_cli.tui import render
+from liteharness_cli.tui.tool_display import extract_diff_section, extract_edit_summary
 
 #: Suffix appended to recorded assistant text when a turn is interrupted,
 #: mirroring the original CLI's convention for /copy.

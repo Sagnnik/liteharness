@@ -41,7 +41,10 @@ def _agent(**kwargs):
 def test_factory_wires_hooks_and_skills(tmp_path: Path, monkeypatch):
     ness = tmp_path / ".ness"
     ness.mkdir()
-    monkeypatch.setattr(settings, "ness_dir", ness)
+    monkeypatch.setattr(settings, "ness_dir", str(ness))
+    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("LITEHARNESS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.chdir(tmp_path)
     # Avoid real OpenRouter model construction in unit test.
     from liteharness_cli import factory as fac
 
@@ -54,11 +57,20 @@ def test_factory_wires_hooks_and_skills(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(fac, "make_sdk_cost_tracker", lambda: None)
 
+    from liteharness_cli.paths import sanitize_slug
+
     agent = build_coding_agent(thread_id="session-wire")
-    assert agent.config.hooks_config == ness / "hooks.json"
-    assert agent.config.skills_dir == ness / "skills"
+    assert agent.config.hooks_config == ness.resolve() / "hooks.json"
+    assert agent.config.skills_dir == ness.resolve() / "skills"
     assert agent.config.hook_runner is not None
-    assert agent.config.hook_runner.hooks_file == ness / "hooks.json"
+    assert agent.config.hook_runner.hooks_file == ness.resolve() / "hooks.json"
+    assert agent.config.memory_store.user_file == (tmp_path / "cfg" / "USER.md").resolve()
+    assert Path(agent.config.modes.plans_dir).resolve() == (
+        tmp_path / "cfg" / "plans" / sanitize_slug(tmp_path.name)
+    ).resolve()
+    assert agent.config.memory_store.session_dir == (
+        ness.resolve() / "runtime" / "sessions"
+    )
 
 
 def test_resolve_defaults_hooks_config_to_ness_dir(tmp_path: Path):
@@ -129,8 +141,12 @@ def test_setup_ness_structure_creates_layout(tmp_path: Path):
     ness = tmp_path / ".ness"
     created = setup_ness_structure(ness)
     assert (ness / "skills").is_dir()
+    assert (ness / "runtime" / "sessions").is_dir()
+    assert (ness / "runtime" / "shells").is_dir()
     assert (ness / "hooks.json").is_file()
     assert (ness / "permissions.json").is_file()
+    assert not (ness / "plans").exists()
+    assert not (ness / "sessions").exists()
     assert any("hooks.json" in c for c in created)
 
 
@@ -174,7 +190,7 @@ def test_hook_register_and_clear():
 def test_cmd_skill_stages_via_coding():
     from types import SimpleNamespace
 
-    from cli.commands import cmd_skill
+    from liteharness_cli.tui.commands import cmd_skill
     from tests.test_cli.conftest import FakeCoding
 
     coding = FakeCoding()
@@ -184,7 +200,7 @@ def test_cmd_skill_stages_via_coding():
     }
     app = SimpleNamespace(coding=coding)
 
-    with patch("cli.commands.render") as render:
+    with patch("liteharness_cli.tui.commands.render") as render:
         render.render_notice = lambda *a, **k: None
         render.render_error = lambda *a, **k: None
         render.render_table = lambda *a, **k: None

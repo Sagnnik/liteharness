@@ -13,7 +13,7 @@ import asyncio
 
 from liteharness.types import SessionEvent
 
-from cli import render
+from liteharness_cli.tui import render
 
 
 def _run_turn(app, text: str = "do something") -> None:
@@ -45,7 +45,7 @@ def test_cancel_renders_banner_and_suppresses_footer(make_app, monkeypatch):
     app = make_app()
     footers: list[dict] = []
     monkeypatch.setattr(
-        "cli.app.render.render_usage_footer", lambda usage: footers.append(usage)
+        "liteharness_cli.tui.app.render.render_usage_footer", lambda usage: footers.append(usage)
     )
     app.coding.queue_events(
         SessionEvent("assistant_delta", {"text": "half"}),
@@ -62,7 +62,7 @@ def test_normal_turn_records_text_and_renders_footer(make_app, monkeypatch):
     app = make_app()
     footers: list[dict] = []
     monkeypatch.setattr(
-        "cli.app.render.render_usage_footer", lambda usage: footers.append(usage)
+        "liteharness_cli.tui.app.render.render_usage_footer", lambda usage: footers.append(usage)
     )
     app.coding.queue_events(
         SessionEvent("assistant_delta", {"text": "hello "}),

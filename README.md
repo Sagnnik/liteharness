@@ -11,7 +11,7 @@ LiteHarness is an experimental, hackable coding-agent harness for engineers who 
 ```bash
 uv sync
 export OPENAI_API_KEY=...
-uv run python -m cli.main
+uv run ness
 ```
 
 Useful environment variables:
@@ -30,6 +30,8 @@ Useful environment variables:
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
+- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `plans/`).
+- `LITEHARNESS_CACHE_DIR`: override cache root (per-project `cli_history`).
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
 CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`. Use `/config` in-session to switch model, reasoning effort, keys, approval, autosave, and session-end reflection (persisted to `.env`).
@@ -40,19 +42,19 @@ Run a second agent in an isolated checkout and branch without touching your main
 
 ```bash
 # Terminal 1 — main checkout
-uv run python -m cli.main
+uv run ness
 
 # Terminal 2 — isolated agent (creates .ness/worktrees/auth on first launch)
-uv run python -m cli.main --worktree auth
+uv run ness --worktree auth
 ```
 
-Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, sessions, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. `.env` is copied from the repo root on first create. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
+Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, `.ness/runtime/sessions`, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. `.env` is copied from the repo root on first create. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
 
 ## Architecture
 
-- `cli/`: Textual TUI entry (`cli.main`), streaming, slash commands, and clipboard handling.
 - `src/liteharness/`: SDK — LangGraph agent loop, tools (files, search, web, shell, todos, `question`, subagents), permissions, memory, persistence, prompt layers/overlays, MCP, skills, hooks, compaction, reflection, and tracing.
-- `src/liteharness_cli/`: coding adapter — `build_coding_agent` / `CodingSession`, chat model factory, settings/pricing, rollback, and git worktree bootstrap.
+- `src/liteharness_cli/`: coding adapter — `build_coding_agent` / `CodingSession`, path resolver, chat model factory, settings/pricing, rollback, and git worktree bootstrap.
+- `src/liteharness_cli/tui/`: Ness TUI entry (`ness` / `liteharness_cli.tui.main`), streaming, slash commands, and clipboard handling.
 
 ## Prompt Layers
 
@@ -61,7 +63,7 @@ LiteHarness splits context into four layers to keep prompt caching stable:
 1. **L0 harness** (`PromptLayers` / `L0_HARNESS`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
 3. **L2 project context**: app-supplied domain/repo structure (`PromptLayersConfig.l2_context`); not auto-loaded by bare `Session`.
-4. **L3 working state** (`CodingOverlay` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, session memory, skill-request hints, and loaded-skill summaries. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode path=".ness/plans/">` block (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
+4. **L3 working state** (`CodingOverlay` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, session memory, skill-request hints, and loaded-skill summaries. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode>` block (path points at the global plans dir for the CLI) (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
 
 The L1 skill catalog lists every available skill with its path; full skill bodies enter the conversation when the model calls `skill_view` (or `read`s the path). `/skill <name>` stages a one-shot L3 hint for the next turn — it does not inject the body itself (see Skills below).
 
@@ -70,7 +72,7 @@ The L1 skill catalog lists every available skill with its path; full skill bodie
 LiteHarness binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). **Plan** mode instructions live in the ephemeral L3 `<plan-mode>` overlay; **act** mode has no mode block (like OpenCode build — L0 + tools + dynamic L3 state only).
 
 - **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. On the first act turn after a plan→act toggle, L3 prepends a one-shot `MODE SWITCH` note (inside the existing `<system-reminder>`) telling the model to call `todo` first, then address the user's message; it is cleared from state after that single model call so it never repeats.
-- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `question` (before any plan prose), then delivers exactly one final plan. Only the terminal plan message is auto-saved under `.ness/plans/`. Shift+Tab back to act mode to execute.
+- **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `question` (before any plan prose), then delivers exactly one final plan. Only the terminal plan message is auto-saved under the global `plans/<project-slug>/` directory. Shift+Tab back to act mode to execute.
 
 Plan-mode workflow:
 
@@ -89,15 +91,13 @@ Session tool tiers (same set bound in both modes):
 
 ## Memory
 
-Three memory files live under `.ness/`:
-
 | File | Purpose |
 |------|---------|
-| `NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/init`, `/memory add`, or manual edit. Loaded into L1. May inline existing `@AGENTS.md` / `@CLAUDE.md` files (see below). |
-| `USER.md` | Cross-repo user preferences. Human-authored via `/user`; loaded into L1. |
-| `sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L3. Maintained by the reflection gate. |
+| `.ness/NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/init`, `/memory add`, or manual edit. Loaded into L1. May inline existing `@AGENTS.md` / `@CLAUDE.md` files (see below). |
+| Global `USER.md` | Cross-repo user preferences (see Config layout). Human-authored via `/user`; loaded into L1. |
+| `.ness/runtime/sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L3. Maintained by the reflection gate. |
 
-Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget. An optional final pass at session exit is controlled by `SESSION_END_REFLECTION` (default off). It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/sessions/mem_<thread_id>.md`. Bullets appear in the L3 system-reminder overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when its resolved size exceeds 20,000 characters.
+Reflection runs in the background when new messages since the last run exceed `REFLECTION_TOKEN_RATIO` of the usable context budget. An optional final pass at session exit is controlled by `SESSION_END_REFLECTION` (default off). It uses structured output (via `REFLECTION_MODEL_NAME`) to append up to 2 bullets per run to `.ness/runtime/sessions/mem_<thread_id>.md`. Bullets appear in the L3 system-reminder overlay on subsequent turns. `NESS.md` remains human-authored; the CLI warns at startup when its resolved size exceeds 20,000 characters.
 
 ### NESS.md includes
 
@@ -124,26 +124,39 @@ Compaction is model-relative by default. LiteHarness estimates the usable contex
 
 Summary compaction triggers at 80% (not at the context ceiling): past that point the summarizing model is already degraded by context rot, so LiteHarness compacts before the summary itself would degrade. Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to act), LiteHarness shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
 
-## `.ness/` Layout
+## Config layout
+
+Ness splits **global** user data, **project** config, and **runtime** cache:
 
 ```text
+# Global config (platformdirs user_config_dir("liteharness"))
+# Linux: ~/.config/liteharness/
+# macOS: ~/Library/Application Support/liteharness/
+# Windows: %APPDATA%\liteharness\
+USER.md                  Cross-repo user preferences
+plans/<project-slug>/    Saved plan-mode output for this project
+
+# Per-project cache (platformdirs user_cache_dir("liteharness")/<hash>/)
+cli_history              Prompt history for this project root
+
+# Per-project .ness/ (NESS_DIR, default ".ness")
 .ness/
 ├── NESS.md              Project conventions loaded into L1
-├── USER.md              Cross-repo user preferences
-├── sessions/            Per-thread episodic memory (L3 overlay)
-│   └── mem_<thread_id>.md
 ├── permissions.json     Tool allow/deny/ask rules
 ├── hooks.json           Hook commands
 ├── mcp.json             MCP stdio servers
 ├── agents/              Subagent definitions
 ├── commands/            User slash commands
 ├── skills/              Project-local SKILL.md skills
-├── plans/               Saved plan-mode assistant output
 ├── threads/             Saved session trajectories (SQLite)
-│   └── threads.db       Thread metadata, events, and subagent links
-└── shells/              Background shell job metadata and logs
+│   └── threads.db
+└── runtime/
+    ├── sessions/        Per-thread episodic memory (L3)
+    │   └── mem_<thread_id>.md
+    └── shells/          Background shell job metadata and logs
 ```
 
+Override roots with `LITEHARNESS_CONFIG_DIR`, `LITEHARNESS_CACHE_DIR`, and `NESS_DIR`.
 ## Skills
 
 Skills live under `.ness/skills/<name>/SKILL.md` (wired via `skills_dir` on the coding agent):
@@ -289,7 +302,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Context & memory**
 
 - `/skill [<name>]`: list skills, or stage a skill for the next message (model loads via `skill_view`).
-- `/init [force]`: initialize `.ness/` (dirs, permissions, hooks, mcp) and generate `.ness/NESS.md`.
+- `/init [force]`: initialize project `.ness/` (dirs, permissions, hooks, mcp), ensure global config (`USER.md`, `plans/<slug>/`), and generate `.ness/NESS.md`.
 - `/memory` or `/memory add <note>`: read or append project memory.
 - `/user` or `/user add <note>`: read or append user preferences.
 

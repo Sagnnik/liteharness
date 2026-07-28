@@ -5,8 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from liteharness import NessAgent, PromptLayers, PromptLayersConfig
@@ -509,3 +510,125 @@ def test_reflection_schedule_budget_resolve_no_typeerror(tmp_path: Path):
         [HumanMessage(content="hello")],
         "test-model",
     )
+
+
+def test_aggregate_usage_sums_calls_and_costs():
+    from liteharness.types import UsageEvent, aggregate_usage
+
+    assert aggregate_usage([]) is None
+    total = aggregate_usage(
+        [
+            UsageEvent("m", 10, 8, 2, 3, 0.01, calls=1),
+            UsageEvent("m", 20, 15, 5, 4, 0.02, calls=1),
+        ]
+    )
+    assert total is not None
+    assert total.model == "m"
+    assert total.input_tokens == 30
+    assert total.uncached_input_tokens == 23
+    assert total.cached_input_tokens == 7
+    assert total.output_tokens == 7
+    assert total.cost_usd == 0.03
+    assert total.calls == 2
+
+    mixed = aggregate_usage(
+        [
+            UsageEvent("a", 1, 1, 0, 1, None),
+            UsageEvent("b", 2, 2, 0, 1, 0.5),
+        ]
+    )
+    assert mixed is not None
+    assert mixed.model == "*"
+    assert mixed.cost_usd == 0.5
+
+
+def test_tool_end_data_includes_duration_ms():
+    from liteharness.session import _tool_end_data
+
+    msg = ToolMessage(
+        tool_call_id="c1",
+        name="read",
+        content="ok",
+        additional_kwargs={"duration_ms": 42},
+    )
+    data = _tool_end_data(msg)
+    assert data["name"] == "read"
+    assert data["id"] == "c1"
+    assert data["duration_ms"] == 42
+
+    bare = _tool_end_data(ToolMessage(tool_call_id="c2", name="shell", content="x"))
+    assert "duration_ms" not in bare
+
+
+def test_tools_node_stamps_duration_ms_on_tool_message(tmp_path: Path):
+    model = FakeListChatModel(responses=["hello"])
+
+    @tool
+    def ping() -> str:
+        """Return pong."""
+        return "pong"
+
+    agent = NessAgent(
+        model=model,
+        tools=[ping],
+        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
+        options=NessAgentOptions(ness_dir=tmp_path / ".ness", project_root=tmp_path),
+    )
+    rt = make_nodes(agent.config, thread_id="t-dur", mode="act", git_available=False)
+
+    async def _run():
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"name": "ping", "args": {}, "id": "c1"}],
+        )
+        out = await rt.tools_node({"messages": [ai], "todos": [], "mode": "act"})
+        msg = out["messages"][0]
+        assert isinstance(msg, ToolMessage)
+        assert "duration_ms" in (msg.additional_kwargs or {})
+        assert isinstance(msg.additional_kwargs["duration_ms"], int)
+        assert msg.additional_kwargs["duration_ms"] >= 0
+
+    asyncio.run(_run())
+
+
+def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
+    """Session.run exposes usage_total as the sum of per-call usage events."""
+    from liteharness.types import UsageEvent, aggregate_usage
+
+    model = FakeListChatModel(responses=["done"])
+    agent = NessAgent(
+        model=model,
+        tools=[],
+        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
+        options=NessAgentOptions(
+            ness_dir=tmp_path / ".ness",
+            project_root=tmp_path,
+            enable_approval=False,
+            auto_save_threads=False,
+        ),
+    )
+    session = agent.session(thread_id="t-usage-total")
+
+    # Simulate the usage bridge the agent node would fire mid-turn.
+    from liteharness.session import _active_session
+
+    async def _run():
+        session._install_session_runtime()
+        session._last_usage = None
+        session._turn_usages = []
+        token = _active_session.set(session)
+        try:
+            bridge = agent.config._usage_bridge
+            bridge(UsageEvent("m", 100, 90, 10, 5, 0.1))
+            bridge(UsageEvent("m", 200, 150, 50, 8, 0.2))
+            assert session._last_usage is not None
+            assert session._last_usage.input_tokens == 200
+            total = aggregate_usage(session._turn_usages)
+            assert total is not None
+            assert total.input_tokens == 300
+            assert total.calls == 2
+            assert total.cost_usd == pytest.approx(0.3)
+        finally:
+            _active_session.reset(token)
+
+    asyncio.run(_run())

@@ -6,7 +6,7 @@ from prompt_toolkit.application import get_app
 from prompt_toolkit.filters import Condition, has_selection
 from prompt_toolkit.key_binding import KeyBindings
 
-from cli.constants import PICKER_MODES
+from liteharness_cli.tui.constants import PICKER_MODES
 
 def build_key_bindings(ui) -> KeyBindings:
     kb = KeyBindings()
@@ -262,8 +262,8 @@ def build_key_bindings(ui) -> KeyBindings:
         eager=True,
     )
     def _paste_clipboard_image(event) -> None:
-        from cli import render
-        from cli.images import ImageTooLarge, save_clipboard_image
+        from liteharness_cli.tui import render
+        from liteharness_cli.tui.images import ImageTooLarge, save_clipboard_image
 
         try:
             result = save_clipboard_image()

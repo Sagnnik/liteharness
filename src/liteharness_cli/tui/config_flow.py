@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from cli import render
-from cli.constants import FORM_LABELS
-from cli.utils import write_env
+from liteharness_cli.tui import render
+from liteharness_cli.tui.constants import FORM_LABELS
+from liteharness_cli.tui.utils import write_env
 from liteharness_cli.chat_model import (
     active_model_name,
     active_reasoning_effort,

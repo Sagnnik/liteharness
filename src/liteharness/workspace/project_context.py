@@ -142,4 +142,11 @@ def _render_tree(files: Iterable[str]) -> str:
 
 def _is_runtime_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
-    return normalized.startswith((".ness/threads/", ".ness/sessions/", ".ness/shells/"))
+    return normalized.startswith(
+        (
+            ".ness/threads/",
+            ".ness/runtime/",
+            ".ness/sessions/",
+            ".ness/shells/",
+        )
+    )

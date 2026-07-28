@@ -142,6 +142,25 @@ class CodingSession:
             "cached_input_tokens": usage.cached_input_tokens,
             "output_tokens": usage.output_tokens,
             "cost_usd": usage.cost_usd,
+            "calls": usage.calls,
+        }
+
+    @property
+    def turn_usage_total(self) -> dict[str, Any] | None:
+        """Aggregated token/cost usage for the most recent turn."""
+        from liteharness.types import aggregate_usage
+
+        usage = aggregate_usage(self._session._turn_usages)
+        if usage is None:
+            return None
+        return {
+            "model": usage.model,
+            "input_tokens": usage.input_tokens,
+            "uncached_input_tokens": usage.uncached_input_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cost_usd": usage.cost_usd,
+            "calls": usage.calls,
         }
 
     # ----------------------------------------------------------------------
@@ -415,7 +434,11 @@ class CodingSession:
             self._save_plan(plan_text)
 
     def _save_plan(self, text: str) -> Path:
-        plans_dir = self.ness_dir / "plans"
+        modes = self.cfg.modes
+        if modes and modes.plans_dir is not None:
+            plans_dir = Path(modes.plans_dir)
+        else:
+            plans_dir = self.ness_dir / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         stamp = re.sub(r"[-:.TZ]", "", datetime.now(timezone.utc).isoformat(timespec="seconds")).replace("+0000", "")
         path = plans_dir / f"{stamp}-{self.thread_id}.md"
@@ -510,7 +533,7 @@ class CodingSession:
 
         1. Files: surgically restore the paths the agent's tools mutated at or
            after this turn from the shadow git snapshot.
-        2. Session memory: overwrite ``sessions/mem_<thread_id>.md`` from the
+        2. Session memory: overwrite ``runtime/sessions/mem_<thread_id>.md`` from the
            checkpoint snapshot.
         3. Conversation: hard-truncate the events tail at ``user_seq`` and
            rebuild the live graph from the remaining events. The in-process

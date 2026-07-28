@@ -31,7 +31,7 @@ Design notes:
   triggers a full-tree restore via ``git checkout <hash> -- .``.
 
 - ``restore_mem_file`` writes the per-thread session memory file
-  (``sessions/mem_<thread_id>.md``) from the snapshot stored at the checkpoint.
+  (``runtime/sessions/mem_<thread_id>.md``) from the snapshot stored at the checkpoint.
   ``append_session_bullets`` is append-only, so restoring the snapshot undoes
   any bullets the abandoned-turn reflection wrote.
 """
@@ -168,7 +168,7 @@ def restore_mem_file(ness_dir: Path, thread_id: str, snapshot: str) -> None:
     """
     if snapshot is None:
         return
-    path = ness_dir / "sessions" / f"mem_{thread_id}.md"
+    path = ness_dir / "runtime" / "sessions" / f"mem_{thread_id}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     if snapshot:
         path.write_text(snapshot, encoding="utf-8")
@@ -178,7 +178,7 @@ def restore_mem_file(ness_dir: Path, thread_id: str, snapshot: str) -> None:
 
 def read_mem_file(ness_dir: Path, thread_id: str) -> str:
     """Read the current per-thread session memory file for snapshotting."""
-    path = ness_dir / "sessions" / f"mem_{thread_id}.md"
+    path = ness_dir / "runtime" / "sessions" / f"mem_{thread_id}.md"
     if not path.exists():
         return ""
     try:

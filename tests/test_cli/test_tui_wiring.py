@@ -20,8 +20,8 @@ from langchain_core.tools import tool
 from liteharness import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
 from liteharness_cli import CodingSession
 
-from cli import render
-from cli.app import TuiApp
+from liteharness_cli.tui import render
+from liteharness_cli.tui.app import TuiApp
 
 
 class _BindableFakeModel:

@@ -19,7 +19,7 @@ import pytest
 
 from liteharness.types import SessionEvent
 
-from cli.app import TuiApp
+from liteharness_cli.tui.app import TuiApp
 
 
 class _FakeThreadStore:

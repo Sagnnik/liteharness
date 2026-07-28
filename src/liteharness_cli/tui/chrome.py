@@ -8,15 +8,15 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.processors import AfterInput, BeforeInput
 
-from cli.constants import (
+from liteharness_cli.tui.constants import (
     FORM_FIELD_WIDTH,
     INPUT_MAX_ROWS_CAP,
     INPUT_MAX_ROWS_FRACTION,
     PICKER_MODES,
 )
-from cli.formatting import _format_duration, worked_fragments, working_fragments
-from cli.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
-from cli.widgets import TranscriptViewportControl
+from liteharness_cli.tui.formatting import _format_duration, worked_fragments, working_fragments
+from liteharness_cli.tui.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
+from liteharness_cli.tui.widgets import TranscriptViewportControl
 from liteharness_cli.chat_model import active_model_name, active_reasoning_effort
 
 

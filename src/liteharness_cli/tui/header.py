@@ -15,8 +15,8 @@ from __future__ import annotations
 import math
 from functools import lru_cache
 
-from cli.models import TranscriptLine
-from cli.theme import (
+from liteharness_cli.tui.models import TranscriptLine
+from liteharness_cli.tui.theme import (
     BLUE,
     CYAN,
     GRAY_BRIGHT,

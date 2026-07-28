@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import cli.transcript as transcript_module
-from cli.header import header_lines
-from cli.models import TranscriptLine
-from cli.transcript import TranscriptMixin
+import liteharness_cli.tui.transcript as transcript_module
+from liteharness_cli.tui.header import header_lines
+from liteharness_cli.tui.models import TranscriptLine
+from liteharness_cli.tui.transcript import TranscriptMixin
 
 
 def _all_text(lines: list[TranscriptLine]) -> str:

@@ -4,8 +4,8 @@ import asyncio
 import json
 from typing import Any
 
-from cli.models import MenuItem
-from cli.utils import term_width
+from liteharness_cli.tui.models import MenuItem
+from liteharness_cli.tui.utils import term_width
 from liteharness.utils import preview_diff
 
 

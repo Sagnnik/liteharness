@@ -7,7 +7,7 @@ tracking from :mod:`liteharness_cli.config`, and the SDK's backend
 resolution (thread store, permission store, memory store, skill loader,
 hook runner, tool registry).
 
-Both the TUI entrypoint (``cli/main.py``) and tests build through here so
+Both the TUI entrypoint (``liteharness_cli.tui.main``) and tests build through here so
 there is exactly one wiring recipe::
 
     from liteharness_cli.factory import build_coding_session
@@ -26,7 +26,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from liteharness import NessAgent, NessAgentOptions
+from liteharness import MemoryConfig, NessAgent, NessAgentOptions
 
 from liteharness_cli.chat_model import (
     active_model_name,
@@ -36,11 +36,28 @@ from liteharness_cli.chat_model import (
 )
 from liteharness_cli.coding_session import CodingSession
 from liteharness_cli.config import context_window_for, make_sdk_cost_tracker, settings
+from liteharness_cli.paths import (
+    NessPaths,
+    ensure_global_config,
+    ensure_project_runtime,
+    resolve_paths,
+)
 from liteharness_cli.prompts import (
     default_prompt_layers,
     default_aux_prompts,
     plan_act_modes,
 )
+
+
+def prepare_paths(*, project_root: Path | None = None) -> NessPaths:
+    """Resolve paths and ensure global config + project runtime dirs exist."""
+    paths = resolve_paths(
+        project_root=project_root or Path.cwd(),
+        ness_dir=settings.ness_dir,
+    )
+    ensure_global_config(paths)
+    ensure_project_runtime(paths)
+    return paths
 
 
 def build_coding_agent(
@@ -49,6 +66,7 @@ def build_coding_agent(
     approval_handler: Any = None,
     question_handler: Any = None,
     l2_context: str | None = None,
+    paths: NessPaths | None = None,
     **agent_kwargs: Any,
 ) -> NessAgent:
     """Build a :class:`NessAgent` with the coding defaults.
@@ -59,16 +77,21 @@ def build_coding_agent(
     session creation. Extra keyword arguments override the coding defaults
     (e.g. ``tools=``, ``overlay=``, ``tracing=``).
     """
-    ness_dir = Path(settings.ness_dir)
+    if paths is None:
+        paths = prepare_paths()
     kwargs: dict[str, Any] = {
         "model": create_model(thread_id),
         "compaction_model": create_compaction_model(thread_id),
         "reflection_model": create_reflection_model(thread_id),
         "prompt": default_prompt_layers(l2_context=l2_context),
         "aux_prompts": default_aux_prompts(),
-        "modes": plan_act_modes(plans_dir=ness_dir / "plans"),
-        "hooks_config": ness_dir / "hooks.json",
-        "skills_dir": ness_dir / "skills",
+        "modes": plan_act_modes(plans_dir=paths.plans_dir),
+        "memory": MemoryConfig(
+            user_memory=paths.user_file,
+            session_memory_dir=paths.sessions_dir,
+        ),
+        "hooks_config": paths.ness_dir / "hooks.json",
+        "skills_dir": paths.ness_dir / "skills",
         "options": NessAgentOptions(
             context_window=context_window_for(active_model_name()),
             compaction_token_budget=settings.compaction_token_budget,
@@ -80,8 +103,8 @@ def build_coding_agent(
             session_end_reflection=settings.session_end_reflection,
             format_on_write=settings.format_on_write,
             exa_api_key=settings.exa_api_key,
-            project_root=Path.cwd(),
-            ness_dir=ness_dir,
+            project_root=paths.project_root,
+            ness_dir=paths.ness_dir,
         ),
         "approval_handler": approval_handler,
         "question_handler": question_handler,
@@ -98,6 +121,7 @@ def build_coding_session(
     vision: bool | None = None,
     git_available: bool | None = None,
     metadata: dict[str, Any] | None = None,
+    paths: NessPaths | None = None,
     **agent_kwargs: Any,
 ) -> CodingSession:
     """Build a :class:`CodingSession` on a fresh coding agent.
@@ -105,7 +129,7 @@ def build_coding_session(
     ``agent_kwargs`` are forwarded to :func:`build_coding_agent` (handlers,
     prompt overrides, tracing, ...).
     """
-    agent = build_coding_agent(thread_id=thread_id, **agent_kwargs)
+    agent = build_coding_agent(thread_id=thread_id, paths=paths, **agent_kwargs)
     return CodingSession(
         agent,
         thread_id=thread_id,
