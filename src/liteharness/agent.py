@@ -32,6 +32,13 @@ if TYPE_CHECKING:
     )
 
 
+def _require_instance(name: str, value: object, expected: type) -> None:
+    if value is not None and not isinstance(value, expected):
+        raise TypeError(
+            f"{name} must be an instance of {expected.__name__}, "
+            f"got {type(value).__qualname__}"
+        )
+
 @dataclass(kw_only=True)
 class AgentSpec:
     """User-facing agent configuration.
@@ -74,12 +81,15 @@ class AgentSpec:
         ``None`` → default :class:`~liteharness.context.coding_overlay.CodingOverlay`
         (plan/act, git, todos, compaction, session memory).
         Pass :class:`~liteharness.context.coding_overlay.NoOverlay` for no L3.
+        Custom overlays must subclass
+        :class:`~liteharness.context.overlay.OverlayProvider`.
     ``memory``
         :class:`MemoryConfig` — project / user / session memory paths
         (used when ``memory_store`` is not injected).
     ``memory_store``
-        Optional :class:`~liteharness.memory.MemoryBackend` instance. When
-        set, skips constructing the default :class:`MemoryStore`.
+        Optional :class:`~liteharness.memory.MemoryBackend` subclass
+        instance. When set, skips constructing the default
+        :class:`MemoryStore`.
     ``modes``
         :class:`ModeConfig` for plan/act mode (optional; toggle still works
         with default instruction texts when ``None``).
@@ -268,6 +278,10 @@ class NessAgentConfig:
                 plan_mode_template=modes_cfg.plan_mode_template if modes_cfg else None,
                 act_mode_template=modes_cfg.act_mode_template if modes_cfg else None,
             )
+
+        _require_instance("overlay", overlay, OverlayProvider)
+        _require_instance("memory_store", spec.memory_store, MemoryBackend)
+        _require_instance("approval_handler", spec.approval_handler, ApprovalHandler)
 
         return cls(
             model=spec.model,

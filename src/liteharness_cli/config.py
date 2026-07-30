@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from liteharness_cli.model_catalog import cached_models, model_record
 
 load_dotenv()
 
@@ -160,11 +162,11 @@ MODEL_REASONING: dict[str, dict[str, Any]] = {
     "deepseek-v4-flash": {"efforts": ("xhigh", "high"), "default": "high", "mandatory": False},
     "kimi-k2.7-code": {"efforts": (), "default": None, "mandatory": True},
     "kimi-k2.6": {"efforts": (), "default": None, "mandatory": False},
-    "glm-5.2": {"efforts": ("xhigh", "high"), "default": "high", "mandatory": False},
+    "glm-5.2": {"efforts": ("high", "max"), "default": "high", "mandatory": False},
     "glm-5.1": {"efforts": (), "default": None, "mandatory": False},
 }
 
-ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+ReasoningEffort = str
 REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
@@ -185,6 +187,13 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
+    openrouter_cache_ttl: str = Field(default="5m", alias="OPENROUTER_CACHE_TTL")
+    openrouter_anthropic_messages: bool = Field(
+        default=True,
+        alias="OPENROUTER_ANTHROPIC_MESSAGES",
+    )
+    goal_judge_model: str | None = Field(default=None, alias="GOAL_JUDGE_MODEL")
+    goal_max_attempts: int = Field(default=3, alias="GOAL_MAX_ATTEMPTS")
     ness_dir: str = Field(default=".ness", alias="NESS_DIR")
     format_on_write: bool = Field(default=True, alias="FORMAT_ON_WRITE")
     exa_api_key: str | None = Field(default=None, alias="EXA_API_KEY")
@@ -195,6 +204,9 @@ class Settings(BaseSettings):
 
     @property
     def supports_vision(self) -> bool:
+        record = model_record(self.model_name)
+        if record is not None:
+            return record.supports_vision
         model = self.model_name.lower()
         return any(marker in model for marker in VISION_MODELS)
 
@@ -221,7 +233,16 @@ def make_sdk_cost_tracker():
     """SDK CostTracker wired with CLI MODEL_PRICING estimates for non-provider costs."""
     from liteharness.tracing.cost import CostTracker
 
-    return CostTracker(pricing=MODEL_PRICING)
+    pricing = dict(MODEL_PRICING)
+    for record in cached_models():
+        if record.input_price is None or record.output_price is None:
+            continue
+        pricing[record.id] = (
+            record.input_price,
+            record.output_price,
+            record.cache_read_ratio,
+        )
+    return CostTracker(pricing=pricing)
 
 
 def resolve_model_key(model_name: str, catalog: dict[str, Any]) -> str | None:
@@ -236,6 +257,9 @@ def context_window_for(model_name: str) -> int | None:
     resolution (window − reserves) applies instead of the flat
     ``compaction_token_budget`` fallback.
     """
+    record = model_record(model_name)
+    if record is not None and record.context_length:
+        return record.context_length
     key = resolve_model_key(model_name, MODEL_CONTEXT_WINDOWS)
     return MODEL_CONTEXT_WINDOWS[key] if key is not None else None
 
@@ -248,10 +272,16 @@ def _reasoning_entry(model_name: str) -> dict[str, Any] | None:
 
 
 def model_supports_reasoning(model_name: str) -> bool:
+    record = model_record(model_name)
+    if record is not None:
+        return bool(record.reasoning_efforts) or "reasoning" in record.supported_parameters
     return _reasoning_entry(model_name) is not None
 
 
 def reasoning_efforts_for_model(model_name: str) -> tuple[str, ...]:
+    record = model_record(model_name)
+    if record is not None:
+        return record.reasoning_efforts
     entry = _reasoning_entry(model_name)
     if entry is None:
         return ()
@@ -279,4 +309,12 @@ def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
         return None
     if effort and effort in efforts:
         return effort
+    if model_record(model_name) is not None:
+        return None
     return default_effort(model_name)
+
+
+def available_model_ids() -> tuple[str, ...]:
+    """Return the cached dynamic catalog, or the packaged offline fallback."""
+    records = cached_models()
+    return tuple(record.id for record in records) if records else AVAILABLE_MODELS

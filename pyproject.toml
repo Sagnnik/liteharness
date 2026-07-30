@@ -13,6 +13,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
+    "httpx>=0.28.1",
     "langchain-core>=1.4.0",
     "langchain-openai>=1.2.2",
     "langchain-openrouter>=0.2.3",
@@ -50,3 +51,6 @@ tracing = [
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
+markers = [
+    "live: opt-in tests that contact paid external providers",
+]

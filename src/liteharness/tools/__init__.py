@@ -127,12 +127,24 @@ class ToolRegistry:
         self._sync()
         return list(self.runtime["tool_names"])
 
+    def all_tools(self) -> list[BaseTool]:
+        """Stable snapshot of every registered built-in and dynamic tool."""
+        return self._dedupe(self._all_tools)
+
+    def deferred_tool_names(self) -> set[str]:
+        """Registered dynamic tools not enabled in the active tool map."""
+        active = set(self.tool_names())
+        return {tool.name for tool in self.all_tools() if tool.name not in active}
+
     def bind_model(self, model: BaseChatModel) -> BaseChatModel:
         """Bind the currently active tools to *model* and return it.
 
         The returned model is ready for use with langgraph.
         """
         self._sync()
+        registry_binder = getattr(model, "bind_tool_registry", None)
+        if callable(registry_binder):
+            return registry_binder(self)
         return model.bind_tools(self.runtime["active_tools"])
 
     def sync(self) -> None:

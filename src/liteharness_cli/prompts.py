@@ -23,5 +23,5 @@ def plan_act_modes(*, plans_dir: Path | None = None) -> ModeConfig:
 
 
 def build_init_memory_prompt(project_context: str) -> str:
-    """Format the SDK init-memory template for ``/init``."""
+    """Format the SDK init-memory template for ``/memory create``."""
     return INIT_MEMORY.format(project_context=project_context)

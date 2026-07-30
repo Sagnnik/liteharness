@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 from langchain_core.messages import BaseMessage
 from liteharness.graph.state import AgentState
@@ -59,8 +60,11 @@ class OverlayContext:
     activate_skills: list[str] = field(default_factory=list)
     loaded_skills: list[dict[str, str]] = field(default_factory=list)
 
-class OverlayProvider(Protocol):
-    """Protocol for building ephemeral L3 sections injected each turn.
+class OverlayProvider(ABC):
+    """Abstract base for building ephemeral L3 sections injected each turn.
+
+    Subclass and implement :meth:`sections`. Custom overlays must inherit
+    this class — duck-typed objects are rejected at agent construction.
 
     Implementations receive the current graph ``AgentState`` and an
     :class:`OverlayContext` snapshot and return a dict of
@@ -89,6 +93,7 @@ class OverlayProvider(Protocol):
         of L3 entirely.
     """
 
+    @abstractmethod
     def sections(self, state: AgentState, ctx: OverlayContext) -> dict[str, str]:
         """Build the L3 sections for this turn.
 
@@ -108,7 +113,6 @@ class OverlayProvider(Protocol):
             Section names must be **consistent across turns** so that
             the delta renderer can compare old and new content.
         """
-        ...
 
 def render_overlay_delta(
     sections: dict[str, str],

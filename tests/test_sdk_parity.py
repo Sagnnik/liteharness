@@ -17,7 +17,7 @@ from liteharness import (
     Session,
     SessionEvent,
 )
-from liteharness.context.overlay import OverlayContext
+from liteharness.context.overlay import OverlayContext, OverlayProvider
 from liteharness.graph.helpers import _with_working_state_tail
 from liteharness.graph.nodes import make_nodes
 from liteharness.options import ModeConfig, NessAgentOptions
@@ -207,6 +207,65 @@ def test_plan_mode_readonly_false_allows_mutating_tools(tmp_path: Path):
     asyncio.run(_run())
 
 
+def test_yolo_bypasses_deny_rules_but_not_plan_mode(tmp_path: Path):
+    agent = _agent(
+        tools=["write"],
+        options=NessAgentOptions(
+            project_root=tmp_path,
+            ness_dir=tmp_path / ".ness",
+            enable_approval=True,
+            yolo_mode=True,
+        ),
+    )
+    cfg = agent.config
+    rt = make_nodes(agent.config, thread_id="t-yolo", mode="act", git_available=False)
+
+    async def _run():
+        target = tmp_path / "yolo.py"
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write",
+                    "args": {"path": str(target), "content": "allowed = True\n"},
+                    "id": "y1",
+                }
+            ],
+        )
+        assert (
+            await rt.route_after_agent({"messages": [ai], "mode": "act"})
+            == "tools"
+        )
+        cfg.permission_store.persist_rule("write:*", "deny", scope="session")
+        out = await rt.tools_node({"messages": [ai], "mode": "act", "todos": []})
+        assert "Denied by permission rule" not in out["messages"][0].content
+
+        plan_out = await rt.tools_node(
+            {"messages": [ai], "mode": "plan", "todos": []}
+        )
+        assert "Unavailable in plan mode" in plan_out["messages"][0].content
+
+    asyncio.run(_run())
+
+
+def test_empty_session_reports_usable_context_total(tmp_path: Path):
+    agent = _agent(
+        options=NessAgentOptions(
+            project_root=tmp_path,
+            ness_dir=tmp_path / ".ness",
+            context_window=100_000,
+            compaction_input_reserve=4_000,
+            compaction_output_reserve=8_000,
+        )
+    )
+    session = agent.session(thread_id="t-empty-context")
+
+    asyncio.run(session.refresh_context_snapshot())
+
+    assert session.context_used == 0
+    assert session.context_total == 88_000
+
+
 def test_approval_session_and_never_persist(tmp_path: Path):
     from liteharness.types import ApprovalHandler
 
@@ -290,7 +349,7 @@ def test_tools_node_returns_todos():
 def test_git_snapshot_passed_to_overlay(tmp_path: Path):
     seen: dict = {}
 
-    class CaptureOverlay:
+    class CaptureOverlay(OverlayProvider):
         def sections(self, state, ctx: OverlayContext):
             seen["git_snapshot"] = ctx.git_snapshot
             seen["git_available"] = ctx.git_available

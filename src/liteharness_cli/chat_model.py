@@ -4,16 +4,17 @@ import argparse
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
+from langchain_core.language_models import BaseChatModel
 from langchain_openrouter import ChatOpenRouter
 
 from liteharness_cli.config import (
-    REASONING_EFFORTS,
     ReasoningEffort,
     coerce_reasoning_effort,
     model_supports_reasoning,
     reasoning_efforts_for_model,
     settings,
 )
+from liteharness_cli.anthropic_messages import OpenRouterAnthropicMessages
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,7 @@ def set_active_reasoning_effort(reasoning_effort: ReasoningEffort) -> None:
     settings.reasoning_effort = reasoning_effort
 
 
-def _resolved_setting(field: str) -> str | int | None:
+def _resolved_setting(field: str) -> str | int | bool | None:
     if _overrides is not None:
         value = getattr(_overrides, field, None)
         if value is not None:
@@ -118,31 +119,58 @@ def build_chat_model(
     *,
     model_name: str | None = None,
     session_suffix: str = "",
-) -> ChatOpenRouter:
+) -> BaseChatModel:
     resolved_model = cast(str, model_name or _resolved_setting("model_name"))
+    session_id = openrouter_session(thread_id, suffix=session_suffix)
+    base_url = cast(str | None, _resolved_setting("openai_base_url"))
+    is_openrouter = not base_url or "openrouter.ai" in base_url
+    reasoning = _reasoning_kwargs(
+        resolved_model,
+        _resolved_setting("reasoning_effort"),
+    ).get("reasoning")
+    if (
+        resolved_model.startswith("anthropic/")
+        and is_openrouter
+        and settings.openrouter_anthropic_messages
+    ):
+        return OpenRouterAnthropicMessages(
+            model=resolved_model,
+            api_key=cast(str, _resolved_setting("openai_api_key")),
+            base_url=(base_url or "https://openrouter.ai/api/v1").rstrip("/"),
+            session_id=session_id,
+            cache_ttl=settings.openrouter_cache_ttl,
+            max_retries=int(_resolved_setting("api_max_retries") or 3),
+            reasoning=reasoning,
+        )
     model_kwargs: dict[str, Any] = {
         "model": resolved_model,
         "api_key": _resolved_setting("openai_api_key"),
-        "session_id": openrouter_session(thread_id, suffix=session_suffix),
+        "session_id": session_id,
     }
     model_kwargs.update(_reasoning_kwargs(resolved_model, _resolved_setting("reasoning_effort")))
-    base_url = _resolved_setting("openai_base_url")
     if base_url:
         model_kwargs["base_url"] = base_url
+    if resolved_model.startswith("anthropic/") and is_openrouter:
+        model_kwargs["model_kwargs"] = {
+            "cache_control": {
+                "type": "ephemeral",
+                "ttl": settings.openrouter_cache_ttl,
+            }
+        }
 
     model_kwargs["max_retries"] = _resolved_setting("api_max_retries")
     return ChatOpenRouter(**model_kwargs)
 
 
-def create_model(thread_id: str) -> ChatOpenRouter:
+def create_model(thread_id: str) -> BaseChatModel:
     return build_chat_model(thread_id)
 
 
-def create_compaction_model(thread_id: str) -> ChatOpenRouter:
+def create_compaction_model(thread_id: str) -> BaseChatModel:
     return build_chat_model(thread_id, session_suffix="compaction")
 
 
-def create_reflection_model(thread_id: str) -> ChatOpenRouter:
+def create_reflection_model(thread_id: str) -> BaseChatModel:
     return build_chat_model(
         thread_id,
         model_name=cast(str, _resolved_setting("reflection_model_name")),
@@ -153,7 +181,7 @@ def create_reflection_model(thread_id: str) -> ChatOpenRouter:
 def validate_effort(model_name: str, reasoning_effort: str) -> None:
     allowed = reasoning_efforts_for_model(model_name)
     if not allowed:
-        raise ValueError(f"model {model_name!r} does not support reasoning effort")
+        return
     if reasoning_effort not in allowed:
         raise ValueError(
             f"reasoning effort must be one of: {', '.join(allowed)} for model {model_name!r}"
@@ -198,6 +226,5 @@ def add_model_cli_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--reasoning-effort",
-        choices=list(REASONING_EFFORTS),
-        help="OpenRouter reasoning effort (overrides REASONING_EFFORT)",
+        help="Provider-literal reasoning effort (overrides REASONING_EFFORT)",
     )

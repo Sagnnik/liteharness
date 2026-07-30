@@ -6,6 +6,11 @@ A clean, scrollable Rich + prompt_toolkit CLI. Run with:
     # or
     uv run python -m liteharness_cli.tui.main
 
+Headless one-shot queries (final response to stdout, then exit):
+
+    uv run ness -p "explain this project"
+    cat log.txt | uv run ness -p "find the root cause"
+
 The TUI is wired directly to the SDK stack: a
 :class:`~liteharness_cli.CodingSession` built via
 :func:`liteharness_cli.factory.build_coding_session`, an SDK
@@ -63,8 +68,9 @@ from liteharness_cli.chat_model import (
     configure_model,
     validate_effort,
 )
-from liteharness_cli.config import REASONING_EFFORTS, settings
+from liteharness_cli.config import settings
 from liteharness_cli.factory import build_coding_session, prepare_paths
+from liteharness_cli.headless import merge_prompt_parts, run_headless
 
 from liteharness_cli.tui import render
 from liteharness_cli.tui.app import TuiApp
@@ -90,9 +96,6 @@ def _overrides(
         "reasoning_effort": reasoning_effort,
     }
     if reasoning_effort is not None:
-        if reasoning_effort not in REASONING_EFFORTS:
-            allowed = ", ".join(REASONING_EFFORTS)
-            raise typer.BadParameter(f"reasoning effort must be one of: {allowed}")
         target_model = model or settings.model_name
         try:
             validate_effort(target_model, reasoning_effort)
@@ -104,6 +107,9 @@ def _overrides(
 
 @app.command()
 def run(
+    prompt: list[str] = typer.Argument(
+        None, help="One-shot query text (requires --print)"
+    ),
     model: str = typer.Option(
         None, "--model", help="Chat model name (overrides MODEL_NAME)"
     ),
@@ -118,7 +124,7 @@ def run(
     reasoning_effort: str = typer.Option(
         None,
         "--reasoning-effort",
-        help="OpenRouter reasoning effort: none, minimal, low, medium, high, xhigh, max",
+        help="Provider-literal OpenRouter reasoning effort",
     ),
     worktree: str = typer.Option(
         None, "--worktree", "-w", help="Run inside an isolated git worktree"
@@ -128,14 +134,52 @@ def run(
         "--resume",
         help="Resume a saved thread id at startup (loads prior conversation into the transcript)",
     ),
+    yolo: bool = typer.Option(
+        False,
+        "--yolo",
+        help="Approve all act-mode tool calls and ignore permission deny rules",
+    ),
+    print_mode: bool = typer.Option(
+        False,
+        "--print",
+        "-p",
+        help="Run the query non-interactively, print the final response, and exit",
+    ),
 ) -> None:
-    """Start an interactive LiteHarness session."""
+    """Start an interactive LiteHarness session (or a one-shot query with -p)."""
     configure_model(
         _overrides(
             model, reflection_model, api_key, base_url, session_id, reasoning_effort
         )
     )
-    asyncio.run(_main(resume_thread_id=resume or None))
+    if print_mode:
+        stdin_text = ""
+        if not sys.stdin.isatty():
+            try:
+                stdin_text = sys.stdin.read()
+            except OSError:
+                pass
+        query = merge_prompt_parts(prompt, stdin_text)
+        if query is None:
+            print(
+                "error: --print requires a prompt argument or piped stdin",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        try:
+            exit_code = asyncio.run(
+                run_headless(query, resume_thread_id=resume or None, yolo=yolo)
+            )
+        except KeyboardInterrupt:
+            exit_code = 130
+        raise SystemExit(exit_code)
+    if prompt:
+        print(
+            "error: a positional prompt requires --print/-p",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    asyncio.run(_main(resume_thread_id=resume or None, yolo=yolo))
 
 
 def _render_mcp_startup(mcp: MCPManager) -> None:
@@ -175,7 +219,7 @@ def _check_prompt_budget(coding, git_available: bool) -> str | None:
     return None
 
 
-async def _main(*, resume_thread_id: str | None = None) -> None:
+async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> None:
     git_available = is_git_repo()
 
     paths = prepare_paths()
@@ -186,9 +230,10 @@ async def _main(*, resume_thread_id: str | None = None) -> None:
     thread_id = f"session-{uuid.uuid4().hex[:8]}"
     coding = build_coding_session(
         thread_id=thread_id,
+        yolo=yolo,
         vision=settings.supports_vision,
         git_available=git_available,
-        approval_handler=render.ask_approval,
+        approval_handler=render.render_approval_handler,
         question_handler=render.ask_questions,
         paths=paths,
     )

@@ -9,10 +9,6 @@ wheels/
 .pytest_cache/
 
 # extra files & folders
-coding_agents_sc/
-instructions/liteharness_prompt_analysis.md
-scripts/
-assets/preview_logo.py
 
 # Virtual environments
 .venv
@@ -22,3 +18,6 @@ assets/preview_logo.py
 .ness/worktrees/
 .ness/threads/
 .ness/runtime/
+
+# SDK Tests
+sdk_perf/

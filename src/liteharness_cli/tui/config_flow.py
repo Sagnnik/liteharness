@@ -13,6 +13,7 @@ from liteharness_cli.chat_model import (
     set_active_reasoning_effort,
 )
 from liteharness_cli.config import reasoning_efforts_for_model, reload_settings, settings
+from liteharness_cli.model_catalog import refresh_catalog
 
 
 # --- shared /config data + delegator ---------------------------------------
@@ -110,7 +111,11 @@ class ConfigFlowMixin:
         if key == "model":
             current = self._current_model_slug()
             index = next((i for i, item in enumerate(self._config_model_items()) if item.key == current), 0)
-            self._open_picker("config_models", "/config", index=index)
+            self._open_picker("config_models", "", index=index)
+            if self._catalog_refresh_task is None or self._catalog_refresh_task.done():
+                self._catalog_refresh_task = asyncio.create_task(
+                    self._refresh_model_catalog_menu()
+                )
             return
         if key == "reasoning":
             self._open_config_reasoning_picker()
@@ -142,6 +147,32 @@ class ConfigFlowMixin:
             return
         if key in FORM_LABELS:
             self._open_form(key, FORM_LABELS[key])
+
+    async def _refresh_model_catalog_menu(self) -> None:
+        selected_model: str | None = None
+        if self._menu_kind == "config_models":
+            items = self._visible_menu_items()
+            if 0 <= self._menu_index < len(items):
+                selected_model = items[self._menu_index].key
+        result = await refresh_catalog()
+        if result.error and not self._catalog_refresh_warned:
+            self._catalog_refresh_warned = True
+            self.append_warning(
+                f"Model catalog refresh failed; using cached fallback: {result.error}"
+            )
+        if self._menu_kind == "config_models":
+            if selected_model is not None:
+                refreshed = self._visible_menu_items()
+                self._menu_index = next(
+                    (
+                        index
+                        for index, item in enumerate(refreshed)
+                        if item.key == selected_model
+                    ),
+                    self._menu_index,
+                )
+            self._clamp_menu_index()
+            self.invalidate()
 
     def _open_config_reasoning_picker(self) -> None:
         model_name = active_model_name()

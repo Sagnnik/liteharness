@@ -290,7 +290,12 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             thread_id, {
                 "kind": "assistant", 
                 "content": str(response.content),
-                "tool_calls": response.tool_calls or []
+                "tool_calls": response.tool_calls or [],
+                "additional_kwargs": {
+                    key: value
+                    for key, value in response.additional_kwargs.items()
+                    if key in {"anthropic_content_blocks", "reasoning_content"}
+                },
             }
         )
         _schedule_reflection_if_due(rt, state, messages + [response], model_name)
@@ -399,7 +404,7 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
 
             # if the tool is denied by a permission rule then return the denied messages
             decision, rule = permission_store.check_with_rule(name, args)
-            if decision == "deny":
+            if decision == "deny" and not getattr(options, "yolo_mode", False):
                 content = f"Denied by permission rule: {rule}"
                 results.append(ToolMessage(
                     tool_call_id=call_id,
@@ -522,7 +527,14 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             return "tools"
 
         # if the approval is enabled and the tool needs approval then return the approval gate node
-        if options.enable_approval and any(_needs_approval(n, a, options, permission_store, tools_reg) for n, a, _ in calls):
+        if (
+            options.enable_approval
+            and not getattr(options, "yolo_mode", False)
+            and any(
+                _needs_approval(n, a, options, permission_store, tools_reg)
+                for n, a, _ in calls
+            )
+        ):
             return "approval_gate"
         
         return "tools"

@@ -13,6 +13,8 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Iterable, Protocol
 
+from liteharness import ApprovalHandler
+
 # ``AssistantStream`` lives in liteharness_cli.tui.stream next to ``TuiAssistantStream`` (the
 # live assistant-stream class it coordinates reasoning with). Re-exported here so
 # existing ``render.AssistantStream`` references keep resolving. Imported below
@@ -34,6 +36,7 @@ class RenderSink(Protocol):
         mode: str,
         model: str,
         approval: bool,
+        yolo: bool,
         autosave: bool,
         session_end_reflection: bool,
     ) -> None: ...
@@ -101,6 +104,7 @@ class _NullSink:
         mode: str,
         model: str,
         approval: bool,
+        yolo: bool,
         autosave: bool,
         session_end_reflection: bool,
     ) -> None: ...
@@ -182,6 +186,7 @@ def render_header(
     mode: str,
     model: str,
     approval: bool,
+    yolo: bool = False,
     autosave: bool,
     session_end_reflection: bool,
 ) -> None:
@@ -189,6 +194,7 @@ def render_header(
         mode=mode,
         model=model,
         approval=approval,
+        yolo=yolo,
         autosave=autosave,
         session_end_reflection=session_end_reflection,
     )
@@ -276,8 +282,18 @@ def clear_transcript() -> None:
     _sink().clear_transcript()
 
 
+class RenderApprovalHandler(ApprovalHandler):
+    """SDK-facing approval gate — delegates to the active :class:`RenderSink`."""
+
+    async def __call__(self, tool: str, args: dict) -> str:
+        return await _sink().ask_approval(tool, args)
+
+
+render_approval_handler = RenderApprovalHandler()
+
+
 async def ask_approval(name: str, args: dict) -> str:
-    return await _sink().ask_approval(name, args)
+    return await render_approval_handler(name, args)
 
 
 async def ask_questions(questions: list[dict]) -> list[dict]:

@@ -36,11 +36,6 @@ if TYPE_CHECKING:
 CommandHandler = Callable[["TuiApp", str], Awaitable[None]]
 
 
-def _flag(args: str, *names: str) -> bool:
-    """True when the trimmed args equal one of the flag tokens."""
-    return args.strip() in set(names)
-
-
 def _add_text(args: str) -> str | None:
     """Return the text after ``add `` if present, else ``None``."""
     args = args.strip()
@@ -66,7 +61,15 @@ async def cmd_config(app: "TuiApp", args: str) -> None:
         render.render_notice(message)
     if result.rebuild:
         app.rebuild_graph()
+        await app.refresh_context_snapshot()
     if result.session_update:
+        options = app.coding.cfg.options
+        options.enable_approval = (
+            settings.enable_approval and not getattr(options, "yolo_mode", False)
+        )
+        options.auto_save_threads = settings.auto_save_threads
+        options.session_end_reflection = settings.session_end_reflection
+        app.coding.thread_store.auto_save = settings.auto_save_threads
         app.render_header()
 
 
@@ -116,8 +119,6 @@ async def cmd_skill(app: "TuiApp", args: str) -> None:
 
 
 async def cmd_init(app: "TuiApp", args: str) -> None:
-    force = _flag(args, "force", "--force")
-    memory = app.coding.memory_store
     from liteharness_cli.paths import ensure_global_config, resolve_paths
 
     paths = resolve_paths(
@@ -131,23 +132,36 @@ async def cmd_init(app: "TuiApp", args: str) -> None:
             f"Initialized .ness/ + global config ({', '.join(created)})",
             title="init",
         )
-    with render.thinking("generating NESS.md"):
-        response = await app.model.ainvoke([HumanMessage(content=build_init_memory_prompt(get_project_context()))])
-    result = memory.write_project(str(response.content), overwrite=force)
-    if result.startswith("Error:"):
-        render.render_error(result)
     else:
-        render.render_notice(result, title="init")
+        render.render_notice(".ness/ structure already present", title="init")
 
 
 async def cmd_memory(app: "TuiApp", args: str) -> None:
     memory = app.coding.memory_store
+    raw = args.strip()
+    if raw.startswith("create"):
+        rest = raw[6:].strip()
+        force = rest in ("force", "--force")
+        if rest and not force:
+            render.render_error("Usage: /memory create [force]")
+            return
+        with render.thinking("generating NESS.md"):
+            response = await app.model.ainvoke(
+                [HumanMessage(content=build_init_memory_prompt(get_project_context()))]
+            )
+        result = memory.write_project(str(response.content), overwrite=force)
+        if result.startswith("Error:"):
+            render.render_error(result)
+        else:
+            render.render_notice(result, title="memory")
+        return
+
     text = _add_text(args)
     if text is None:
-        if not args.strip():
+        if not raw:
             render.render_panel_text(memory.load_project() or "(empty)", title=str(memory.ness_file), style="usage.value")
             return
-        render.render_error("Usage: /memory or /memory add <note>")
+        render.render_error("Usage: /memory or /memory add <note> or /memory create [force]")
         return
     render.render_notice(memory.append_project(text))
 
@@ -256,24 +270,26 @@ def _thread_rows(threads: list[dict], store) -> list[list[str]]:
 
 async def cmd_threads(app: "TuiApp", args: str) -> None:
     store = app.coding.thread_store
-    threads = store.list_threads(20)
+    threads = store.list_threads(100)
     if not threads:
         render.render_notice("No saved sessions.")
         return
-    render.render_table(
-        title="threads",
-        columns=["thread", "summary", "turns", "cost", "cache"],
-        rows=_thread_rows(threads, store),
-    )
-
-
-async def cmd_resume(app: "TuiApp", args: str) -> None:
-    target = args.strip()
-    if not target:
-        await cmd_threads(app, "")
-        render.render_notice("Usage: /resume <thread_id>")
+    sink = render.get_sink()
+    if sink is None:
+        render.render_error("/threads requires the interactive TUI.")
         return
-    await app.resume_thread(target)
+    for item in threads:
+        item["label"] = (
+            item.get("summary")
+            or store.first_user_message(item.get("thread_id", ""))
+            or "(no messages)"
+        )
+    target = await sink.request_threads_picker(
+        threads,
+        current_thread_id=app.thread_id,
+    )
+    if target and target != app.thread_id:
+        await app.resume_thread(target)
 
 
 async def cmd_save(app: "TuiApp", args: str) -> None:
@@ -352,6 +368,32 @@ async def cmd_rollback(app: "TuiApp", args: str) -> None:
     await app.rollback_to(seq)
 
 
+async def cmd_fork(app: "TuiApp", args: str) -> None:
+    turns = app.coding.thread_store.list_user_turns(app.thread_id)
+    if not turns:
+        render.render_notice("No user turns in this thread to fork from.")
+        return
+    sink = render.get_sink()
+    if sink is None:
+        render.render_error("/fork requires the interactive TUI.")
+        return
+    seq_str = await sink.request_fork_picker(turns)
+    if not seq_str:
+        return
+    try:
+        await app.fork_thread(int(seq_str))
+    except ValueError as exc:
+        render.render_error(str(exc))
+
+
+async def cmd_goal(app: "TuiApp", args: str) -> None:
+    goal = args.strip()
+    if not goal:
+        render.render_error("Usage: /goal <objective>")
+        return
+    await app.run_goal(goal)
+
+
 HANDLERS: dict[str, CommandHandler] = {
     "exit": cmd_exit,
     "quit": cmd_exit,
@@ -366,7 +408,8 @@ HANDLERS: dict[str, CommandHandler] = {
     "hooks": cmd_hooks,
     "mcp": cmd_mcp,
     "threads": cmd_threads,
-    "resume": cmd_resume,
+    "fork": cmd_fork,
+    "goal": cmd_goal,
     "save": cmd_save,
     "new": cmd_new,
     "compact": cmd_compact,
@@ -380,7 +423,6 @@ BUSY_SAFE_COMMANDS: frozenset[str] = frozenset(
     {
         "help",
         "status",
-        "threads",
         "permissions",
         "hooks",
         "mcp",

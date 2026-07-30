@@ -152,8 +152,9 @@ def build_key_bindings(ui) -> KeyBindings:
         if buff is not ui._buffer:
             return
 
-        if ui._menu_kind in PICKER_MODES and ui._visible_menu_items():
-            ui._apply_picker_selection()
+        if ui._menu_kind in PICKER_MODES:
+            if ui._visible_menu_items():
+                ui._apply_picker_selection()
             event.app.invalidate()
             return
 
@@ -162,7 +163,7 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
-        if ui._menu_kind == "rollback" and ui._visible_menu_items():
+        if ui._menu_kind in {"rollback", "threads", "fork"} and ui._visible_menu_items():
             ui._apply_picker_selection()
             event.app.invalidate()
             return

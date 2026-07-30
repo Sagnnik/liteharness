@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from liteharness_cli.config import settings
 
 from liteharness_cli.tui import render
 from liteharness_cli.tui.commands import dispatch
+from liteharness_cli.tui.config_flow import ConfigResult
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
@@ -43,6 +45,44 @@ def test_status_command_shows_session_summary(make_app):
     text = "\n".join(line.text for line in app._lines)
     assert "session status" in text
     assert "cache read" in text
+
+
+def test_config_session_toggles_update_active_runtime(make_app):
+    app = make_app()
+    options = SimpleNamespace(
+        enable_approval=True,
+        yolo_mode=False,
+        auto_save_threads=True,
+        session_end_reflection=False,
+    )
+    app.coding.cfg = SimpleNamespace(options=options)
+    app.coding.thread_store.auto_save = True
+    old = (
+        settings.enable_approval,
+        settings.auto_save_threads,
+        settings.session_end_reflection,
+    )
+    settings.enable_approval = False
+    settings.auto_save_threads = False
+    settings.session_end_reflection = True
+    try:
+        with patch(
+            "liteharness_cli.tui.commands.run_config",
+            new_callable=AsyncMock,
+            return_value=ConfigResult(session_update=True),
+        ):
+            asyncio.run(_dispatch_with_sink(app, "/config"))
+    finally:
+        (
+            settings.enable_approval,
+            settings.auto_save_threads,
+            settings.session_end_reflection,
+        ) = old
+
+    assert options.enable_approval is False
+    assert options.auto_save_threads is False
+    assert options.session_end_reflection is True
+    assert app.coding.thread_store.auto_save is False
 
 
 def test_config_action_can_update_persisted_setting(make_app):

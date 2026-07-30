@@ -96,6 +96,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._prompt_title = ""
         self._prompt_hint = ""
         self._prompt_items: list[MenuItem] = []
+        self._prompt_summary_lines: list[str] = []
         self._prompt_detail_lines: list[str] = []
         self._prompt_question: dict[str, Any] | None = None
         self._prompt_note_active = False
@@ -116,6 +117,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._slash_menu_cache_items: list[MenuItem] = []
         self._mention_cache_query: str | None = None
         self._mention_cache_items: list[MenuItem] = []
+        self._catalog_refresh_task: asyncio.Task | None = None
+        self._catalog_refresh_warned = False
         self._working_active = False
         self._worked_label: str | None = None
         self._worked_elapsed = 0.0
@@ -209,7 +212,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         app.timeoutlen = KEY_BINDING_TIMEOUT
 
     def _main_buffer_read_only(self) -> bool:
-        if self._menu_kind in PICKER_MODES:
+        if self._menu_kind in PICKER_MODES and self._menu_kind != "config_models":
             return True
         if self._form_kind is not None:
             return True
@@ -568,23 +571,27 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
     @property
     def model(self):
-        """The raw chat model (used by /init's one-shot NESS.md generation)."""
+        """The raw chat model (used by /memory create's one-shot NESS.md draft)."""
         return self.coding.agent.config.model
 
     def toggle_mode(self) -> None:
         self.coding.toggle_mode()
 
     def render_header(self) -> None:
+        options = getattr(getattr(self.coding, "cfg", None), "options", None)
         render.render_header(
             mode=self.coding.mode,
             model=active_model_name(),
-            approval=settings.enable_approval,
+            approval=getattr(options, "enable_approval", settings.enable_approval),
+            yolo=getattr(options, "yolo_mode", False),
             autosave=settings.auto_save_threads,
             session_end_reflection=settings.session_end_reflection,
         )
 
     async def refresh_context_snapshot(self) -> None:
         await self.coding.refresh_context_snapshot()
+        self._stats_line_cache_key = None
+        self.invalidate()
 
     def rebuild_graph(self) -> None:
         """/config model or reasoning switch: rebind models + recompile."""
@@ -600,8 +607,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
     async def reset_thread(self) -> None:
         """Archive the current thread and start a fresh one (``/new``)."""
         await self.coding.reset(_new_thread_id())
-        self.assistant_history.clear()
         self.coding.active_skills([])
+        await self._reload_session_view([])
 
     async def resume_thread(self, thread_id: str) -> None:
         """Resume a saved thread: replay its transcript, then rebuild state.
@@ -614,17 +621,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         if not events:
             render.render_error(f"No saved thread: {thread_id}")
             return
-        render.clear_transcript()
-        self._replay_events_to_transcript(events)
         if not await self.coding.resume(thread_id):
             render.render_error(f"No saved thread: {thread_id}")
             return
-        self.assistant_history = [
-            str(event.get("content"))
-            for event in events
-            if event.get("kind") == "assistant" and event.get("content")
-        ]
-        render.render_notice(f"Resumed thread {thread_id}.", title="resume")
+        await self._reload_session_view(events)
 
     async def rollback_to(self, user_seq: int) -> None:
         """Roll the thread back to checkpoint ``user_seq`` (``/rollback``)."""
@@ -632,7 +632,66 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         if status.startswith(("Invalid", "No checkpoint")):
             render.render_error(status)
         else:
+            events = self.coding.thread_store.load_thread_events(self.thread_id)
+            await self._reload_session_view(events)
             render.render_notice(status, title="rollback")
+
+    async def fork_thread(self, user_seq: int) -> None:
+        """Fork before a user event, switch sessions, and prefill its prompt."""
+        target, prompt, events = await self.coding.fork_before(user_seq)
+        await self._reload_session_view(events)
+        self._set_buffer_text(prompt)
+        render.render_notice(f"Forked into {target}. Edit and submit the prompt.", title="fork")
+
+    async def run_goal(self, goal: str) -> None:
+        """Run a bounded worker–judge goal loop in the current transcript."""
+        from liteharness_cli.goal import GoalCoordinator
+
+        coordinator = GoalCoordinator(self.coding)
+
+        async def worker_turn(instruction: str) -> None:
+            render.render_user_echo(instruction)
+            await self._run_turn(instruction, [])
+
+        def on_status(role: str, message: str) -> None:
+            render.render_notice(message, title=f"goal {role}")
+            # Worker turns manage the spinner via ``_run_turn`` begin/finish.
+            # The judge phase runs outside that path, so keep the spinner alive
+            # while verifying — otherwise the UI looks frozen.
+            if role == "judge":
+                self.start_working()
+
+        try:
+            result = await coordinator.run(
+                goal,
+                worker_turn=worker_turn,
+                on_status=on_status,
+            )
+        finally:
+            self.finish_turn()
+
+        verdict = result.verdict
+        lines = [
+            f"result: {'passed' if result.passed else 'stopped without passing'}",
+            f"attempts: {result.attempts}",
+        ]
+        if verdict.evidence:
+            lines.append("evidence:\n- " + "\n- ".join(verdict.evidence))
+        if verdict.unmet:
+            lines.append("unmet:\n- " + "\n- ".join(verdict.unmet))
+        render.render_panel_text("\n".join(lines), title="goal verdict")
+
+    async def _reload_session_view(self, events: list[dict]) -> None:
+        """Atomically rebuild all transcript-derived state for one session."""
+        self.clear_transcript()
+        self.assistant_history = [
+            str(event.get("content"))
+            for event in events
+            if event.get("kind") == "assistant" and event.get("content")
+        ]
+        self.render_header()
+        self._replay_events_to_transcript(events)
+        await self.refresh_context_snapshot()
 
     def _replay_events_to_transcript(self, events: list[dict]) -> None:
         """Render a saved event stream into the live transcript on resume.

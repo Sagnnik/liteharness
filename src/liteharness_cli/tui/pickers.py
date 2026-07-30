@@ -16,7 +16,12 @@ from liteharness_cli.tui.constants import (
 from liteharness_cli.tui.models import MenuItem
 from liteharness_cli.tui.utils import term_width
 from liteharness_cli.chat_model import active_model_name, active_reasoning_effort
-from liteharness_cli.config import AVAILABLE_MODELS, reasoning_efforts_for_model, settings
+from liteharness_cli.config import (
+    available_model_ids,
+    reasoning_efforts_for_model,
+    settings,
+)
+from liteharness_cli.model_catalog import model_record
 
 # Characters allowed inside an @mention token after the `@`.
 _PATH_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./_-")
@@ -32,7 +37,15 @@ class MenuMixin:
     def _on_buffer_changed(self, buffer: Buffer) -> None:
         if self._collapsing_paste:
             return
-        if self._ignore_buffer_menu or self._menu_kind in PICKER_MODES or self._form_kind or self._prompt_kind:
+        if self._ignore_buffer_menu or self._form_kind or self._prompt_kind:
+            return
+        if self._menu_kind == "config_models":
+            self._menu_index = 0
+            self._menu_scroll = 0
+            self._clamp_menu_index()
+            self.invalidate()
+            return
+        if self._menu_kind in PICKER_MODES:
             return
         if self._maybe_collapse_paste(buffer):
             self.invalidate()
@@ -134,7 +147,7 @@ class MenuMixin:
 
     def _current_model_slug(self) -> str:
         current = active_model_name()
-        for slug in AVAILABLE_MODELS:
+        for slug in available_model_ids():
             if slug == current or slug.endswith(f"/{current}"):
                 return slug
         return current
@@ -158,8 +171,47 @@ class MenuMixin:
 
     def _config_model_items(self) -> list[MenuItem]:
         current = self._current_model_slug()
-        items = [MenuItem(slug, slug, suffix="(current)" if slug == current else "") for slug in AVAILABLE_MODELS]
-        if current not in AVAILABLE_MODELS:
+        query = self._buffer.text.strip().lower() if self._menu_kind == "config_models" else ""
+        ranked: list[tuple[int, str]] = []
+        for slug in available_model_ids():
+            record = model_record(slug)
+            name = record.name if record is not None else slug
+            provider = slug.partition("/")[0]
+            haystacks = (slug.lower(), name.lower(), provider.lower())
+            if query:
+                if any(value == query for value in haystacks):
+                    rank = 0
+                elif any(value.startswith(query) for value in haystacks):
+                    rank = 1
+                elif any(query in value for value in haystacks):
+                    rank = 2
+                else:
+                    continue
+            else:
+                rank = -1 if slug == current else 3
+            ranked.append((rank, slug))
+        ranked.sort(key=lambda item: (item[0], item[1].lower()))
+        items: list[MenuItem] = []
+        for _, slug in ranked:
+            record = model_record(slug)
+            description = ""
+            if record is not None:
+                modality = "VLM" if record.supports_vision else "LLM"
+                context = (
+                    f"{record.context_length // 1000}k"
+                    if record.context_length
+                    else "? context"
+                )
+                description = f"{modality} · {context}"
+            items.append(
+                MenuItem(
+                    slug,
+                    slug,
+                    suffix="(current)" if slug == current else "",
+                    description=description,
+                )
+            )
+        if current not in {item.key for item in items} and not query:
             items.insert(0, MenuItem(current, current, suffix="(current)"))
         return items
 
@@ -270,6 +322,8 @@ class MenuMixin:
             "approval": lambda: self._prompt_items,
             "question": lambda: self._prompt_items,
             "rollback": lambda: self._prompt_items,
+            "threads": lambda: self._prompt_items,
+            "fork": lambda: self._prompt_items,
         }
         builder = builders.get(self._menu_kind or "")
         return builder() if builder else []
@@ -279,6 +333,8 @@ class MenuMixin:
             return 0
         max_rows = MENTION_MAX_ROWS if self._menu_kind == MENTION_MENU else MENU_MAX_ROWS
         rows = min(max_rows, max(1, len(self._visible_menu_items())))
+        if self._prompt_summary_lines:
+            rows += min(3, len(self._prompt_summary_lines)) + 1
         if self._prompt_detail_lines:
             rows += min(5, len(self._prompt_detail_lines))
         return rows
@@ -312,13 +368,15 @@ class MenuMixin:
 
     def _menu_header_fragments(self):
         headers = {
-            "config_models": "/config > models - Select the chat model:",
+            "config_models": "/config > models - Type to search, Enter to select:",
             "config_reasoning": "/config > reasoning - Select reasoning effort:",
             "config_action": "/config - What would you like to change:",
             MENTION_MENU: "files - @mention autocomplete",
             "approval": self._prompt_title,
             "question": self._prompt_title,
             "rollback": self._prompt_title,
+            "threads": self._prompt_title,
+            "fork": self._prompt_title,
         }
         title = headers.get(self._menu_kind or "")
         if not title:
@@ -366,6 +424,12 @@ class MenuMixin:
         self._clamp_menu_index()
         visible = items[self._menu_scroll : self._menu_scroll + MENU_MAX_ROWS]
         fragments: list[tuple[str, str]] = []
+        for line in self._prompt_summary_lines[:3]:
+            fragments.append(
+                ("class:chrome.approval.command", f"   {line[:term_width() - 3]}\n")
+            )
+        if self._prompt_summary_lines:
+            fragments.append(("class:chrome.menu.row", "\n"))
         for offset, item in enumerate(visible):
             index = self._menu_scroll + offset
             fragments.extend(self._menu_row_fragments(item, selected=index == self._menu_index and not self._prompt_note_active))
@@ -449,6 +513,6 @@ class MenuMixin:
             self._apply_approval_selection(item.key)
         elif self._menu_kind == "question":
             self._submit_question()
-        elif self._menu_kind == "rollback":
+        elif self._menu_kind in {"rollback", "threads", "fork"}:
             if self._prompt_future is not None and not self._prompt_future.done():
                 self._prompt_future.set_result(item.key)

@@ -13,6 +13,7 @@ class NessAgentOptions:
     compaction_output_reserve: int = 8_192
     compaction_input_reserve: int = 4_096
     enable_approval: bool = True
+    yolo_mode: bool = False
     auto_save_threads: bool = True
     reflection_token_ratio: float = 0.0
     session_end_reflection: bool = False

@@ -6,11 +6,14 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import tool
 
 from liteharness import (
+    ApprovalHandler,
     Hook,
+    MemoryBackend,
     MemoryConfig,
     MemoryStore,
     NessAgent,
@@ -92,8 +95,10 @@ def test_memory_include_resolves_from_project_root(tmp_path: Path):
 
 
 def test_memory_store_inject_at_spec(tmp_path: Path):
-    class Stub:
-        disabled = False
+    class Stub(MemoryBackend):
+        @property
+        def disabled(self) -> bool:
+            return False
 
         def load_project(self):
             return "FROM_STUB"
@@ -137,6 +142,52 @@ def test_memory_store_inject_at_spec(tmp_path: Path):
     assert agent.config.memory_store.load_project() == "FROM_STUB"
 
 
+def test_resolve_rejects_duck_typed_extension_points(tmp_path: Path):
+    options = NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness")
+
+    class NotAnOverlay:
+        def sections(self, state, ctx):
+            return {}
+
+    with pytest.raises(TypeError, match="overlay must be an instance of OverlayProvider"):
+        _agent(options=options, overlay=NotAnOverlay())
+
+    class NotAMemory:
+        disabled = False
+
+        def load_project(self):
+            return ""
+
+    with pytest.raises(TypeError, match="memory_store must be an instance of MemoryBackend"):
+        _agent(options=options, memory_store=NotAMemory())
+
+    class NotAnApproval:
+        async def __call__(self, tool: str, args: dict) -> str:
+            return "yes"
+
+    with pytest.raises(TypeError, match="approval_handler must be an instance of ApprovalHandler"):
+        _agent(options=options, approval_handler=NotAnApproval())
+
+    class YesApproval(ApprovalHandler):
+        async def __call__(self, tool: str, args: dict) -> str:
+            return "yes"
+
+    agent = _agent(options=options, approval_handler=YesApproval())
+    assert isinstance(agent.config.approval_handler, ApprovalHandler)
+
+
+def test_build_coding_agent_accepts_render_approval_handler(tmp_path: Path):
+    from liteharness_cli.factory import build_coding_agent, prepare_paths
+    from liteharness_cli.tui import render
+
+    agent = build_coding_agent(
+        thread_id="t",
+        approval_handler=render.render_approval_handler,
+        paths=prepare_paths(project_root=tmp_path),
+    )
+    assert isinstance(agent.config.approval_handler, ApprovalHandler)
+
+
 def test_setup_ness_structure_creates_layout(tmp_path: Path):
     ness = tmp_path / ".ness"
     created = setup_ness_structure(ness)
@@ -145,9 +196,44 @@ def test_setup_ness_structure_creates_layout(tmp_path: Path):
     assert (ness / "runtime" / "shells").is_dir()
     assert (ness / "hooks.json").is_file()
     assert (ness / "permissions.json").is_file()
+    explore = (ness / "agents" / "explore.md").read_text(encoding="utf-8")
+    exec_body = (ness / "agents" / "exec.md").read_text(encoding="utf-8")
+    assert explore.startswith("---")
+    assert "findings report" in explore
+    assert exec_body.startswith("---")
+    assert "execution subagent" in exec_body
     assert not (ness / "plans").exists()
     assert not (ness / "sessions").exists()
     assert any("hooks.json" in c for c in created)
+    assert any(c.endswith("explore.md") for c in created)
+    assert any(c.endswith("exec.md") for c in created)
+    ness_md = ness / "NESS.md"
+    assert ness_md.is_file()
+    assert ness_md.read_text(encoding="utf-8") == ""
+    assert any(c.endswith("NESS.md") for c in created)
+
+
+def test_setup_ness_structure_does_not_overwrite_ness_md(tmp_path: Path):
+    ness = tmp_path / ".ness"
+    ness.mkdir()
+    ness_md = ness / "NESS.md"
+    ness_md.write_text("# keep me\n", encoding="utf-8")
+    created = setup_ness_structure(ness)
+    assert ness_md.read_text(encoding="utf-8") == "# keep me\n"
+    assert not any(c.endswith("NESS.md") for c in created)
+
+
+def test_setup_ness_structure_does_not_overwrite_agent_profiles(tmp_path: Path):
+    ness = tmp_path / ".ness"
+    agents = ness / "agents"
+    agents.mkdir(parents=True)
+    custom = agents / "explore.md"
+    custom.write_text("---\ntools: [read]\n---\ncustom explore\n", encoding="utf-8")
+    created = setup_ness_structure(ness)
+    assert custom.read_text(encoding="utf-8") == "---\ntools: [read]\n---\ncustom explore\n"
+    assert not any(c.endswith("explore.md") for c in created)
+    assert (agents / "exec.md").is_file()
+    assert any(c.endswith("exec.md") for c in created)
 
 
 def test_session_raw_roundtrip(tmp_path: Path):

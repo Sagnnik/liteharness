@@ -86,6 +86,19 @@ def test_plan_mode_label():
     assert "auto-approval" not in text
 
 
+def test_yolo_mode_label():
+    lines = header_lines(
+        **_common_kwargs(
+            mode="act",
+            approval=False,
+            yolo=True,
+            width=110,
+            show_logo=True,
+        )
+    )
+    assert "Act (yolo)" in _all_text(lines)
+
+
 def test_title_uses_gradient_fragments():
     lines = header_lines(**_common_kwargs(width=100, show_logo=False))
     title_line = lines[0]

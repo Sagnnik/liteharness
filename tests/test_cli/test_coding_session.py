@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -118,6 +118,55 @@ def test_resume_bootstraps_via_session_bootstrap(tmp_path: Path):
         getattr(m, "content", "") == "first"
         for m in coding.session._pending_bootstrap
     )
+
+
+def test_resume_replays_each_threads_cost_only_once(coding):
+    for thread_id in ("t-cost-a", "t-cost-b"):
+        coding.thread_store.append_event(
+            thread_id, {"kind": "user", "content": thread_id}
+        )
+        coding.thread_store.append_event(
+            thread_id,
+            {
+                "kind": "usage",
+                "model": "test",
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "cost_usd": 0.1,
+            },
+        )
+
+    with patch(
+        "liteharness_cli.coding_session.restore_cost_from_events"
+    ) as restore:
+        _run(coding.resume("t-cost-a"))
+        _run(coding.resume("t-cost-b"))
+        _run(coding.resume("t-cost-a"))
+        _run(coding.resume("t-cost-b"))
+
+    assert [call.args[0][0]["content"] for call in restore.call_args_list] == [
+        "t-cost-a",
+        "t-cost-b",
+    ]
+
+
+def test_reload_model_refreshes_vision_capability(coding):
+    model = coding.cfg.model
+    with (
+        patch("liteharness_cli.chat_model.create_model", return_value=model),
+        patch("liteharness_cli.chat_model.create_compaction_model", return_value=model),
+        patch("liteharness_cli.chat_model.create_reflection_model", return_value=model),
+        patch("liteharness_cli.config.context_window_for", return_value=128_000),
+        patch(
+            "liteharness_cli.config.Settings.supports_vision",
+            new_callable=PropertyMock,
+            return_value=True,
+        ),
+    ):
+        coding.reload_model()
+
+    assert coding._vision is True
+    assert coding.session._vision is True
 
 
 def test_rollback_truncates_and_restores_files(coding):

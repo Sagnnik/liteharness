@@ -417,8 +417,10 @@ def _hints_line(*, width: int) -> TranscriptLine:
     return TranscriptLine(style=dim, text=text, fragments=fragments)
 
 
-def _mode_label(mode: str, approval: bool) -> str:
+def _mode_label(mode: str, approval: bool, yolo: bool = False) -> str:
     mode = (mode or "").lower()
+    if mode == "act" and yolo:
+        return "Act (yolo)"
     if mode == "act" and approval:
         return "Act (auto-approval)"
     return mode.capitalize() or "Act"
@@ -437,6 +439,7 @@ def header_lines(
     mode: str,
     model: str,
     approval: bool,
+    yolo: bool = False,
     project: str,
     addons_summary: str,
     version: str,
@@ -470,7 +473,7 @@ def header_lines(
                     ),
                     (
                         "Mode    :",
-                        _mode_label(mode, approval),
+                        _mode_label(mode, approval, yolo),
                         "Add-ons :",
                         _truncate(addons_summary, max(20, body_w // 2 - 18)),
                     ),
@@ -502,7 +505,7 @@ def header_lines(
                 ),
                 (
                     "Mode    :",
-                    _mode_label(mode, approval),
+                    _mode_label(mode, approval, yolo),
                     "Add-ons :",
                     _truncate(addons_summary, max(20, body_w // 2 - 18)),
                 ),

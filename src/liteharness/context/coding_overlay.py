@@ -1,13 +1,3 @@
-"""Default L3 overlay provider for coding agents.
-
-The SDK ships with a fully wired :class:`CodingOverlay` so that a bare
-``NessAgent(model=..., prompt=...)`` (omitting ``overlay=``) gets a working
-plan/act, git snapshot, todos, session memory, compaction status, and
-loaded-skills L3 surface out of the box. Apps that need a different L3
-contract pass their own :class:`~liteharness.context.overlay.OverlayProvider`
-implementation; apps that want no L3 at all pass :class:`NoOverlay`.
-"""
-
 from __future__ import annotations
 
 from liteharness.context.overlay import OverlayContext, OverlayProvider
