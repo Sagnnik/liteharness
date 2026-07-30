@@ -22,6 +22,7 @@ from liteharness.mcp import MCPManager
 from liteharness.session_context import SessionContext, set_session_context
 from liteharness.tools import is_git_repo
 
+from liteharness_cli.chat_model import provider_key_missing
 from liteharness_cli.config import settings
 from liteharness_cli.factory import build_coding_session, prepare_paths
 
@@ -108,6 +109,14 @@ async def run_headless(
     """
     git_available = is_git_repo()
     paths = prepare_paths()
+
+    if provider_key_missing():
+        print(
+            "error: no provider API key configured — set OPENAI_API_KEY or add it "
+            "via /config (Provider section); stored globally in secrets.json",
+            file=sys.stderr,
+        )
+        return 1
 
     mcp = MCPManager(project_root=paths.project_root)
     await mcp.start()

@@ -229,8 +229,22 @@ def _patch_headless_infra(monkeypatch, tmp_path: Path, coding: CodingSession) ->
     )
     monkeypatch.setattr(headless, "MCPManager", lambda **kw: fake_mcp)
     monkeypatch.setattr(headless, "build_coding_session", lambda **kw: coding)
+    monkeypatch.setattr(headless, "provider_key_missing", lambda: False)
     monkeypatch.setattr(headless.settings, "auto_save_threads", True)
     return fake_mcp
+
+
+def test_run_headless_missing_api_key(tmp_path: Path, monkeypatch, capsys):
+    coding = _make_coding(tmp_path, _BindableFakeModel([AIMessage(content="x")]))
+    _patch_headless_infra(monkeypatch, tmp_path, coding)
+    monkeypatch.setattr(headless, "provider_key_missing", lambda: True)
+
+    code = _run(headless.run_headless("hello"))
+
+    assert code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no provider API key configured" in captured.err
 
 
 def test_run_headless_end_to_end(tmp_path: Path, monkeypatch, capsys):

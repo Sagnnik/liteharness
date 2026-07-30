@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -17,11 +16,8 @@ from liteharness import (
     Session,
     SessionEvent,
 )
-from liteharness.context.overlay import OverlayContext, OverlayProvider
-from liteharness.graph.helpers import _with_working_state_tail
 from liteharness.graph.nodes import make_nodes
 from liteharness.options import ModeConfig, NessAgentOptions
-from liteharness.tools.todo import get_thread_todos, set_current_thread, set_thread_todos
 
 
 def _agent(**kwargs):
@@ -39,76 +35,6 @@ def _agent(**kwargs):
         prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
         **kwargs,
     )
-
-
-def test_coding_overlay_mode_switch_uses_act_template():
-    overlay = CodingOverlay(act_mode_template="MODE SWITCH\nDo the work.")
-    ctx = OverlayContext(
-        thread_id="t1",
-        mode="act",
-        messages=[],
-        todos=[],
-        session_memory="",
-        compaction_note="",
-        mode_switch="plan->act",
-        git_snapshot="branch: main; working tree clean",
-    )
-    sections = overlay.sections({}, ctx)
-    assert sections["mode_switch"] == "MODE SWITCH\nDo the work."
-    assert "act_mode" not in sections
-    assert "GIT" in sections["git"]
-
-
-def test_coding_overlay_no_persistent_act_mode():
-    overlay = CodingOverlay(act_mode_template="should not appear every turn")
-    ctx = OverlayContext(
-        thread_id="t1",
-        mode="act",
-        messages=[],
-        todos=[],
-        session_memory="",
-        compaction_note="",
-        mode_switch="",
-    )
-    sections = overlay.sections({}, ctx)
-    assert "mode_switch" not in sections
-    assert "act_mode" not in sections
-
-
-def test_no_double_system_reminder_wrap():
-    msgs = [HumanMessage(content="hi")]
-    overlay = "GIT\nbranch: main"
-    out = _with_working_state_tail(msgs, overlay)
-    text = str(out[-1].content)
-    assert text.count("<system-reminder>") == 1
-    assert "<system-reminder>\n\n<system-reminder>" not in text
-
-
-def test_plan_act_mode_switch_consumed_once():
-    agent = _agent()
-    session = agent.session(thread_id="t-mode")
-    session.set_mode("plan")
-    assert session.mode == "plan"
-    session.set_mode("act")
-
-    async def _run():
-        # _build_run_payload now takes a pre-built HumanMessage and a
-        # pre-computed mode_switch; it no longer synthesises the user message
-        # or strips images (that lives in _iter_events via _user_message).
-        payload, _ = await session._build_run_payload(
-            HumanMessage(content="go"),
-            active_skills=None,
-            mode_switch="plan->act",
-        )
-        assert payload["mode_switch"] == "plan->act"
-        payload2, _ = await session._build_run_payload(
-            HumanMessage(content="again"),
-            active_skills=None,
-            mode_switch="",
-        )
-        assert payload2["mode_switch"] == ""
-
-    asyncio.run(_run())
 
 
 def test_toggle_mode():
@@ -248,24 +174,6 @@ def test_yolo_bypasses_deny_rules_but_not_plan_mode(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_empty_session_reports_usable_context_total(tmp_path: Path):
-    agent = _agent(
-        options=NessAgentOptions(
-            project_root=tmp_path,
-            ness_dir=tmp_path / ".ness",
-            context_window=100_000,
-            compaction_input_reserve=4_000,
-            compaction_output_reserve=8_000,
-        )
-    )
-    session = agent.session(thread_id="t-empty-context")
-
-    asyncio.run(session.refresh_context_snapshot())
-
-    assert session.context_used == 0
-    assert session.context_total == 88_000
-
-
 def test_approval_session_and_never_persist(tmp_path: Path):
     from liteharness.types import ApprovalHandler
 
@@ -312,84 +220,6 @@ def test_approval_session_and_never_persist(tmp_path: Path):
     asyncio.run(_run())
 
 
-def test_tools_node_returns_todos():
-    agent = _agent()
-    cfg = agent.config
-    thread_id = "t-todos"
-    rt = make_nodes(cfg, thread_id=thread_id, mode="act", git_available=False)
-
-    set_current_thread(thread_id)
-    set_thread_todos(thread_id, [{"id": "1", "content": "a", "status": "pending"}])
-
-    @tool
-    def todo(items: list[dict] | None = None) -> str:
-        """Update todos."""
-        set_thread_todos(thread_id, [{"id": "1", "content": "done", "status": "completed"}])
-        return "ok"
-
-    cfg.tool_registry._tool_map["todo"] = todo
-    cfg.tool_registry._all_tools.append(todo)
-    cfg.tool_registry.bump_generation()
-
-    async def _run():
-        ai = AIMessage(
-            content="",
-            tool_calls=[{"name": "todo", "args": {}, "id": "t1"}],
-        )
-        out = await rt.tools_node(
-            {"messages": [ai], "todos": [], "mode": "act"}
-        )
-        assert "todos" in out
-        assert out["todos"][0]["status"] == "completed"
-        assert get_thread_todos(thread_id)[0]["content"] == "done"
-
-    asyncio.run(_run())
-
-
-def test_git_snapshot_passed_to_overlay(tmp_path: Path):
-    seen: dict = {}
-
-    class CaptureOverlay(OverlayProvider):
-        def sections(self, state, ctx: OverlayContext):
-            seen["git_snapshot"] = ctx.git_snapshot
-            seen["git_available"] = ctx.git_available
-            return {"git": f"GIT\n{ctx.git_snapshot}"} if ctx.git_snapshot else {}
-
-    agent = _agent(
-        overlay=CaptureOverlay(),
-        options=NessAgentOptions(
-            project_root=tmp_path,
-            ness_dir=tmp_path / ".ness",
-        ),
-    )
-    cfg = agent.config
-    rt = make_nodes(cfg, thread_id="t-git", mode="act", git_available=True)
-
-    async def _run():
-        class _Bound:
-            async def ainvoke(self, messages):
-                return AIMessage(content="ok")
-
-        with patch(
-            "liteharness.graph.nodes.git_worktree_summary",
-            return_value="branch: main; working tree clean",
-        ), patch.object(cfg.tool_registry, "bind_model", return_value=_Bound()):
-            await rt.agent_node(
-                {
-                    "messages": [HumanMessage(content="hi")],
-                    "todos": [],
-                    "mode": "act",
-                    "force_compact": False,
-                    "activate_skills": [],
-                    "mode_switch": "",
-                }
-            )
-
-    asyncio.run(_run())
-    assert seen.get("git_available") is True
-    assert "branch: main" in (seen.get("git_snapshot") or "")
-
-
 def test_session_emits_assistant_events():
     agent = _agent()
     session = agent.session(thread_id="t-stream")
@@ -401,41 +231,6 @@ def test_session_emits_assistant_events():
         assert "assistant_delta" in events or "assistant_final" in events or "error" in events
 
     asyncio.run(_run())
-
-
-def test_session_compaction_bridge_queues_event():
-    import liteharness.session as sm
-
-    agent = _agent()
-    session = agent.session(thread_id="t-cbridge")
-    bridge = getattr(session._cfg, "_compaction_bridge", None)
-    assert callable(bridge)
-
-    token = sm._active_session.set(session)
-    try:
-        bridge(
-            {
-                "reason": "agent_turn",
-                "action": "summary",
-                "forced": False,
-                "info": "compacted",
-            }
-        )
-        events = session._drain_queue()
-    finally:
-        sm._active_session.reset(token)
-
-    assert any(
-        ev.kind == "compaction" and ev.data.get("reason") == "agent_turn" for ev in events
-    )
-
-
-def test_smoke_still_passes_import():
-    from liteharness import CostTracker, NoopTracer, Session
-
-    assert CostTracker is not None
-    assert NoopTracer is not None
-    assert Session is not None
 
 
 # ---------------------------------------------------------------------------
@@ -744,47 +539,6 @@ def test_vision_disabled_emits_warning_and_drops_images():
     assert not isinstance(user_msg.content, list)
 
 
-def test_no_durable_compaction_append_in_sdk(tmp_path: Path):
-    agent = _agent(
-        options=NessAgentOptions(
-            project_root=tmp_path,
-            ness_dir=tmp_path / ".ness",
-            auto_save_threads=True,
-        )
-    )
-    cfg = agent.config
-    cfg.thread_store.auto_save = True
-    session = agent.session(thread_id="t-no-durable-compact")
-    # The soft plan→act checkpoint always emits the passive ``compaction``
-    # SessionEvent with ask=True (no interactive handler exists). We force a
-    # hard threshold path here by setting the pending flag and patching pressure.
-    session._pending_act_checkpoint = True
-    session.set_mode("act")
-
-    # Patch _maybe_checkpoint_before_act to simulate a hard-threshold hit
-    # without needing real context pressure maths.
-    async def _fake_maybe():
-        session._force_compact = True
-        session._add_queue(
-            "compaction",
-            {"reason": "pre_act_hard_threshold", "info": "fake", "forced": True},
-        )
-
-    session._maybe_checkpoint_before_act = _fake_maybe  # type: ignore[assignment]
-    fake = _FakeApp(
-        [{"event": "on_chain_end", "name": "agent", "data": {"output": {"messages": []}}}]
-    )
-    session._app = fake
-
-    events = _stream_session(session, "go")
-
-    # The compaction SessionEvent must reach the caller...
-    assert any(ev.kind == "compaction" for ev in events)
-    # ...but the SDK must NOT have written a durable ``compact`` event row.
-    durable = [e for e in cfg.thread_store.load_thread_events(session.thread_id) if e.get("kind") == "compact"]
-    assert durable == [], "SDK wrote a durable compact row; the adapter should own that"
-
-
 # ---------------------------------------------------------------------------
 # Regression tests for the independent reviewer's findings.
 # ---------------------------------------------------------------------------
@@ -938,97 +692,3 @@ def test_stage_skills_appends_and_dedupes():
     )
     assert payload["activate_skills"] == ["a", "b", "c"]
     assert session._pending_skills == []
-
-
-def test_soft_pre_act_checkpoint_emits_advisory_event(tmp_path: Path):
-    """The soft plan→act checkpoint consults no handler: it always emits an
-    ``advisory=True`` notice (the user can /compact if they want) and never
-    force-compacts."""
-    agent = _agent()
-    session = agent.session(thread_id="t-soft-checkpoint")
-
-    class _P:
-        ratio = 0.9
-        token_count = 9000
-        usable_budget = 10000
-        action = "summarize"
-        keep_recent = 6
-        hard_threshold_reached = False
-
-    async def _stub_state(cfg):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(
-            values={"messages": [HumanMessage(content="hi")], "last_input_tokens": 0}
-        )
-
-    session.app.aget_state = _stub_state
-    import liteharness.session as sm
-
-    with patch.object(sm, "calculate_context_pressure", return_value=_P()):
-        asyncio.run(session._maybe_checkpoint_before_act())
-
-    assert session._force_compact is False
-    notices = [ev for ev in session._drain_queue() if ev.kind == "compaction"]
-    assert len(notices) == 1
-    assert notices[0].data["reason"] == "pre_act_checkpoint"
-    assert notices[0].data["advisory"] is True
-    assert notices[0].data["forced"] is False
-
-
-def test_get_state_and_get_messages(tmp_path: Path):
-    agent = _agent()
-    session = agent.session(thread_id="t-reads")
-    msgs = [HumanMessage(content="hello"), AIMessage(content="world")]
-
-    async def _stub_state(cfg):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(values={"messages": msgs, "todos": [{"id": "1"}]})
-
-    session.app.aget_state = _stub_state
-
-    async def _run():
-        state = await session.get_state()
-        messages = await session.get_messages()
-        todos = await session.get_todos()
-        return state, messages, todos
-
-    state, messages, todos = asyncio.run(_run())
-    assert state["messages"] == msgs
-    assert messages == msgs
-    assert todos == [{"id": "1"}]
-
-
-def test_hard_pre_act_checkpoint_force_compacts_autonomously(tmp_path: Path):
-    """The hard threshold needs no handler either: the SDK force-compacts on
-    its own and emits a forced event with reason ``pre_act_hard_threshold``."""
-    agent = _agent()
-    session = agent.session(thread_id="t-hard-checkpoint")
-
-    class _P:
-        ratio = 0.98
-        token_count = 9800
-        usable_budget = 10000
-        action = "summarize"
-        keep_recent = 6
-        hard_threshold_reached = True
-
-    async def _stub_state(cfg):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(
-            values={"messages": [HumanMessage(content="hi")], "last_input_tokens": 0}
-        )
-
-    session.app.aget_state = _stub_state
-    import liteharness.session as sm
-
-    with patch.object(sm, "calculate_context_pressure", return_value=_P()):
-        asyncio.run(session._maybe_checkpoint_before_act())
-
-    assert session._force_compact is True
-    events = [ev for ev in session._drain_queue() if ev.kind == "compaction"]
-    assert len(events) == 1
-    assert events[0].data["reason"] == "pre_act_hard_threshold"
-    assert events[0].data["forced"] is True

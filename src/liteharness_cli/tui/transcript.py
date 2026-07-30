@@ -687,6 +687,26 @@ class TranscriptMixin:
         body_lines = body.splitlines() if body.strip() else ["(no output)"]
         self._append_transcript(*_shell_output_lines(title, body_lines))
 
+    def append_subagent_output(self, content: str) -> None:
+        from liteharness_cli.tui.tool_display import format_subagent_output
+
+        header, body = format_subagent_output(content)
+        body_lines = body.splitlines() if body.strip() else ["(no output)"]
+        lines = _shell_output_lines(header, body_lines)
+        # Prefer the dedicated subagent summary style for body rows.
+        styled = [lines[0]]
+        for line in lines[1:-1]:
+            styled.append(
+                TranscriptLine(
+                    "class:transcript.subagent.summary",
+                    line.text,
+                    fragments=[("class:transcript.subagent.summary", line.text)],
+                )
+            )
+        if lines:
+            styled.append(lines[-1])
+        self._append_transcript(*styled)
+
     # Streaming adapters ---------------------------------------------------
     def start_assistant_stream(self) -> TuiAssistantStream:
         return TuiAssistantStream(self)

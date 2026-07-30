@@ -87,6 +87,11 @@ class ChromeMixin:
             width=lambda: D.exact(self._form_field_outer_width()) if self._form_visible() else D.exact(0),
             style="class:screen",
         )
+        self._form_example_window = Window(
+            content=FormattedTextControl(self._form_example_fragments),
+            height=lambda: D.exact(1) if (self._form_visible() and self._form_example) else D.exact(0),
+            style="class:screen",
+        )
         self._form_row = VSplit(
             [self._form_pad_window, self._form_label_window, self._form_field_window],
             height=lambda: D.exact(1) if self._form_visible() else D.exact(0),
@@ -113,6 +118,7 @@ class ChromeMixin:
                 self._input_window,
                 Window(char="─", height=D.exact(1), style="class:chrome.rule"),
                 self._queue_window,
+                self._form_example_window,
                 self._form_row,
                 self._form_hint_window,
                 self._menu_header_window,
@@ -269,6 +275,11 @@ class ChromeMixin:
             return []
         hint = "Enter to submit - Tab returns to options" if self._prompt_kind == "question" else "Enter to save - Esc to cancel"
         return [("class:chrome.form.hint", (" " * self._form_hint_left_pad()) + hint)]
+
+    def _form_example_fragments(self):
+        if not self._form_visible() or not self._form_example:
+            return []
+        return [("class:chrome.form.hint", (" " * self._form_hint_left_pad()) + self._form_example)]
 
     def _stats_line(self):
         width = term_width()

@@ -28,6 +28,8 @@ class NessPaths:
     config_dir: Path
     cache_dir: Path
     user_file: Path
+    configs_file: Path
+    secrets_file: Path
     plans_dir: Path
     sessions_dir: Path
     shells_dir: Path
@@ -117,6 +119,8 @@ def resolve_paths(
         config_dir=cfg,
         cache_dir=project_cache,
         user_file=cfg / "USER.md",
+        configs_file=cfg / "configs.json",
+        secrets_file=cfg / "secrets.json",
         plans_dir=plans_root / slug,
         sessions_dir=ness / "runtime" / "sessions",
         shells_dir=ness / "runtime" / "shells",
@@ -128,9 +132,12 @@ def resolve_paths(
 
 
 def ensure_global_config(paths: NessPaths) -> list[str]:
-    """Create global config dir, plans slug dir + marker, and empty USER.md if missing.
+    """Create global config dir, plans slug dir + marker, empty USER.md and
+    ``secrets.json`` if missing.
 
-    Returns a list of paths that were created.
+    ``configs.json`` is created lazily on first write (see
+    :mod:`liteharness_cli.config_store`). Returns a list of paths that were
+    created.
     """
     created: list[str] = []
     if not paths.config_dir.exists():
@@ -141,6 +148,12 @@ def ensure_global_config(paths: NessPaths) -> list[str]:
         paths.user_file.parent.mkdir(parents=True, exist_ok=True)
         paths.user_file.write_text("", encoding="utf-8")
         created.append(str(paths.user_file))
+
+    from liteharness_cli.config_store import ensure_secrets_file
+
+    secrets_created = ensure_secrets_file(paths.config_dir)
+    if secrets_created is not None:
+        created.append(str(secrets_created))
 
     if not paths.plans_dir.exists():
         paths.plans_dir.mkdir(parents=True, exist_ok=True)

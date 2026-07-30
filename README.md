@@ -14,7 +14,9 @@ export OPENAI_API_KEY=...
 uv run ness
 ```
 
-Useful environment variables:
+Or skip the env var and set the key in-session: `uv run ness`, then `/config` > Provider > Provider API key. Settings are stored globally in `configs.json` (non-secrets) and `secrets.json` under the global config root — see Config layout. Process env vars still override the JSON values for a run; on first start, known keys from an existing project `.env` are imported into the JSON files once (the `.env` is left untouched).
+
+Useful settings (env var shown; all except `NESS_DIR` are also editable via `/config`):
 
 - `MODEL_NAME`: model passed to `ChatOpenRouter` (`deepseek-v4-flash` by default).
 - `REFLECTION_MODEL_NAME`: model for background session-memory reflection (defaults to `MODEL_NAME`).
@@ -34,11 +36,11 @@ Useful environment variables:
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
-- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `plans/`).
+- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `configs.json`, `secrets.json`, `plans/`).
 - `LITEHARNESS_CACHE_DIR`: override cache root (global OpenRouter catalog plus per-project `cli_history`).
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
-CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`, `--print` / `-p`, and `--yolo`. Yolo is session-only and bypasses approval prompts and persisted permission denials in act mode; hook vetoes and plan-mode read-only rules still apply. Use `/config` in-session to switch model, reasoning effort, keys, approval, autosave, and session-end reflection (persisted to `.env`).
+CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`, `--print` / `-p`, and `--yolo`. Yolo is session-only and bypasses approval prompts and persisted permission denials in act mode; hook vetoes and plan-mode read-only rules still apply. Use `/config` in-session to edit every adapter setting: provider keys and endpoints, model and reasoning, approval/autosave/reflection behavior, compaction budgets, and more (persisted to global `configs.json` / `secrets.json`).
 
 ### Headless one-shot queries (`-p` / `--print`)
 
@@ -66,7 +68,7 @@ uv run ness
 uv run ness --worktree auth
 ```
 
-Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, `.ness/runtime/sessions`, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. `.env` is copied from the repo root on first create. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
+Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, `.ness/runtime/sessions`, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. Config and secrets are global (see Config layout), so worktrees need no per-checkout setup. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
 
 ## Architecture
 
@@ -152,6 +154,8 @@ Ness splits **global** user data, **project** config, and **runtime** cache:
 # macOS: ~/Library/Application Support/liteharness/
 # Windows: %APPDATA%\liteharness\
 USER.md                  Cross-repo user preferences
+configs.json             Non-secret adapter settings (only values you changed)
+secrets.json             API keys and other secrets (mode 0600)
 plans/<project-slug>/    Saved plan-mode output for this project
 
 # Per-project cache (platformdirs user_cache_dir("liteharness")/<hash>/)
@@ -175,6 +179,9 @@ cli_history              Prompt history for this project root
 ```
 
 Override roots with `LITEHARNESS_CONFIG_DIR`, `LITEHARNESS_CACHE_DIR`, and `NESS_DIR`.
+
+Settings resolve in this order (highest wins): CLI flags > process env vars > `secrets.json` / `configs.json` > built-in defaults. `configs.json` is written lazily — it only contains values you changed via `/config` (defaults stay in code and evolve with upgrades).
+
 ## Skills
 
 Skills live under `.ness/skills/<name>/SKILL.md` (wired via `skills_dir` on the coding agent):
@@ -305,7 +312,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **General**
 
 - `/help`: show the command reference.
-- `/config`: switch model/reasoning, set API keys, toggle approval/autosave/session-end reflection (persisted to `.env`).
+- `/config`: edit provider keys/endpoints, model/reasoning, behavior toggles, compaction budgets, and advanced options (persisted to global `configs.json` / `secrets.json`).
 - `/exit` or `/quit`: end the session.
 
 **Session**

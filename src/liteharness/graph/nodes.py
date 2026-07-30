@@ -4,6 +4,7 @@ import asyncio, json, time, warnings
 from pathlib import Path
 from typing import Any, Literal, Mapping
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, BaseMessage
+from langgraph.graph import END
 from liteharness.graph.state import AgentState
 from liteharness.graph.helpers import (
     _effective_conversation,
@@ -21,12 +22,15 @@ from liteharness.compaction import (
     resolve_token_count,
     resolve_usable_context_budget,
 )
+from liteharness.context.overlay import OverlayContext, render_overlay_delta
+from liteharness.tools.ask import set_question_runtime
+from liteharness.tools.subagents import set_subagent_runtime
 from liteharness.reflection import (
     is_reflection_running,
     consume_reflection_message_index,
     run_reflection_gate,
 )
-from liteharness.tools.todo import set_current_thread, set_thread_todos
+from liteharness.tools.todo import get_thread_todos, render_todos, set_current_thread, set_thread_todos
 from liteharness.workspace.git_context import git_worktree_summary
 from liteharness.tracing.semconv import (
     CACHE_HIT_RATE,
@@ -58,7 +62,6 @@ from liteharness.tracing.messages import (
 )
 from liteharness.tracing import TokenUsage
 from liteharness.types import UsageEvent
-from liteharness.tools.todo import render_todos
 
 class NodesRuntime:
     """Mutable container that carry the states between the nodes.
@@ -163,7 +166,6 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
 
         # L3 Overlay
         if overlay_provider is not None:
-            from liteharness.context.overlay import OverlayContext, render_overlay_delta
             overlay_context = OverlayContext(
                 thread_id=thread_id,
                 mode=(state.get("mode") or rt.resolved_mode),
@@ -358,10 +360,6 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
 
     async def tools_node(state: AgentState) -> AgentState:
         """The tools node that handles the tool calls and tool results logic."""
-        from liteharness.tools.ask import set_question_runtime
-        from liteharness.tools.subagents import set_subagent_runtime
-        from liteharness.tools.todo import set_current_thread, set_thread_todos, get_thread_todos
-
         # get the last AIMessage and extract the tool calls
         calls = extract_tool_calls(state["messages"][-1])
         if not calls:
@@ -505,8 +503,6 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         return {"messages": results, "todos": get_thread_todos(thread_id), "loaded_skills": existing}
 
     async def route_after_agent(state) -> Literal["approval_gate", "tools", "__end__"]:
-        from langgraph.graph import END
-
         calls = extract_tool_calls(state["messages"][-1])
         
         if not calls: 

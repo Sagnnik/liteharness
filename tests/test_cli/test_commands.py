@@ -85,18 +85,23 @@ def test_config_session_toggles_update_active_runtime(make_app):
     assert app.coding.thread_store.auto_save is False
 
 
-def test_config_action_can_update_persisted_setting(make_app):
+def test_config_action_can_update_persisted_setting(make_app, tmp_path, monkeypatch):
+    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
+    from liteharness_cli.config_store import load_configs
+
     app = make_app()
     previous = settings.enable_approval
     settings.enable_approval = True
     try:
-        app._open_picker("config_action", "/config", index=0)
-        items = app._config_action_items()
-        app._menu_index = next(i for i, item in enumerate(items) if item.key == "approval")
-        with patch("liteharness_cli.tui.config_flow.write_env"):
-            app._apply_picker_selection()
+        app._config_section = "behavior"
+        app._open_picker("config_section", "/config", index=0)
+        items = app._visible_menu_items()
+        app._menu_index = next(i for i, item in enumerate(items) if item.key == "enable_approval")
+        app._apply_picker_selection()
         assert settings.enable_approval is False
-        assert app._menu_kind is None
+        # Bool toggles stay in the section menu and persist to configs.json.
+        assert app._menu_kind == "config_section"
+        assert load_configs()["enable_approval"] is False
     finally:
         settings.enable_approval = previous
 

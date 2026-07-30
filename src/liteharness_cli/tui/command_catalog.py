@@ -20,7 +20,7 @@ class CommandSpec:
 # Order matters for /help grouping and slash menu display.
 COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("help", "Show the command reference", "General", "/help"),
-    CommandSpec("config", "Set API keys, switch model, toggle options", "General", "/config"),
+    CommandSpec("config", "Edit provider, model, and behavior settings", "General", "/config"),
     CommandSpec("status", "Show session status and cache stats", "Session", "/status"),
     CommandSpec("skill", "List or load skill instructions", "Context", "/skill [<name>]"),
     CommandSpec("memory", "Read, append, or draft project memory", "Context", "/memory [add <note>|create [force]]"),

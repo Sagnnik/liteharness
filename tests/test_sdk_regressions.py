@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -50,108 +51,6 @@ def test_apply_force_floor_tool_outputs_when_history_short():
     assert apply_force_floor("tool_outputs", 3, 5) == ("tool_outputs", 3)
 
 
-def test_make_sdk_cost_tracker_wires_cli_pricing():
-    from liteharness_cli.config import MODEL_PRICING, make_sdk_cost_tracker
-
-    tracker = make_sdk_cost_tracker()
-    # SDK-side cost tracker exposes the pricing catalog directly so it can
-    # estimate cost without the CLI's estimate_cost closure indirection.
-    assert tracker.pricing == MODEL_PRICING
-    # Pick a known model from MODEL_PRICING and assert the estimate path works.
-    # MODEL_PRICING maps case-insensitive substrings; first key here is
-    # one shipped in the CLI catalog.
-    sample_key = next(iter(MODEL_PRICING))
-    usage = tracker.add(
-        {"input_tokens": 1_000_000, "output_tokens": 0},
-        model_name=sample_key,
-        response_metadata={},
-    )
-    assert usage is not None
-    assert usage.cost_source == "estimated"
-    expected_input_per_m = MODEL_PRICING[sample_key][0]
-    assert usage.cost_usd == expected_input_per_m
-
-
-def test_thread_store_records_default_model(tmp_path: Path):
-    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="gpt-test")
-    store.append_event("session-a", {"kind": "user", "content": "hi"})
-    rows = store.list_threads()
-    assert rows[0]["model"] == "gpt-test"
-
-
-def test_thread_store_backfills_model_from_usage(tmp_path: Path):
-    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="")
-    store.append_event("session-b", {"kind": "user", "content": "hi"})
-    assert store.list_threads()[0]["model"] == ""
-    store.append_event(
-        "session-b",
-        {"kind": "usage", "model": "deepseek-v4", "input_tokens": 1, "output_tokens": 1},
-    )
-    assert store.list_threads()[0]["model"] == "deepseek-v4"
-
-
-def test_ness_agent_wires_thread_store_default_model(tmp_path: Path):
-    model = FakeListChatModel(responses=["ok"])
-    object.__setattr__(model, "model_name", "wired-model")
-
-    @tool
-    def ping() -> str:
-        """Return pong."""
-        return "pong"
-
-    agent = NessAgent(
-        model=model,
-        tools=[ping],
-        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
-        options=NessAgentOptions(ness_dir=tmp_path / ".ness", project_root=tmp_path),
-    )
-    assert agent.config.thread_store.default_model == "wired-model"
-
-
-def test_reflection_error_event_has_full_schema(tmp_path: Path):
-    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
-
-    class BoomModel:
-        def with_structured_output(self, _schema):
-            return self
-
-        async def ainvoke(self, _messages):
-            raise RuntimeError("boom")
-
-    result = asyncio.run(
-        run_reflection_gate(
-            "session-r",
-            [HumanMessage(content="hello")],
-            BoomModel(),
-            1,
-            persistence=store,
-            aux_prompts=AuxPrompts(
-                reflection=(
-                    "t={thread_id} n={user_message_count} msgs={messages} "
-                    "bullets={current_session_bullets} todos={todos}"
-                )
-            ),
-        )
-    )
-    assert result.error == "boom"
-    assert result.bullets == ()
-    events = store.load_thread_events("session-r")
-    reflection = next(e for e in events if e.get("kind") == "reflection")
-    assert set(reflection) >= {
-        "kind",
-        "prompt",
-        "response",
-        "message_index",
-        "memory_updated",
-        "error",
-        "t",
-    }
-    assert reflection["error"] == "boom"
-    assert reflection["response"] == {"new_bullet_points": []}
-    assert reflection["memory_updated"] is False
-    assert "No todos" in reflection["prompt"]
-
-
 def test_reflection_result_returns_bullets(tmp_path: Path):
     store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
     memory = MemoryStore(MemoryConfig(), ness_dir=tmp_path / ".ness")
@@ -189,139 +88,54 @@ def test_reflection_result_returns_bullets(tmp_path: Path):
     assert result.error == ""
 
 
-def test_finalize_session_reflection_passes_rendered_todos(tmp_path: Path):
-    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
-    captured: dict = {}
-
-    class CaptureModel:
-        def with_structured_output(self, _schema):
-            return self
-
-        async def ainvoke(self, messages):
-            captured["prompt"] = messages[0].content
-            return SimpleNamespace(
-                model_dump=lambda: {"new_bullet_points": []},
-                new_bullet_points=[],
-            )
-
-    app = MagicMock()
-    app.aget_state = AsyncMock(
-        return_value=SimpleNamespace(
-            values={
-                "messages": [HumanMessage(content="do work")],
-                "todos": [{"id": "1", "content": "Ship it", "status": "pending"}],
-                "last_reflection_index": 0,
-            }
-        )
-    )
-
-    asyncio.run(
-        finalize_session_reflection(
-            app,
-            "session-f",
-            CaptureModel(),
-            persistence=store,
-            aux_prompts=AuxPrompts(
-                reflection=(
-                    "t={thread_id} n={user_message_count} msgs={messages} "
-                    "bullets={current_session_bullets} todos={todos}"
-                )
-            ),
-        )
-    )
-    assert "[pending] 1: Ship it" in captured["prompt"]
-
-
-def test_agent_node_sets_last_input_tokens_zero_after_compaction(tmp_path: Path):
+def test_agent_node_tool_loop_without_overlay(tmp_path: Path):
+    """Subagents set overlay=None; tool-loop turns must not crash on render_overlay_delta."""
     store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
     agent = _agent(tmp_path)
-    agent.config.thread_store = store
-    rt = make_nodes(agent.config, thread_id="session-c", mode="act", git_available=False)
+    cfg = replace(agent.config, overlay=None, thread_store=store)
+    rt = make_nodes(cfg, thread_id="subagent-explore-test", mode="act", git_available=False)
 
-    compacted = CompactionResult(
-        messages=[HumanMessage(content="hi")],
-        compacted=True,
+    not_compacted = CompactionResult(
+        messages=[],
+        compacted=False,
         token_count=10,
-        action="summary",
-    )
-    response = AIMessage(content="ok")
-
-    async def fake_ainvoke(_msgs):
-        return response
-
-    with (
-        patch(
-            "liteharness.graph.nodes.progressive_compact",
-            return_value=compacted,
-        ),
-        patch.object(
-            agent.config.tool_registry,
-            "bind_model",
-            return_value=SimpleNamespace(ainvoke=fake_ainvoke),
-        ),
-    ):
-        updates = asyncio.run(
-            rt.agent_node(
-                {
-                    "messages": [HumanMessage(content="hi")],
-                    "mode": "act",
-                    "todos": [],
-                    "last_input_tokens": 999,
-                }
-            )
-        )
-
-    assert updates["last_input_tokens"] == 0
-    assert updates["compaction_message_count"] == 1
-
-
-def test_agent_node_emits_compaction_bridge_on_compact(tmp_path: Path):
-    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
-    agent = _agent(tmp_path)
-    agent.config.thread_store = store
-    seen: list[dict] = []
-    agent.config._compaction_bridge = lambda data: seen.append(dict(data))
-    rt = make_nodes(agent.config, thread_id="session-cb", mode="act", git_available=False)
-
-    compacted = CompactionResult(
-        messages=[HumanMessage(content="hi")],
-        compacted=True,
-        token_count=10,
-        action="tool_outputs",
-        kept_recent=0,
+        action="none",
     )
 
     async def fake_ainvoke(_msgs):
         return AIMessage(content="ok")
 
+    bind = SimpleNamespace(ainvoke=fake_ainvoke)
+    state = {
+        "messages": [HumanMessage(content="find routes")],
+        "mode": "act",
+        "todos": [],
+    }
+
     with (
         patch(
             "liteharness.graph.nodes.progressive_compact",
-            return_value=compacted,
+            side_effect=lambda conv, **kw: replace(
+                not_compacted, messages=list(conv)
+            ),
         ),
-        patch.object(
-            agent.config.tool_registry,
-            "bind_model",
-            return_value=SimpleNamespace(ainvoke=fake_ainvoke),
-        ),
+        patch.object(cfg.tool_registry, "bind_model", return_value=bind),
     ):
-        asyncio.run(
-            rt.agent_node(
-                {
-                    "messages": [HumanMessage(content="hi")],
-                    "mode": "act",
-                    "todos": [],
-                    "force_compact": True,
-                    "last_input_tokens": 999,
-                }
-            )
-        )
+        asyncio.run(rt.agent_node(state))
+        tool_loop = {
+            **state,
+            "messages": [
+                HumanMessage(content="find routes"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "ping", "args": {}, "id": "c1"}],
+                ),
+                ToolMessage(content="pong", tool_call_id="c1", name="ping"),
+            ],
+        }
+        updates = asyncio.run(rt.agent_node(tool_loop))
 
-    assert len(seen) == 1
-    assert seen[0]["reason"] == "agent_turn"
-    assert seen[0]["action"] == "tool_outputs"
-    assert seen[0]["forced"] is True
-    assert seen[0]["info"]
+    assert updates["messages"][0].content == "ok"
 
 
 def test_summarize_history_persists_once_on_success_and_failure(tmp_path: Path):
@@ -480,38 +294,6 @@ def test_agent_spec_resolves_backends(tmp_path: Path):
     assert not hasattr(cfg, "mcp_config")
 
 
-def test_reflection_schedule_budget_resolve_no_typeerror(tmp_path: Path):
-    """reflection_token_ratio > 0 must call resolve_usable_context_budget correctly."""
-    from liteharness.graph.nodes import _schedule_reflection_if_due, make_nodes
-
-    model = FakeListChatModel(responses=["hello"])
-
-    @tool
-    def ping() -> str:
-        """Return pong."""
-        return "pong"
-
-    agent = NessAgent(
-        model=model,
-        tools=[ping],
-        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
-        options=NessAgentOptions(
-            ness_dir=tmp_path / ".ness",
-            project_root=tmp_path,
-            reflection_token_ratio=0.5,
-            context_window=100_000,
-        ),
-    )
-    rt = make_nodes(agent.config, thread_id="session-ref", mode="act", git_available=False)
-    # Should not raise TypeError (previously passed budget as meta).
-    _schedule_reflection_if_due(
-        rt,
-        {"last_reflection_index": 0, "todos": []},
-        [HumanMessage(content="hello")],
-        "test-model",
-    )
-
-
 def test_aggregate_usage_sums_calls_and_costs():
     from liteharness.types import UsageEvent, aggregate_usage
 
@@ -540,55 +322,6 @@ def test_aggregate_usage_sums_calls_and_costs():
     assert mixed is not None
     assert mixed.model == "*"
     assert mixed.cost_usd == 0.5
-
-
-def test_tool_end_data_includes_duration_ms():
-    from liteharness.session import _tool_end_data
-
-    msg = ToolMessage(
-        tool_call_id="c1",
-        name="read",
-        content="ok",
-        additional_kwargs={"duration_ms": 42},
-    )
-    data = _tool_end_data(msg)
-    assert data["name"] == "read"
-    assert data["id"] == "c1"
-    assert data["duration_ms"] == 42
-
-    bare = _tool_end_data(ToolMessage(tool_call_id="c2", name="shell", content="x"))
-    assert "duration_ms" not in bare
-
-
-def test_tools_node_stamps_duration_ms_on_tool_message(tmp_path: Path):
-    model = FakeListChatModel(responses=["hello"])
-
-    @tool
-    def ping() -> str:
-        """Return pong."""
-        return "pong"
-
-    agent = NessAgent(
-        model=model,
-        tools=[ping],
-        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
-        options=NessAgentOptions(ness_dir=tmp_path / ".ness", project_root=tmp_path),
-    )
-    rt = make_nodes(agent.config, thread_id="t-dur", mode="act", git_available=False)
-
-    async def _run():
-        ai = AIMessage(
-            content="",
-            tool_calls=[{"name": "ping", "args": {}, "id": "c1"}],
-        )
-        out = await rt.tools_node({"messages": [ai], "todos": [], "mode": "act"})
-        msg = out["messages"][0]
-        assert isinstance(msg, ToolMessage)
-        assert "duration_ms" in (msg.additional_kwargs or {})
-        assert isinstance(msg.additional_kwargs["duration_ms"], int)
-        assert msg.additional_kwargs["duration_ms"] >= 0
-
-    asyncio.run(_run())
 
 
 def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):

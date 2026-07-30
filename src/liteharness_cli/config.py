@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from dotenv import load_dotenv
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from liteharness_cli.config_store import load_configs, load_secrets
 from liteharness_cli.model_catalog import cached_models, model_record
-
-load_dotenv()
 
 
 # USD per 1M tokens: (input, output, cache_read_ratio)
@@ -170,8 +169,49 @@ ReasoningEffort = str
 REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
+class _JsonDirSource(PydanticBaseSettingsSource):
+    """Settings source reading global ``configs.json`` + ``secrets.json``.
+
+    The files are keyed by Settings field names (e.g. ``model_name``);
+    values are re-keyed to validation aliases so pydantic matches them to
+    the aliased fields. Missing/corrupt files yield an empty source.
+    """
+
+    def __call__(self) -> dict[str, Any]:
+        raw = {**load_configs(), **load_secrets()}
+        values: dict[str, Any] = {}
+        for name, field in self.settings_cls.model_fields.items():
+            if name not in raw:
+                continue
+            alias = field.validation_alias or field.alias or name
+            if isinstance(alias, str):
+                values[alias] = raw[name]
+        return values
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return None, field_name, False
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="")
+    """Adapter settings schema + defaults.
+
+    Precedence: init kwargs / CLI overrides > process env vars >
+    ``secrets.json`` / ``configs.json`` > the field defaults below (which
+    are therefore what a first run starts with).
+    """
+
+    model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings, env_settings, _JsonDirSource(settings_cls))
 
     model_name: str = Field(default="deepseek-v4-flash", alias="MODEL_NAME")
     reflection_model_name: str = Field(default="deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
@@ -184,7 +224,7 @@ class Settings(BaseSettings):
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
     compaction_output_reserve: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE")
     compaction_input_reserve: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE")
-    openai_api_key: str = Field(alias="OPENAI_API_KEY")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
     openrouter_cache_ttl: str = Field(default="5m", alias="OPENROUTER_CACHE_TTL")
@@ -214,13 +254,25 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def settings_field_env_map() -> dict[str, str]:
+    """Map env aliases (``OPENAI_API_KEY``) to Settings field names.
+
+    Used by the one-time ``.env`` -> global JSON migration.
+    """
+    mapping: dict[str, str] = {}
+    for name, field in Settings.model_fields.items():
+        alias = field.validation_alias or field.alias
+        if isinstance(alias, str):
+            mapping[alias] = name
+    return mapping
+
+
 def reload_settings() -> None:
-    """Re-read environment (including a refreshed .env) into the shared settings.
+    """Re-read env + global JSON config into the shared settings.
 
     Mutates the existing ``settings`` singleton in place so every module that did
     ``from config import settings`` observes the new values.
     """
-    load_dotenv(override=True)
     fresh = Settings()
     for field in type(fresh).model_fields:
         setattr(settings, field, getattr(fresh, field))
@@ -309,8 +361,6 @@ def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
         return None
     if effort and effort in efforts:
         return effort
-    if model_record(model_name) is not None:
-        return None
     return default_effort(model_name)
 
 

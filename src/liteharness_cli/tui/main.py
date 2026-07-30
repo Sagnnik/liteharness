@@ -66,6 +66,7 @@ from liteharness.tools import is_git_repo
 from liteharness_cli.chat_model import (
     ModelOverrides,
     configure_model,
+    provider_key_missing,
     validate_effort,
 )
 from liteharness_cli.config import settings
@@ -281,6 +282,10 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
     warning = coding.memory_store.check_health()
     if warning:
         render.render_warning(warning)
+    if provider_key_missing():
+        render.render_warning(
+            "No provider API key configured — open /config > Provider to set one."
+        )
     budget_warning = _check_prompt_budget(coding, git_available)
     if budget_warning:
         render.render_warning(budget_warning)

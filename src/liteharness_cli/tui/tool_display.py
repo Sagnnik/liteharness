@@ -486,3 +486,45 @@ def format_shell_output(content: str) -> tuple[str, str]:
         header += f" exit={exit_code}"
     return header, body
 
+
+_SUBAGENT_META_PREFIXES = ("status=", "duration_ms=", "tasks_total=", "tasks_ok=", "tasks_failed=")
+
+
+def _subagent_body_after_meta(text: str) -> str:
+    """Drop leading structured metadata lines; keep the rest of the report."""
+    lines = str(text or "").splitlines()
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            break
+        if stripped.startswith("error=") and index == 0:
+            # batch call-level error: keep full text
+            return text.strip()
+        if any(stripped.startswith(prefix) for prefix in _SUBAGENT_META_PREFIXES):
+            index += 1
+            continue
+        break
+    body = "\n".join(lines[index:]).strip()
+    return body or text.strip()
+
+
+def format_subagent_output(content: str) -> tuple[str, str]:
+    """Return (header, body) for a spawn_subagent tool result panel.
+
+    ``header`` is a short status label; ``body`` is the full report (bounded).
+    """
+    text = str(content or "").strip()
+    status = parse_result_status(text)
+    if status is None:
+        status = "error" if is_tool_result_error(text) else "ok"
+    header = f"subagent {status}"
+    if text.startswith("status="):
+        body = _subagent_body_after_meta(text)
+    else:
+        body = text
+    if len(body) > _SHELL_DISPLAY_LIMIT:
+        body = "..." + body[-_SHELL_DISPLAY_LIMIT:]
+    return header, body
+

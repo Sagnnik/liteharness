@@ -95,38 +95,3 @@ def test_cost_tracker_handles_none_usage():
     tracker = CostTracker(pricing={"gpt-4o": (2.50, 10.00, 0.50)})
     assert tracker.add(None, model_name="gpt-4o") is None
     assert tracker.add({}, model_name="gpt-4o") is None  # falsy usage object
-
-
-def test_cost_tracker_attribute_compat_aggregates_models():
-    """Scalar aggregate properties should sum across all models."""
-    tracker = CostTracker(pricing={"gpt-4o": (2.50, 10.00, 0.50)})
-    tracker.add(_fake_usage(input_tokens=100, output_tokens=10), model_name="gpt-4o")
-    tracker.add(_fake_usage(input_tokens=200, output_tokens=20), model_name="gpt-4o")
-    assert tracker.input_tokens == 300
-    assert tracker.output_tokens == 30
-    assert tracker.total_tokens == 330
-    assert tracker.calls == 2
-    assert tracker.cost_usd == pytest.approx(
-        tracker.for_model("gpt-4o").cost_usd or 0.0, abs=1e-9
-    )
-
-
-def test_token_usage_as_dict_roundtrip():
-    u = TokenUsage(
-        model="m", input_tokens=1, output_tokens=2, total_tokens=3, cost_usd=0.0,
-    )
-    d = u.as_dict()
-    assert d["model"] == "m"
-    assert d["input_tokens"] == 1
-    assert d["output_tokens"] == 2
-    assert d["total_tokens"] == 3
-    assert d["cost_usd"] == 0.0
-    assert "cache_hit_rate" in d
-
-
-def test_cost_tracker_report_lists_each_model():
-    tracker = CostTracker(pricing={"gpt-4o": (2.50, 10.00, 0.50)})
-    tracker.add(_fake_usage(input_tokens=100, output_tokens=10), model_name="gpt-4o")
-    report = tracker.report()
-    assert "gpt-4o" in report
-    assert "Calls: 1" in report

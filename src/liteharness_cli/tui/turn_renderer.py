@@ -143,6 +143,9 @@ class TurnRenderer:
         if name == "shell":
             render.render_shell_output(content)
             return
+        if name == "spawn_subagent":
+            render.render_subagent_output(content)
+            return
         render.render_tool_result(name, content)
 
     # ------------------------------------------------------------------

@@ -31,6 +31,20 @@ class ModelOverrides:
 
 _overrides: ModelOverrides | None = None
 
+# Placeholder used when no provider key is configured: lets the TUI boot so
+# the user can set the key via /config; the first model call fails with a
+# provider auth error until then.
+_MISSING_API_KEY = "sk-missing-api-key"
+
+
+def provider_key_missing() -> bool:
+    """True when no provider API key is configured (env, JSON, or CLI arg)."""
+    return not _resolved_setting("openai_api_key")
+
+
+def _resolved_api_key() -> str:
+    return cast(str | None, _resolved_setting("openai_api_key")) or _MISSING_API_KEY
+
 
 def configure_model(overrides: ModelOverrides | None = None) -> None:
     """Apply runtime overrides that take precedence over settings."""
@@ -135,7 +149,7 @@ def build_chat_model(
     ):
         return OpenRouterAnthropicMessages(
             model=resolved_model,
-            api_key=cast(str, _resolved_setting("openai_api_key")),
+            api_key=_resolved_api_key(),
             base_url=(base_url or "https://openrouter.ai/api/v1").rstrip("/"),
             session_id=session_id,
             cache_ttl=settings.openrouter_cache_ttl,
@@ -144,7 +158,7 @@ def build_chat_model(
         )
     model_kwargs: dict[str, Any] = {
         "model": resolved_model,
-        "api_key": _resolved_setting("openai_api_key"),
+        "api_key": _resolved_api_key(),
         "session_id": session_id,
     }
     model_kwargs.update(_reasoning_kwargs(resolved_model, _resolved_setting("reasoning_effort")))

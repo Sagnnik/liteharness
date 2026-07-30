@@ -5,6 +5,13 @@ from prompt_toolkit.document import Document
 
 from liteharness_cli.tui import mentions as mention_mod
 from liteharness_cli.tui.config_flow import ConfigResult
+from liteharness_cli.tui.config_registry import (
+    SECTION_DESCRIPTIONS,
+    SECTION_TITLES,
+    SPEC_BY_KEY,
+    format_current,
+    specs_for_section,
+)
 from liteharness_cli.tui.command_catalog import COMMAND_CATALOG
 from liteharness_cli.tui.constants import (
     MENU_DESC_COL,
@@ -152,25 +159,51 @@ class MenuMixin:
                 return slug
         return current
 
+    def _active_config_model_slug(self) -> str:
+        """Current model slug for the active model-picker target field."""
+        target = getattr(self, "_config_model_target", "model_name") or "model_name"
+        if target == "model_name":
+            return self._current_model_slug()
+        current = getattr(settings, target, None) or ""
+        if not current:
+            return ""
+        for slug in available_model_ids():
+            if slug == current or slug.endswith(f"/{current}"):
+                return slug
+        return current
+
     def _config_action_items(self) -> list[MenuItem]:
         items = [
-            MenuItem("model", "Switch chat model"),
-            MenuItem("reasoning", "Switch reasoning effort"),
-            MenuItem("openai_key", "Set provider API key"),
-            MenuItem("exa_key", "Set Exa API key (web search)"),
-            MenuItem("base_url", "Set OpenAI-compatible base URL"),
-            MenuItem("approval", f"Toggle approval (now: {'on' if settings.enable_approval else 'off'})"),
-            MenuItem("autosave", f"Toggle thread autosave (now: {'on' if settings.auto_save_threads else 'off'})"),
             MenuItem(
-                "session_end_reflection",
-                f"Toggle session end reflection (now: {'on' if settings.session_end_reflection else 'off'})",
-            ),
-            MenuItem("view", "View current config"),
+                section_id,
+                title,
+                description=SECTION_DESCRIPTIONS.get(section_id, ""),
+            )
+            for section_id, title in SECTION_TITLES.items()
         ]
+        items.append(MenuItem("view", "View current config"))
         return items
 
+    def _config_section_items(self) -> list[MenuItem]:
+        return [
+            MenuItem(spec.key, spec.label, suffix=format_current(spec))
+            for spec in specs_for_section(self._config_section)
+        ]
+
+    def _config_select_items(self) -> list[MenuItem]:
+        spec = SPEC_BY_KEY.get(self._config_select_key)
+        if spec is None:
+            return []
+        current = str(getattr(settings, spec.key))
+        return [
+            MenuItem(choice, choice, suffix="(current)" if choice == current else "")
+            for choice in spec.choices
+        ]
+
     def _config_model_items(self) -> list[MenuItem]:
-        current = self._current_model_slug()
+        current = self._active_config_model_slug()
+        target = getattr(self, "_config_model_target", "model_name") or "model_name"
+        spec = SPEC_BY_KEY.get(target)
         query = self._buffer.text.strip().lower() if self._menu_kind == "config_models" else ""
         ranked: list[tuple[int, str]] = []
         for slug in available_model_ids():
@@ -212,7 +245,10 @@ class MenuMixin:
                 )
             )
         if current not in {item.key for item in items} and not query:
-            items.insert(0, MenuItem(current, current, suffix="(current)"))
+            if current:
+                items.insert(0, MenuItem(current, current, suffix="(current)"))
+        if spec is not None and spec.optional and not query:
+            items.insert(0, MenuItem("", "(unset) - use default"))
         return items
 
     def _config_reasoning_items(self) -> list[MenuItem]:
@@ -317,6 +353,8 @@ class MenuMixin:
             "config_models": self._config_model_items,
             "config_reasoning": self._config_reasoning_items,
             "config_action": self._config_action_items,
+            "config_section": self._config_section_items,
+            "config_select": self._config_select_items,
             "slash": self._slash_menu_items,
             MENTION_MENU: self._mention_items,
             "approval": lambda: self._prompt_items,
@@ -367,10 +405,14 @@ class MenuMixin:
         self._clamp_menu_scroll()
 
     def _menu_header_fragments(self):
+        section_title = SECTION_TITLES.get(self._config_section, "")
+        select_spec = SPEC_BY_KEY.get(self._config_select_key)
         headers = {
             "config_models": "/config > models - Type to search, Enter to select:",
             "config_reasoning": "/config > reasoning - Select reasoning effort:",
             "config_action": "/config - What would you like to change:",
+            "config_section": f"/config > {section_title} - Enter to edit, left/right toggles:",
+            "config_select": f"/config > {select_spec.label if select_spec else ''} - Select a value:",
             MENTION_MENU: "files - @mention autocomplete",
             "approval": self._prompt_title,
             "question": self._prompt_title,
@@ -505,10 +547,14 @@ class MenuMixin:
         item = items[self._menu_index]
         if self._menu_kind == "config_action":
             self._apply_config_action(item.key)
+        elif self._menu_kind == "config_section":
+            self._apply_config_section_item(item.key)
         elif self._menu_kind == "config_models":
             self._apply_config_model(item.key)
         elif self._menu_kind == "config_reasoning":
             self._apply_config_reasoning(item.key)
+        elif self._menu_kind == "config_select":
+            self._apply_config_select(item.key)
         elif self._menu_kind == "approval":
             self._apply_approval_selection(item.key)
         elif self._menu_kind == "question":

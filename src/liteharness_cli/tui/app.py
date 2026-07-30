@@ -22,6 +22,7 @@ from liteharness_cli.config import settings
 from liteharness_cli.tui import render
 from liteharness_cli.tui.commands import dispatch
 from liteharness_cli.tui.config_flow import ConfigResult
+from liteharness_cli.tui.config_registry import SECRET_FORM_KINDS
 from liteharness_cli.tui.theme import PTK_STYLE_RULES
 from liteharness_cli.tui.chrome import ChromeMixin
 from liteharness_cli.tui.config_flow import ConfigFlowMixin
@@ -91,6 +92,9 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._cancel_backstop_handle: asyncio.TimerHandle | None = None
         self._config_future: asyncio.Future[ConfigResult] | None = None
         self._config_result: ConfigResult | None = None
+        self._config_section = ""
+        self._config_select_key = ""
+        self._config_model_target = "model_name"
         self._prompt_future: asyncio.Future[Any] | None = None
         self._prompt_kind: str | None = None
         self._prompt_title = ""
@@ -106,6 +110,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._menu_scroll = 0
         self._form_kind: str | None = None
         self._form_label = ""
+        self._form_example = ""
         self._ignore_buffer_menu = False
         self._pending_paste: str | None = None
         self._collapsing_paste: bool = False
@@ -159,7 +164,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._buffer.read_only = Condition(self._main_buffer_read_only)
         self._form_buffer = Buffer()
         self._form_buffer.password = Condition(
-            lambda: self._form_kind in ("openai_key", "exa_key")
+            lambda: self._form_kind in SECRET_FORM_KINDS
         )
         self._buffer.on_text_changed.add_handler(self._on_buffer_changed)
 
@@ -170,6 +175,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._form_pad_window: Window | None = None
         self._form_label_window: Window | None = None
         self._form_field_window: Window | None = None
+        self._form_example_window: Window | None = None
         self._form_row: VSplit | None = None
         self._form_hint_window: Window | None = None
         self._menu_header_window: Window | None = None
@@ -691,6 +697,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         ]
         self.render_header()
         self._replay_events_to_transcript(events)
+        render.render_todos(await self.coding.get_todos())
         await self.refresh_context_snapshot()
 
     def _replay_events_to_transcript(self, events: list[dict]) -> None:
@@ -727,7 +734,11 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             elif kind == "tool":
                 tool_name = str(event.get("tool") or "")
                 result = str(event.get("result") or "")
-                if tool_name:
+                if not tool_name:
+                    continue
+                if tool_name == "spawn_subagent":
+                    render.render_subagent_output(result)
+                else:
                     render.render_tool_result(tool_name, result)
 
     # --- the turn -----------------------------------------------------------
@@ -743,6 +754,8 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
                 images=images or None,
             ):
                 renderer.feed(ev)
+                if ev.kind == "tool_end" and ev.data.get("name") == "todo":
+                    render.render_todos(await self.coding.get_todos())
         except asyncio.CancelledError:
             # Hard-escalation path: the cooperative cancel didn't break the
             # stream in time and the submit task was cancelled. The SDK has

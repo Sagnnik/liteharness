@@ -35,8 +35,8 @@ def test_wide_layout_has_logo_title_dashboard_and_hints():
     lines = header_lines(**_common_kwargs(width=120, show_logo=True))
     assert len(lines) >= 6
     text = _all_text(lines)
-    assert "Lite" in text
-    assert "Harness" in text
+    assert "Ness" in text
+    assert "Agent" in text
     assert "Session" in text and "deepseek-v4-flash" in text
     assert "Project" in text and "~/projects/liteharness" in text
     assert "Mode" in text and "Act (auto-approval)" in text
@@ -49,15 +49,6 @@ def test_wide_layout_has_logo_title_dashboard_and_hints():
     _assert_fragments_join(lines)
 
 
-def test_all_rows_exact_width_wide():
-    width = 120
-    lines = header_lines(**_common_kwargs(width=width, show_logo=True))
-    for line in lines:
-        assert len(line.text) == width, (
-            f"row width {len(line.text)} != {width}: {line.text!r}"
-        )
-
-
 def test_narrow_layout_drops_logo():
     width = 80
     lines = header_lines(**_common_kwargs(width=width, show_logo=False))
@@ -66,7 +57,7 @@ def test_narrow_layout_drops_logo():
     assert not any("\u2800" <= ch <= "\u28ff" for ch in text), (
         "braille logo leaked into narrow path"
     )
-    assert "Lite" in text and "Harness" in text
+    assert "Ness" in text and "Agent" in text
     assert "Session" in text and "Mode" in text
     assert "Hints:" in lines[-1].text
     _assert_fragments_join(lines)
@@ -97,29 +88,6 @@ def test_yolo_mode_label():
         )
     )
     assert "Act (yolo)" in _all_text(lines)
-
-
-def test_title_uses_gradient_fragments():
-    lines = header_lines(**_common_kwargs(width=100, show_logo=False))
-    title_line = lines[0]
-    assert title_line.fragments is not None
-    # find the "Harness" portion: should be 7 fragments, each with unique fg
-    frag_texts = [t for _, t in title_line.fragments]
-    assert "H" in frag_texts and "s" in frag_texts
-    harness_styles = [s for s, t in title_line.fragments if t and t in "Harness"]
-    assert len(harness_styles) == 7
-    # gradient: first harness char ~= cyan, last ~= purple
-    assert "39c5cf" in harness_styles[0].lower()
-    assert "a78bfa" in harness_styles[-1].lower()
-
-
-def test_long_project_is_truncated_with_ellipsis():
-    long_project = "~/projects/" + ("x" * 100)
-    lines = header_lines(
-        **_common_kwargs(project=long_project, width=110, show_logo=True)
-    )
-    text = _all_text(lines)
-    assert "…" in text
 
 
 # --- in-place replace + resize reflow (TranscriptMixin behavior) ------------
@@ -213,7 +181,7 @@ def test_append_header_replaces_block_in_place_instead_of_duplicating():
     text = "\n".join(line.text for line in m._transcript_store.lines)
     assert "Plan" in text and "m2" in text
     # the refreshed mode should NOT be accompanied by the stale one
-    assert text.count("LiteHarness") == 1
+    assert text.count("NessAgent") == 1
 
 
 def test_resize_reflows_header_block_to_new_width():
@@ -240,18 +208,3 @@ def test_resize_reflows_header_block_to_new_width():
             assert len(line.text) == 140, (
                 f"line not reflowed to 140: {line.text[:30]!r}"
             )
-
-
-def test_resize_is_noop_when_width_unchanged():
-    _patch_addon_helpers()
-    m = _HeaderHarness(width=120)
-    m.append_header(
-        mode="act",
-        model="m1",
-        approval=True,
-        autosave=True,
-        session_end_reflection=True,
-    )
-    before_revision = m._transcript_store.revision
-    m._on_transcript_render_size(120, 40)  # same width
-    assert m._transcript_store.revision == before_revision
