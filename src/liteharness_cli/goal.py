@@ -4,6 +4,7 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
@@ -11,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from liteharness_cli.chat_model import build_chat_model
 from liteharness_cli.config import settings
-from liteharness_cli.instructions import GOAL_GENERIC_REPAIR, GOAL_JUDGE, GOAL_REPAIR
+from liteharness_cli.instructions import load_instruction
 
 WorkerTurn = Callable[[str], Awaitable[None]]
 StatusCallback = Callable[[str, str], None]
@@ -160,21 +161,31 @@ def _format_goal_conversation(events: list[dict]) -> str:
     return body
 
 
-def _repair_text(verdict: JudgeVerdict) -> str:
+def _repair_text(verdict: JudgeVerdict, *, generic_repair: str) -> str:
     repair = verdict.repair_instruction.strip()
-    if repair and repair != GOAL_GENERIC_REPAIR:
+    if repair and repair != generic_repair:
         return repair
     unmet = "\n".join(item.strip() for item in verdict.unmet if item.strip())
-    return unmet or repair or GOAL_GENERIC_REPAIR
+    return unmet or repair or generic_repair
 
 
 class GoalCoordinator:
     """Bounded maker-verifier loop using an isolated structured-output judge."""
 
-    def __init__(self, coding, *, max_attempts: int | None = None) -> None:
+    def __init__(
+        self,
+        coding,
+        *,
+        max_attempts: int | None = None,
+        instructions_dir: Path | None = None,
+    ) -> None:
         self.coding = coding
         self.max_attempts = max(1, max_attempts or settings.goal_max_attempts)
+        self._instructions_dir = instructions_dir
         self._judge_model: BaseChatModel | None = None
+
+    def _instruction(self, name: str) -> str:
+        return load_instruction(name, instructions_dir=self._instructions_dir)
 
     def _build_judge_model(self) -> BaseChatModel:
         judge_id = f"judge-{uuid.uuid4().hex[:8]}"
@@ -197,7 +208,7 @@ class GoalCoordinator:
             start_seq,
         )
         transcript = _format_goal_conversation(events)
-        return GOAL_JUDGE.format(
+        return self._instruction("goal_judge.md").format(
             goal=goal,
             attempt=attempt,
             max_attempts=self.max_attempts,
@@ -319,6 +330,12 @@ class GoalCoordinator:
             if last_verdict.passed and hook_ok:
                 return GoalResult(True, attempt, last_verdict)
             if attempt < self.max_attempts:
-                repair = _repair_text(last_verdict)
-                instruction = GOAL_REPAIR.format(goal=goal, repair=repair)
+                repair = _repair_text(
+                    last_verdict,
+                    generic_repair=self._instruction("goal_generic_repair.md"),
+                )
+                instruction = self._instruction("goal_repair.md").format(
+                    goal=goal,
+                    repair=repair,
+                )
         return GoalResult(False, self.max_attempts, last_verdict)

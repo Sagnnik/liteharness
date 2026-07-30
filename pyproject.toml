@@ -10,6 +10,7 @@ name = "liteharness"
 version = "0.1.0"
 description = "LiteHarness is an experimental, hackable agent harness."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",

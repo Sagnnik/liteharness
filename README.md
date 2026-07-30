@@ -36,7 +36,7 @@ Useful settings (env var shown; all except `NESS_DIR` are also editable via `/co
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
-- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `configs.json`, `secrets.json`, `plans/`).
+- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `configs.json`, `secrets.json`, `instructions/`, `plans/`).
 - `LITEHARNESS_CACHE_DIR`: override cache root (global OpenRouter catalog plus per-project `cli_history`).
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
@@ -156,6 +156,7 @@ Ness splits **global** user data, **project** config, and **runtime** cache:
 USER.md                  Cross-repo user preferences
 configs.json             Non-secret adapter settings (only values you changed)
 secrets.json             API keys and other secrets (mode 0600)
+instructions/            Editable prompt templates (L0, persona, plan/act, aux, goal)
 plans/<project-slug>/    Saved plan-mode output for this project
 
 # Per-project cache (platformdirs user_cache_dir("liteharness")/<hash>/)
@@ -328,7 +329,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Context & memory**
 
 - `/skill [<name>]`: list skills, or stage a skill for the next message (model loads via `skill_view`).
-- `/init`: initialize project `.ness/` (dirs, permissions, hooks, mcp, default agent profiles, empty `NESS.md`) and ensure global config (`USER.md`, `plans/<slug>/`).
+- `/init`: initialize project `.ness/` (dirs, permissions, hooks, mcp, default agent profiles, empty `NESS.md`) and ensure global config (`USER.md`, `instructions/`, `plans/<slug>/`).
 - `/memory` or `/memory add <note>`: read or append project memory.
 - `/memory create [force]`: opt-in LLM draft of `NESS.md` from project context (`force` overwrites non-empty content).
 - `/user` or `/user add <note>`: read or append user preferences.
@@ -382,3 +383,7 @@ OPENAI_API_KEY=test uv run pytest -q
 # Optional paid provider smoke test:
 OPENROUTER_LIVE_TEST=1 OPENAI_API_KEY=... uv run pytest -q -m live
 ```
+
+## License
+
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE).

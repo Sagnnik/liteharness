@@ -104,9 +104,17 @@ def build_coding_agent(
         "model": create_model(thread_id),
         "compaction_model": create_compaction_model(thread_id),
         "reflection_model": create_reflection_model(thread_id),
-        "prompt": default_prompt_layers(l2_context=l2_context),
-        "aux_prompts": default_aux_prompts(),
-        "modes": plan_act_modes(plans_dir=paths.plans_dir),
+        "prompt": default_prompt_layers(
+            instructions_dir=paths.instructions_dir,
+            l2_context=l2_context,
+        ),
+        "aux_prompts": default_aux_prompts(
+            instructions_dir=paths.instructions_dir,
+        ),
+        "modes": plan_act_modes(
+            plans_dir=paths.plans_dir,
+            instructions_dir=paths.instructions_dir,
+        ),
         "memory": MemoryConfig(
             user_memory=paths.user_file,
             session_memory_dir=paths.sessions_dir,
@@ -151,6 +159,8 @@ def build_coding_session(
     ``agent_kwargs`` are forwarded to :func:`build_coding_agent` (handlers,
     prompt overrides, tracing, ...).
     """
+    if paths is None:
+        paths = prepare_paths()
     agent = build_coding_agent(thread_id=thread_id, paths=paths, **agent_kwargs)
     return CodingSession(
         agent,
@@ -159,4 +169,5 @@ def build_coding_session(
         vision=vision,
         git_available=git_available,
         metadata=metadata,
+        instructions_dir=paths.instructions_dir,
     )

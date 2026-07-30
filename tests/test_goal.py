@@ -28,16 +28,19 @@ def test_verdict_from_structured() -> None:
 
 
 def test_repair_text_prefers_unmet_over_generic_or_empty() -> None:
+    generic = "Re-check the deliverable and provide explicit verification evidence."
     assert "finish the remaining step" in _repair_text(
-        JudgeVerdict(False, ("finish the remaining step",), (), "")
+        JudgeVerdict(False, ("finish the remaining step",), (), ""),
+        generic_repair=generic,
     )
     assert "finish the remaining step" in _repair_text(
         JudgeVerdict(
             False,
             ("finish the remaining step",),
             (),
-            "Re-check the deliverable and provide explicit verification evidence.",
-        )
+            generic,
+        ),
+        generic_repair=generic,
     )
 
 

@@ -652,7 +652,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         """Run a bounded worker–judge goal loop in the current transcript."""
         from liteharness_cli.goal import GoalCoordinator
 
-        coordinator = GoalCoordinator(self.coding)
+        coordinator = GoalCoordinator(
+            self.coding,
+            instructions_dir=self.coding.instructions_dir,
+        )
 
         async def worker_turn(instruction: str) -> None:
             render.render_user_echo(instruction)

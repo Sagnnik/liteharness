@@ -147,7 +147,10 @@ async def cmd_memory(app: "TuiApp", args: str) -> None:
             return
         with render.thinking("generating NESS.md"):
             response = await app.model.ainvoke(
-                [HumanMessage(content=build_init_memory_prompt(get_project_context()))]
+                [HumanMessage(content=build_init_memory_prompt(
+                    get_project_context(),
+                    instructions_dir=app.coding.instructions_dir,
+                ))]
             )
         result = memory.write_project(str(response.content), overwrite=force)
         if result.startswith("Error:"):

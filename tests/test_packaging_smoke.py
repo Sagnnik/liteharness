@@ -76,6 +76,7 @@ def test_wheel_clean_install_smoke(tmp_path: Path) -> None:
     probe = r"""
 from liteharness.defaults import default_agent_profiles
 from liteharness_cli.config import Settings
+from liteharness_cli.instructions import default_instruction_files
 
 import liteharness
 import liteharness_cli
@@ -89,6 +90,10 @@ assert settings.model_name == "deepseek/deepseek-v4-flash", settings.model_name
 profiles = default_agent_profiles()
 assert "explore.md" in profiles, sorted(profiles)
 assert profiles["explore.md"].strip(), "explore.md body is empty"
+
+instructions = default_instruction_files()
+assert "l0_harness.md" in instructions, sorted(instructions)
+assert instructions["l0_harness.md"].strip(), "l0_harness.md body is empty"
 print("ok")
 """
     result = subprocess.run(
