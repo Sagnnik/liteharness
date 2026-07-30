@@ -88,16 +88,12 @@ def test_setup_ness_structure_creates_layout(tmp_path: Path):
     assert (ness / "hooks.json").is_file()
     assert (ness / "permissions.json").is_file()
     explore = (ness / "agents" / "explore.md").read_text(encoding="utf-8")
-    exec_body = (ness / "agents" / "exec.md").read_text(encoding="utf-8")
     assert explore.startswith("---")
     assert "findings report" in explore
-    assert exec_body.startswith("---")
-    assert "execution subagent" in exec_body
     assert not (ness / "plans").exists()
     assert not (ness / "sessions").exists()
     assert any("hooks.json" in c for c in created)
     assert any(c.endswith("explore.md") for c in created)
-    assert any(c.endswith("exec.md") for c in created)
     ness_md = ness / "NESS.md"
     assert ness_md.is_file()
     assert ness_md.read_text(encoding="utf-8") == ""
@@ -123,8 +119,7 @@ def test_setup_ness_structure_does_not_overwrite_agent_profiles(tmp_path: Path):
     created = setup_ness_structure(ness)
     assert custom.read_text(encoding="utf-8") == "---\ntools: [read]\n---\ncustom explore\n"
     assert not any(c.endswith("explore.md") for c in created)
-    assert (agents / "exec.md").is_file()
-    assert any(c.endswith("exec.md") for c in created)
+    assert not any(c.endswith(".md") for c in created if "/agents/" in c)
 
 
 def test_hook_callable_vetoes_pre_tool_use():
