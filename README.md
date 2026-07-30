@@ -14,7 +14,9 @@ export OPENAI_API_KEY=...
 uv run ness
 ```
 
-Useful environment variables:
+Or skip the env var and set the key in-session: `uv run ness`, then `/config` > Provider > Provider API key. Settings are stored globally in `configs.json` (non-secrets) and `secrets.json` under the global config root — see Config layout. Process env vars still override the JSON values for a run; on first start, known keys from an existing project `.env` are imported into the JSON files once (the `.env` is left untouched).
+
+Useful settings (env var shown; all except `NESS_DIR` are also editable via `/config`):
 
 - `MODEL_NAME`: model passed to `ChatOpenRouter` (`deepseek-v4-flash` by default).
 - `REFLECTION_MODEL_NAME`: model for background session-memory reflection (defaults to `MODEL_NAME`).
@@ -27,14 +29,32 @@ Useful environment variables:
 - `COMPACTION_INPUT_RESERVE`: input/system/tool reserve subtracted from the model context window (default `4096`).
 - `COMPACTION_TOKEN_BUDGET`: fallback compaction budget when the model context window is unknown (default `120000`).
 - `OPENROUTER_SESSION_ID`: optional stable prompt-cache session id. Defaults to the active LiteHarness thread id.
+- `OPENROUTER_CACHE_TTL`: Anthropic prompt-cache lifetime (`5m` by default; `1h` is supported).
+- `OPENROUTER_ANTHROPIC_MESSAGES`: use OpenRouter's Messages API for Anthropic models, including deferred MCP tool loading (default `true`).
+- `GOAL_JUDGE_MODEL`: optional model used by the independent `/goal` judge (defaults to `REFLECTION_MODEL_NAME`).
+- `GOAL_MAX_ATTEMPTS`: maximum worker/judge attempts for `/goal` (default `3`).
 - `OPENAI_BASE_URL`: optional custom OpenAI-compatible base URL.
 - `FORMAT_ON_WRITE`: auto-format supported file types after writes (default `true`).
 - `NESS_DIR`: project config directory, default `.ness`.
-- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `plans/`).
-- `LITEHARNESS_CACHE_DIR`: override cache root (per-project `cli_history`).
+- `LITEHARNESS_CONFIG_DIR`: override global config root (`USER.md`, `configs.json`, `secrets.json`, `plans/`).
+- `LITEHARNESS_CACHE_DIR`: override cache root (global OpenRouter catalog plus per-project `cli_history`).
 - `EXA_API_KEY`: optional Exa API key for higher-quality `web_search` and `fetch_url` (get one from [exa.ai](https://exa.ai)). Without it, LiteHarness falls back to DuckDuckGo search and direct HTTP fetch.
 
-CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`. Use `/config` in-session to switch model, reasoning effort, keys, approval, autosave, and session-end reflection (persisted to `.env`).
+CLI flags override env for a single run: `--model`, `--reflection-model`, `--api-key`, `--base-url`, `--openrouter-session-id`, `--reasoning-effort`, `--worktree` / `-w`, `--print` / `-p`, and `--yolo`. Yolo is session-only and bypasses approval prompts and persisted permission denials in act mode; hook vetoes and plan-mode read-only rules still apply. Use `/config` in-session to edit every adapter setting: provider keys and endpoints, model and reasoning, approval/autosave/reflection behavior, compaction budgets, and more (persisted to global `configs.json` / `secrets.json`).
+
+### Headless one-shot queries (`-p` / `--print`)
+
+Run a single query without opening the TUI; the final response goes to stdout and the process exits:
+
+```bash
+uv run ness -p "what does the auth module do?"
+cat build-error.txt | uv run ness -p "explain the root cause" > diagnosis.txt
+uv run ness -p --yolo "run the test suite and fix any failures"
+```
+
+Approvals are deny-by-default in print mode: tools already allowed by `.ness/permissions.json` run normally, anything that would prompt is auto-denied and the denial is fed back to the model, and `--yolo` bypasses the gate. `-p` composes with the other flags — `--worktree`, `--resume`, `--model`, etc. stdout carries only the final response; diagnostics and the `ness --resume <thread_id>` hint go to stderr. Exit codes: `0` success, `1` turn error, `2` usage error, `130` interrupted.
+
+The `/config` model picker lazily refreshes text-output, tool-capable LLMs and VLMs from OpenRouter. Its global disk cache is reused for 24 hours, stale data remains available while refreshing, and the packaged model list is the offline fallback. Type in the model picker to search by model, display name, or provider. Reasoning choices are shown only when literal provider values are available; LiteHarness does not rename or rank-map them.
 
 ### Parallel sessions (git worktrees)
 
@@ -48,7 +68,7 @@ uv run ness
 uv run ness --worktree auth
 ```
 
-Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, `.ness/runtime/sessions`, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. `.env` is copied from the repo root on first create. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
+Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime data (`.ness/threads/`, `.ness/runtime/sessions`, shell jobs). Tracked `.ness` files (agents, skills, permissions, NESS.md) inherit from git. Config and secrets are global (see Config layout), so worktrees need no per-checkout setup. Re-launching with the same `--worktree` name reuses the existing checkout. Merge back with normal git when done (`git merge worktree-auth`, etc.).
 
 ## Architecture
 
@@ -93,7 +113,7 @@ Session tool tiers (same set bound in both modes):
 
 | File | Purpose |
 |------|---------|
-| `.ness/NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/init`, `/memory add`, or manual edit. Loaded into L1. May inline existing `@AGENTS.md` / `@CLAUDE.md` files (see below). |
+| `.ness/NESS.md` | Durable project conventions (CLAUDE.md / AGENTS.md style). Human-authored via `/memory add`, manual edit, or agent edit when asked; optional LLM draft via `/memory create`. `/init` creates an empty file. Loaded into L1. May inline existing `@AGENTS.md` / `@CLAUDE.md` files (see below). |
 | Global `USER.md` | Cross-repo user preferences (see Config layout). Human-authored via `/user`; loaded into L1. |
 | `.ness/runtime/sessions/mem_<thread_id>.md` | Episodic per-session scratchpad. Current thread bullets load into L3. Maintained by the reflection gate. |
 
@@ -134,6 +154,8 @@ Ness splits **global** user data, **project** config, and **runtime** cache:
 # macOS: ~/Library/Application Support/liteharness/
 # Windows: %APPDATA%\liteharness\
 USER.md                  Cross-repo user preferences
+configs.json             Non-secret adapter settings (only values you changed)
+secrets.json             API keys and other secrets (mode 0600)
 plans/<project-slug>/    Saved plan-mode output for this project
 
 # Per-project cache (platformdirs user_cache_dir("liteharness")/<hash>/)
@@ -157,6 +179,9 @@ cli_history              Prompt history for this project root
 ```
 
 Override roots with `LITEHARNESS_CONFIG_DIR`, `LITEHARNESS_CACHE_DIR`, and `NESS_DIR`.
+
+Settings resolve in this order (highest wins): CLI flags > process env vars > `secrets.json` / `configs.json` > built-in defaults. `configs.json` is written lazily — it only contains values you changed via `/config` (defaults stay in code and evolve with upgrades).
+
 ## Skills
 
 Skills live under `.ness/skills/<name>/SKILL.md` (wired via `skills_dir` on the coding agent):
@@ -287,14 +312,15 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **General**
 
 - `/help`: show the command reference.
-- `/config`: switch model/reasoning, set API keys, toggle approval/autosave/session-end reflection (persisted to `.env`).
+- `/config`: edit provider keys/endpoints, model/reasoning, behavior toggles, compaction budgets, and advanced options (persisted to global `configs.json` / `secrets.json`).
 - `/exit` or `/quit`: end the session.
 
 **Session**
 
 - `/status`: show session, model, token, cost, and cache stats.
-- `/threads`: list saved sessions.
-- `/resume <thread_id>`: resume a saved thread.
+- `/threads`: open a scrollable saved-thread picker and switch the transcript in place.
+- `/fork`: choose a human message, copy the conversation state before it into a child thread, and prefill that message for editing. Forking copies session memory/checkpoints but leaves current working-tree files unchanged.
+- `/goal <objective>`: run up to three worker attempts, each followed by an isolated read-only judge. Failed verdicts become repair instructions for the next attempt.
 - `/save`: archive the current thread with a headline summary.
 - `/new`: archive and start a fresh thread.
 - `/compact`: mark/manual compaction request.
@@ -302,8 +328,9 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Context & memory**
 
 - `/skill [<name>]`: list skills, or stage a skill for the next message (model loads via `skill_view`).
-- `/init [force]`: initialize project `.ness/` (dirs, permissions, hooks, mcp), ensure global config (`USER.md`, `plans/<slug>/`), and generate `.ness/NESS.md`.
+- `/init`: initialize project `.ness/` (dirs, permissions, hooks, mcp, default agent profiles, empty `NESS.md`) and ensure global config (`USER.md`, `plans/<slug>/`).
 - `/memory` or `/memory add <note>`: read or append project memory.
+- `/memory create [force]`: opt-in LLM draft of `NESS.md` from project context (`force` overwrites non-empty content).
 - `/user` or `/user add <note>`: read or append user preferences.
 
 **Tools & policy**
@@ -341,15 +368,17 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}
 ```
 
-`/threads` lists user `session-*` threads only. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
+`/threads` lists user `session-*` threads only. The original conversation shows `×N` when it has forks; each fork shows `fork #k` in creation order. Fork lineage is stored explicitly on the thread row; inherited usage remains in the copied event history but is excluded from the child thread's cost totals. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
 
-`/resume` rebuilds user messages, assistant tool-call turns, and tool results from saved events. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
+Selecting a thread rebuilds user messages, assistant tool-call turns, and tool results from saved events. The startup `--resume <thread_id>` flag remains available for automation. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
 
-Threads are archived on `/save`, `/new`, `/resume`, and session exit. Archived threads get a headline summary from the first user message.
+Threads are archived on `/save`, `/new`, thread switching/forking, and session exit. Archived threads get a headline summary from the first user message.
 
 ## Verification
 
 ```bash
 OPENAI_API_KEY=test uv run python -m compileall -q .
 OPENAI_API_KEY=test uv run pytest -q
+# Optional paid provider smoke test:
+OPENROUTER_LIVE_TEST=1 OPENAI_API_KEY=... uv run pytest -q -m live
 ```

@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS threads (
     total_cost_usd REAL NOT NULL DEFAULT 0.0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    fork_root_id TEXT,
+    fork_parent_id TEXT,
+    forked_from_seq INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -54,6 +57,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 );
 
 CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_threads_fork_root ON threads(fork_root_id);
 CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_thread ON checkpoints(thread_id, user_seq ASC);
 """
@@ -122,10 +126,12 @@ class ThreadStore:
                 now = self._now()
                 conn.execute(
                     """
-                    INSERT INTO threads (thread_id, started_at, updated_at, model)
-                    VALUES (?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING
+                    INSERT INTO threads (
+                        thread_id, started_at, updated_at, model, fork_root_id
+                    )
+                    VALUES (?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING
                     """,
-                    (thread_id, now, now, self.default_model),
+                    (thread_id, now, now, self.default_model, thread_id),
                 )
                 
                 seq = conn.execute(
@@ -149,13 +155,35 @@ class ThreadStore:
             rows = conn.execute(
                 """
                 SELECT
-                    thread_id, started_at, updated_at, archived_at,
-                    turn_count, model, summary,
-                    total_cost_usd, input_tokens, cached_input_tokens,
-                    output_tokens
-                FROM threads
-                WHERE thread_id LIKE ?
-                ORDER BY updated_at DESC
+                    t.thread_id, t.started_at, t.updated_at, t.archived_at,
+                    t.turn_count, t.model, t.summary,
+                    t.total_cost_usd, t.input_tokens, t.cached_input_tokens,
+                    t.output_tokens, t.fork_root_id, t.fork_parent_id,
+                    t.forked_from_seq,
+                    MAX(0, (
+                        SELECT COUNT(*) - 1 FROM threads f
+                        WHERE COALESCE(f.fork_root_id, f.thread_id)
+                            = COALESCE(t.fork_root_id, t.thread_id)
+                    )) AS fork_count,
+                    CASE
+                        WHEN t.fork_parent_id IS NULL THEN 0
+                        ELSE (
+                            SELECT COUNT(*) FROM threads f
+                            WHERE COALESCE(f.fork_root_id, f.thread_id)
+                                = COALESCE(t.fork_root_id, t.thread_id)
+                              AND f.fork_parent_id IS NOT NULL
+                              AND (
+                                    f.started_at < t.started_at
+                                    OR (
+                                        f.started_at = t.started_at
+                                        AND f.thread_id <= t.thread_id
+                                    )
+                              )
+                        )
+                    END AS fork_index
+                FROM threads t
+                WHERE t.thread_id LIKE ?
+                ORDER BY t.updated_at DESC
                 LIMIT ?
                 """,
                 (f"{SESSION_THREAD_PREFIX}%", n),
@@ -173,6 +201,11 @@ class ThreadStore:
                 "input_tokens": int(row["input_tokens"]),
                 "cached_input_tokens": int(row["cached_input_tokens"]),
                 "output_tokens": int(row["output_tokens"]),
+                "fork_root_id": row["fork_root_id"] or row["thread_id"],
+                "fork_parent_id": row["fork_parent_id"],
+                "forked_from_seq": row["forked_from_seq"],
+                "fork_count": int(row["fork_count"]),
+                "fork_index": int(row["fork_index"]),
                 **({"archived_at": row["archived_at"]} if row["archived_at"] else {}),
             }
             for row in rows
@@ -194,6 +227,118 @@ class ThreadStore:
             ).fetchall()
 
         return [json.loads(row[0]) for row in rows]
+
+    def load_thread_events_since(
+        self, thread_id: str, start_seq: int
+    ) -> list[dict[str, Any]]:
+        """Return events with ``seq >= start_seq``, each payload tagged with ``seq``.
+
+        Used by ``/goal`` to feed the judge the conversation from the goal-start
+        boundary without including earlier thread history.
+        """
+        if not self.threads_db.exists():
+            return []
+
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            rows = conn.execute(
+                """
+                SELECT seq, payload FROM events
+                WHERE thread_id = ? AND seq >= ?
+                ORDER BY seq
+                """,
+                (thread_id, int(start_seq)),
+            ).fetchall()
+
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row[1])
+            payload["seq"] = int(row[0])
+            events.append(payload)
+        return events
+
+    def copy_thread_prefix(
+        self,
+        source_thread_id: str,
+        target_thread_id: str,
+        before_seq: int,
+    ) -> list[dict[str, Any]]:
+        """Create a fork containing events strictly before one user event."""
+        if not self.auto_save:
+            raise ValueError("Thread autosave must be enabled to fork")
+        with self._write_lock:
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+                boundary = conn.execute(
+                    "SELECT payload FROM events WHERE thread_id = ? AND seq = ?",
+                    (source_thread_id, before_seq),
+                ).fetchone()
+                if boundary is None or json.loads(boundary[0]).get("kind") != "user":
+                    raise ValueError(f"Fork target seq {before_seq} is not a user message")
+                source = conn.execute(
+                    """
+                    SELECT model, fork_root_id FROM threads WHERE thread_id = ?
+                    """,
+                    (source_thread_id,),
+                ).fetchone()
+                if source is None:
+                    raise ValueError(f"Unknown source thread: {source_thread_id}")
+                now = self._now()
+                root_id = source["fork_root_id"] or source_thread_id
+                conn.execute(
+                    """
+                    INSERT INTO threads (
+                        thread_id, started_at, updated_at, model,
+                        fork_root_id, fork_parent_id, forked_from_seq
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_thread_id,
+                        now,
+                        now,
+                        source["model"] or self.default_model,
+                        root_id,
+                        source_thread_id,
+                        before_seq,
+                    ),
+                )
+                event_rows = conn.execute(
+                    """
+                    SELECT seq, payload FROM events
+                    WHERE thread_id = ? AND seq < ? ORDER BY seq
+                    """,
+                    (source_thread_id, before_seq),
+                ).fetchall()
+                copied: list[dict[str, Any]] = []
+                for row in event_rows:
+                    payload = json.loads(row["payload"])
+                    if payload.get("kind") == "usage":
+                        payload["inherited"] = True
+                    copied.append(payload)
+                    conn.execute(
+                        "INSERT INTO events (thread_id, seq, payload) VALUES (?, ?, ?)",
+                        (
+                            target_thread_id,
+                            int(row["seq"]),
+                            json.dumps(payload, ensure_ascii=False),
+                        ),
+                    )
+                    self._apply_event_to_thread(conn, target_thread_id, payload, now)
+                conn.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        thread_id, user_seq, git_hash, modified_paths,
+                        mem_snapshot, created_at
+                    )
+                    SELECT ?, user_seq, git_hash, modified_paths,
+                           mem_snapshot, created_at
+                    FROM checkpoints
+                    WHERE thread_id = ? AND user_seq < ?
+                    """,
+                    (target_thread_id, source_thread_id, before_seq),
+                )
+                conn.commit()
+                return copied
 
     def archive_thread(self, thread_id: str) -> str:
         """Mark a thread archived in the threads table.
@@ -280,11 +425,19 @@ class ThreadStore:
                 now = self._now()
                 conn.execute(
                     """
-                    INSERT INTO threads (thread_id, started_at, updated_at, model)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO threads (
+                        thread_id, started_at, updated_at, model, fork_root_id
+                    )
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(thread_id) DO NOTHING
                     """,
-                    (parent_thread_id, now, now, self.default_model),
+                    (
+                        parent_thread_id,
+                        now,
+                        now,
+                        self.default_model,
+                        parent_thread_id,
+                    ),
                 )
                 conn.execute(
                     """
@@ -543,7 +696,7 @@ class ThreadStore:
                     event = json.loads(item[0])
                     if event.get("kind") == "user":
                         turn_count += 1
-                    elif event.get("kind") == "usage":
+                    elif event.get("kind") == "usage" and not event.get("inherited"):
                         total_cost += float(event.get("cost_usd") or 0.0)
                         input_tokens += int(event.get("input_tokens") or 0)
                         cached_tokens += int(event.get("cached_input_tokens") or 0)
@@ -576,7 +729,7 @@ class ThreadStore:
         cached_delta = 0
         output_delta = 0
 
-        if event.get("kind") == "usage":
+        if event.get("kind") == "usage" and not event.get("inherited"):
             cost_delta = float(event.get("cost_usd") or 0.0)
             input_delta = int(event.get("input_tokens") or 0)
             cached_delta = int(event.get("cached_input_tokens") or 0)

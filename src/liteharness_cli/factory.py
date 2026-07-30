@@ -14,7 +14,7 @@ there is exactly one wiring recipe::
 
     coding = build_coding_session(
         thread_id="session-abc123",
-        approval_handler=render.ask_approval,
+        approval_handler=render.render_approval_handler,
         question_handler=render.ask_questions,
     )
     async for ev in coding.run_turn("add a rate limiter"):
@@ -26,7 +26,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from liteharness import MemoryConfig, NessAgent, NessAgentOptions
+from liteharness import ApprovalHandler, MemoryConfig, NessAgent, NessAgentOptions
+from liteharness.workspace import setup_ness_structure
 
 from liteharness_cli.chat_model import (
     active_model_name,
@@ -35,7 +36,14 @@ from liteharness_cli.chat_model import (
     create_reflection_model,
 )
 from liteharness_cli.coding_session import CodingSession
-from liteharness_cli.config import context_window_for, make_sdk_cost_tracker, settings
+from liteharness_cli.config import (
+    context_window_for,
+    make_sdk_cost_tracker,
+    reload_settings,
+    settings,
+    settings_field_env_map,
+)
+from liteharness_cli.config_store import migrate_env_once
 from liteharness_cli.paths import (
     NessPaths,
     ensure_global_config,
@@ -50,12 +58,24 @@ from liteharness_cli.prompts import (
 
 
 def prepare_paths(*, project_root: Path | None = None) -> NessPaths:
-    """Resolve paths and ensure global config + project runtime dirs exist."""
+    """Resolve paths and ensure global config + project runtime dirs exist.
+
+    On first run, imports any known keys from a project ``.env`` into the
+    global ``configs.json`` / ``secrets.json`` (once; the ``.env`` file is
+    left untouched), then reloads settings so the migrated values apply.
+    """
     paths = resolve_paths(
         project_root=project_root or Path.cwd(),
         ness_dir=settings.ness_dir,
     )
     ensure_global_config(paths)
+    migrated = migrate_env_once(
+        Path.cwd() / ".env",
+        config_dir=paths.config_dir,
+        field_for_alias=settings_field_env_map(),
+    )
+    if migrated:
+        reload_settings()
     ensure_project_runtime(paths)
     return paths
 
@@ -63,7 +83,8 @@ def prepare_paths(*, project_root: Path | None = None) -> NessPaths:
 def build_coding_agent(
     *,
     thread_id: str,
-    approval_handler: Any = None,
+    yolo: bool = False,
+    approval_handler: ApprovalHandler | None = None,
     question_handler: Any = None,
     l2_context: str | None = None,
     paths: NessPaths | None = None,
@@ -97,7 +118,8 @@ def build_coding_agent(
             compaction_token_budget=settings.compaction_token_budget,
             compaction_output_reserve=settings.compaction_output_reserve,
             compaction_input_reserve=settings.compaction_input_reserve,
-            enable_approval=settings.enable_approval,
+            enable_approval=settings.enable_approval and not yolo,
+            yolo_mode=yolo,
             auto_save_threads=settings.auto_save_threads,
             reflection_token_ratio=settings.reflection_token_ratio,
             session_end_reflection=settings.session_end_reflection,

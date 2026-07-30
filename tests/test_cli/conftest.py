@@ -179,12 +179,16 @@ class FakeCoding:
         self.saved = False
         self.reloaded = False
         self._events: list[SessionEvent] = []
+        self._todos: list[dict] = []
 
     # --- scripting ---------------------------------------------------------
     def queue_events(self, *events: SessionEvent) -> None:
         """Script the events the next ``run_turn`` will yield (replacing the
         default echo for that turn)."""
         self._events.extend(events)
+
+    def set_todos(self, todos: list[dict]) -> None:
+        self._todos = [dict(todo) for todo in todos]
 
     # --- the turn -----------------------------------------------------------
     async def run_turn(
@@ -243,7 +247,7 @@ class FakeCoding:
         return {}
 
     async def get_todos(self) -> list[dict]:
-        return []
+        return [dict(todo) for todo in self._todos]
 
     # --- thread management ----------------------------------------------------
     async def resume(self, thread_id: str, *, replay_cost: bool = True) -> bool:

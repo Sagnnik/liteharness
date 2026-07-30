@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
-from dotenv import load_dotenv
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
-load_dotenv()
+from liteharness_cli.config_store import load_configs, load_secrets
+from liteharness_cli.model_catalog import cached_models, model_record
 
 
 # USD per 1M tokens: (input, output, cache_read_ratio)
@@ -160,16 +161,57 @@ MODEL_REASONING: dict[str, dict[str, Any]] = {
     "deepseek-v4-flash": {"efforts": ("xhigh", "high"), "default": "high", "mandatory": False},
     "kimi-k2.7-code": {"efforts": (), "default": None, "mandatory": True},
     "kimi-k2.6": {"efforts": (), "default": None, "mandatory": False},
-    "glm-5.2": {"efforts": ("xhigh", "high"), "default": "high", "mandatory": False},
+    "glm-5.2": {"efforts": ("high", "max"), "default": "high", "mandatory": False},
     "glm-5.1": {"efforts": (), "default": None, "mandatory": False},
 }
 
-ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+ReasoningEffort = str
 REASONING_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
+class _JsonDirSource(PydanticBaseSettingsSource):
+    """Settings source reading global ``configs.json`` + ``secrets.json``.
+
+    The files are keyed by Settings field names (e.g. ``model_name``);
+    values are re-keyed to validation aliases so pydantic matches them to
+    the aliased fields. Missing/corrupt files yield an empty source.
+    """
+
+    def __call__(self) -> dict[str, Any]:
+        raw = {**load_configs(), **load_secrets()}
+        values: dict[str, Any] = {}
+        for name, field in self.settings_cls.model_fields.items():
+            if name not in raw:
+                continue
+            alias = field.validation_alias or field.alias or name
+            if isinstance(alias, str):
+                values[alias] = raw[name]
+        return values
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return None, field_name, False
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="")
+    """Adapter settings schema + defaults.
+
+    Precedence: init kwargs / CLI overrides > process env vars >
+    ``secrets.json`` / ``configs.json`` > the field defaults below (which
+    are therefore what a first run starts with).
+    """
+
+    model_config = SettingsConfigDict(env_prefix="", populate_by_name=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings, env_settings, _JsonDirSource(settings_cls))
 
     model_name: str = Field(default="deepseek-v4-flash", alias="MODEL_NAME")
     reflection_model_name: str = Field(default="deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
@@ -182,9 +224,16 @@ class Settings(BaseSettings):
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
     compaction_output_reserve: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE")
     compaction_input_reserve: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE")
-    openai_api_key: str = Field(alias="OPENAI_API_KEY")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
+    openrouter_cache_ttl: str = Field(default="5m", alias="OPENROUTER_CACHE_TTL")
+    openrouter_anthropic_messages: bool = Field(
+        default=True,
+        alias="OPENROUTER_ANTHROPIC_MESSAGES",
+    )
+    goal_judge_model: str | None = Field(default=None, alias="GOAL_JUDGE_MODEL")
+    goal_max_attempts: int = Field(default=3, alias="GOAL_MAX_ATTEMPTS")
     ness_dir: str = Field(default=".ness", alias="NESS_DIR")
     format_on_write: bool = Field(default=True, alias="FORMAT_ON_WRITE")
     exa_api_key: str | None = Field(default=None, alias="EXA_API_KEY")
@@ -195,6 +244,9 @@ class Settings(BaseSettings):
 
     @property
     def supports_vision(self) -> bool:
+        record = model_record(self.model_name)
+        if record is not None:
+            return record.supports_vision
         model = self.model_name.lower()
         return any(marker in model for marker in VISION_MODELS)
 
@@ -202,13 +254,25 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def settings_field_env_map() -> dict[str, str]:
+    """Map env aliases (``OPENAI_API_KEY``) to Settings field names.
+
+    Used by the one-time ``.env`` -> global JSON migration.
+    """
+    mapping: dict[str, str] = {}
+    for name, field in Settings.model_fields.items():
+        alias = field.validation_alias or field.alias
+        if isinstance(alias, str):
+            mapping[alias] = name
+    return mapping
+
+
 def reload_settings() -> None:
-    """Re-read environment (including a refreshed .env) into the shared settings.
+    """Re-read env + global JSON config into the shared settings.
 
     Mutates the existing ``settings`` singleton in place so every module that did
     ``from config import settings`` observes the new values.
     """
-    load_dotenv(override=True)
     fresh = Settings()
     for field in type(fresh).model_fields:
         setattr(settings, field, getattr(fresh, field))
@@ -221,7 +285,16 @@ def make_sdk_cost_tracker():
     """SDK CostTracker wired with CLI MODEL_PRICING estimates for non-provider costs."""
     from liteharness.tracing.cost import CostTracker
 
-    return CostTracker(pricing=MODEL_PRICING)
+    pricing = dict(MODEL_PRICING)
+    for record in cached_models():
+        if record.input_price is None or record.output_price is None:
+            continue
+        pricing[record.id] = (
+            record.input_price,
+            record.output_price,
+            record.cache_read_ratio,
+        )
+    return CostTracker(pricing=pricing)
 
 
 def resolve_model_key(model_name: str, catalog: dict[str, Any]) -> str | None:
@@ -236,6 +309,9 @@ def context_window_for(model_name: str) -> int | None:
     resolution (window − reserves) applies instead of the flat
     ``compaction_token_budget`` fallback.
     """
+    record = model_record(model_name)
+    if record is not None and record.context_length:
+        return record.context_length
     key = resolve_model_key(model_name, MODEL_CONTEXT_WINDOWS)
     return MODEL_CONTEXT_WINDOWS[key] if key is not None else None
 
@@ -248,10 +324,16 @@ def _reasoning_entry(model_name: str) -> dict[str, Any] | None:
 
 
 def model_supports_reasoning(model_name: str) -> bool:
+    record = model_record(model_name)
+    if record is not None:
+        return bool(record.reasoning_efforts) or "reasoning" in record.supported_parameters
     return _reasoning_entry(model_name) is not None
 
 
 def reasoning_efforts_for_model(model_name: str) -> tuple[str, ...]:
+    record = model_record(model_name)
+    if record is not None:
+        return record.reasoning_efforts
     entry = _reasoning_entry(model_name)
     if entry is None:
         return ()
@@ -280,3 +362,9 @@ def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
     if effort and effort in efforts:
         return effort
     return default_effort(model_name)
+
+
+def available_model_ids() -> tuple[str, ...]:
+    """Return the cached dynamic catalog, or the packaged offline fallback."""
+    records = cached_models()
+    return tuple(record.id for record in records) if records else AVAILABLE_MODELS

@@ -5,15 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from dotenv import set_key
 from prompt_toolkit.application import get_app
-
-from liteharness_cli.tui.constants import ENV_PATH
-
-
-def write_env(key: str, value: str) -> None:
-    ENV_PATH.touch(exist_ok=True)
-    set_key(str(ENV_PATH), key, value, quote_mode="never")
 
 
 def term_size() -> tuple[int, int]:

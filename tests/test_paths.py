@@ -32,6 +32,8 @@ def test_resolve_paths_uses_env_overrides(tmp_path: Path, monkeypatch):
     assert paths.ness_dir == (project / ".ness").resolve()
     assert paths.config_dir == cfg.resolve()
     assert paths.user_file == cfg.resolve() / "USER.md"
+    assert paths.configs_file == cfg.resolve() / "configs.json"
+    assert paths.secrets_file == cfg.resolve() / "secrets.json"
     assert paths.plans_dir == cfg.resolve() / "plans" / "myproj"
     assert paths.sessions_dir == paths.ness_dir / "runtime" / "sessions"
     assert paths.shells_dir == paths.ness_dir / "runtime" / "shells"
@@ -72,3 +74,11 @@ def test_ensure_global_config_creates_user_and_marker(tmp_path: Path, monkeypatc
     assert paths.user_file.is_file()
     assert (paths.plans_dir / ".project").is_file()
     assert any("USER.md" in c for c in created)
+    # secrets.json is created eagerly with restrictive perms; configs.json is lazy.
+    assert paths.secrets_file.is_file()
+    import json
+    import stat
+
+    assert json.loads(paths.secrets_file.read_text()) == {}
+    assert stat.S_IMODE(paths.secrets_file.stat().st_mode) == 0o600
+    assert not paths.configs_file.exists()

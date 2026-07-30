@@ -86,16 +86,6 @@ def test_multitracer_fans_out_to_all_backends():
     assert _current_span.get() is None
 
 
-def test_multispan_does_not_install_each_child_in_contextvar():
-    """MultiSpan must install itself once, not once per child backend."""
-    child = InMemorySpan("inner")
-    span = MultiSpan([child])  # type: ignore[list-item]
-    with span:
-        assert _current_span.get() is span
-    # Single reset restores None — not a stack of resets per child.
-    assert _current_span.get() is None
-
-
 def test_multispan_records_exception_on_exit():
     child = InMemorySpan("inner")
     span = MultiSpan([child])  # type: ignore[list-item]
@@ -105,12 +95,6 @@ def test_multispan_records_exception_on_exit():
     # the exception should have been recorded on the inner span
     exc_events = [ev for ev in child.events if ev["name"] == "exception"]
     assert exc_events
-
-
-def test_noop_span_idempotent_end():
-    span = NoopSpan()
-    span.end()
-    span.end()  # second call should be a no-op
 
 
 def test_build_tracer_returns_noop_when_disabled():

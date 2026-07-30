@@ -16,6 +16,7 @@ from liteharness.compaction import (
     calculate_context_pressure,
     compaction_label,
     compaction_overlay_note,
+    resolve_usable_context_budget,
 )
 from liteharness.graph.builder import build_graph
 from liteharness.graph.helpers import _effective_conversation
@@ -573,14 +574,19 @@ class Session:
         """
         state = await self.get_state()
         messages = list(state.get("messages", []))
-        if not messages:
-            self.context_used = 0
-            return state, None, []
-
-        conversation = list(_effective_conversation(messages, state))
         model_name = getattr(self._cfg.model, "model", "") or getattr(
             self._cfg.model, "model_name", ""
         )
+        if not messages:
+            # Empty sessions still need the model budget in the stats line (like 0k/128k).
+            self.context_used = 0
+            self.context_total = resolve_usable_context_budget(
+                model_name,
+                self._cfg.options,
+            )
+            return state, None, []
+
+        conversation = list(_effective_conversation(messages, state))
         pressure = calculate_context_pressure(
             conversation,
             known_input_tokens=state.get("last_input_tokens") or None,

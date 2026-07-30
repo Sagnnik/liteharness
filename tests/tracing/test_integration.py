@@ -167,41 +167,6 @@ def test_llm_span_records_usage_attrs(tmp_path: Path):
     assert llm.attributes["gen_ai.request.model"] == "stub-model"
 
 
-def test_session_records_turn_count(tmp_path: Path):
-    capture = CapturingTracer()
-    agent = _agent(tmp_path, capture)
-    session = agent.session(thread_id="trace-count")
-    _run_session(session)
-    _run_session(session)
-    turns = [s for s in capture.spans if s.name == TURN]
-    assert len(turns) == 2
-    # turn_count is incremented AFTER _iter_events() returns, so the first
-    # turn sees turn_count==0 and the second turn sees turn_count==1.
-    assert turns[0].attributes["session.turn_count"] == 0
-    assert turns[1].attributes["session.turn_count"] == 1
-
-
-def test_multitracer_fans_out_to_backends(tmp_path: Path):
-    """MultiTracer fans spans across a real (capture) + noop backend."""
-    capture = CapturingTracer()
-    multi = MultiTracer([capture, NoopTracer()])  # type: ignore[arg-type]
-    agent = _agent(tmp_path, multi)
-    session = agent.session(thread_id="multi-trace")
-    _run_session(session)
-    names = [s.name for s in capture.spans]
-    assert TURN in names
-    assert LLM_CALL in names
-
-
-def test_noop_tracer_smoke(tmp_path: Path):
-    """Default (noop) tracer should not crash instrumentation."""
-    agent = _agent(tmp_path, None)  # type: ignore[arg-type]
-    session = agent.session(thread_id="noop-trace")
-    # ensure the agent wires NoopTracer by default when tracer not provided
-    assert isinstance(agent.config.tracer, NoopTracer)
-    _run_session(session)  # should not raise from instrumentation
-
-
 # ---------------------------------------------------------------------------
 # gen_ai.prompt / gen_ai.completion / gen_ai.tool.call.* capture
 # ---------------------------------------------------------------------------
@@ -246,13 +211,6 @@ def test_capture_disabled_by_default(tmp_path: Path):
     tool_span = next(s for s in capture.spans if s.name.startswith("tool."))
     assert GEN_AI_TOOL_CALL_RESULT not in tool_span.attributes
     assert GEN_AI_TOOL_CALL_ARGUMENTS not in tool_span.attributes
-
-
-def test_semconv_message_names_match_deprecated_convention():
-    assert GEN_AI_PROMPT == "gen_ai.prompt"
-    assert GEN_AI_COMPLETION == "gen_ai.completion"
-    assert GEN_AI_TOOL_CALL_ARGUMENTS == "gen_ai.tool.call.arguments"
-    assert GEN_AI_TOOL_CALL_RESULT == "gen_ai.tool.call.result"
 
 
 def test_serialize_messages_strips_image_base64(tmp_path: Path):

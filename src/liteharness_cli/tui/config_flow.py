@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any
 
 from liteharness_cli.tui import render
-from liteharness_cli.tui.constants import FORM_LABELS
-from liteharness_cli.tui.utils import write_env
+from liteharness_cli.tui.config_registry import (
+    CONFIG_SECTIONS,
+    SECTION_TITLES,
+    SPEC_BY_KEY,
+    ConfigSpec,
+    format_current,
+    parse_number,
+    specs_for_section,
+)
+from liteharness_cli.config_store import write_config, write_secret
 from liteharness_cli.chat_model import (
     active_model_name,
     active_reasoning_effort,
@@ -13,6 +22,7 @@ from liteharness_cli.chat_model import (
     set_active_reasoning_effort,
 )
 from liteharness_cli.config import reasoning_efforts_for_model, reload_settings, settings
+from liteharness_cli.model_catalog import refresh_catalog
 
 
 # --- shared /config data + delegator ---------------------------------------
@@ -47,17 +57,12 @@ def note_model_reasoning_changes(
 
 
 def current_config_lines() -> list[str]:
-    return [
-        f"model         {active_model_name()}",
-        f"reasoning     {active_reasoning_effort()}",
-        f"reflection    {settings.reflection_model_name}",
-        f"base url      {settings.openai_base_url or '(default)'}",
-        f"approval      {'on' if settings.enable_approval else 'off'}",
-        f"autosave      {'on' if settings.auto_save_threads else 'off'}",
-        f"session end reflection  {'on' if settings.session_end_reflection else 'off'}",
-        f"provider key  {'set' if settings.openai_api_key else 'missing'}",
-        f"Exa key       {'set' if settings.exa_api_key else 'missing'}",
-    ]
+    lines: list[str] = []
+    for section_id, title in CONFIG_SECTIONS:
+        lines.append(f"{title}:")
+        for spec in specs_for_section(section_id):
+            lines.append(f"  {spec.key}  {format_current(spec)}")
+    return lines
 
 
 async def run_config() -> ConfigResult:
@@ -70,9 +75,9 @@ async def run_config() -> ConfigResult:
     return await sink.run_config()
 
 
-# --- interactive /config picker + credential forms ------------------------
+# --- interactive /config picker + forms -------------------------------------
 class ConfigFlowMixin:
-    """Interactive /config picker and credential forms."""
+    """Interactive /config sections, pickers, toggles, and entry forms."""
 
     async def run_config(self) -> ConfigResult:
         if self._config_future is not None and not self._config_future.done():
@@ -81,6 +86,9 @@ class ConfigFlowMixin:
         self._config_result = ConfigResult()
         self._model_pick_changed = False
         self._model_pick_name = ""
+        self._config_section = ""
+        self._config_select_key = ""
+        self._config_model_target = "model_name"
         self._open_picker("config_action", "/config", index=0)
         result = await self._config_future
         self._config_future = None
@@ -90,6 +98,8 @@ class ConfigFlowMixin:
     def _finish_config(self) -> None:
         if self._config_future is not None and not self._config_future.done():
             self._config_future.set_result(self._config_result or ConfigResult())
+        self._config_model_target = "model_name"
+        self._config_select_key = ""
         self._close_menu()
         self._close_form(reset_buffer=True)
         self._reset_buffer()
@@ -106,42 +116,107 @@ class ConfigFlowMixin:
         if self._config_result is not None:
             self._config_result.mark_session_update()
 
+    def _apply_spec_flags(self, spec: ConfigSpec) -> None:
+        if spec.rebuild:
+            self._config_rebuild()
+        if spec.session_update:
+            self._config_session_update()
+
+    def _persist_spec(self, spec: ConfigSpec, value: Any) -> None:
+        if spec.secret:
+            write_secret(spec.key, value)
+        else:
+            write_config(spec.key, value)
+
+    # --- top-level sections ------------------------------------------------
     def _apply_config_action(self, key: str) -> None:
-        if key == "model":
-            current = self._current_model_slug()
-            index = next((i for i, item in enumerate(self._config_model_items()) if item.key == current), 0)
-            self._open_picker("config_models", "/config", index=index)
-            return
-        if key == "reasoning":
-            self._open_config_reasoning_picker()
-            return
-        if key == "approval":
-            settings.enable_approval = not settings.enable_approval
-            write_env("ENABLE_APPROVAL", "true" if settings.enable_approval else "false")
-            self._config_session_update()
-            self._config_note(f"Approval {'on' if settings.enable_approval else 'off'}.")
-            self._finish_config()
-            return
-        if key == "autosave":
-            settings.auto_save_threads = not settings.auto_save_threads
-            write_env("AUTO_SAVE_THREADS", "true" if settings.auto_save_threads else "false")
-            self._config_session_update()
-            self._config_note(f"Autosave {'on' if settings.auto_save_threads else 'off'}.")
-            self._finish_config()
-            return
-        if key == "session_end_reflection":
-            settings.session_end_reflection = not settings.session_end_reflection
-            write_env("SESSION_END_REFLECTION", "true" if settings.session_end_reflection else "false")
-            self._config_session_update()
-            self._config_note(f"Session end reflection {'on' if settings.session_end_reflection else 'off'}.")
-            self._finish_config()
-            return
         if key == "view":
             self._config_note("\n".join(current_config_lines()))
             self._finish_config()
             return
-        if key in FORM_LABELS:
-            self._open_form(key, FORM_LABELS[key])
+        if key in SECTION_TITLES:
+            self._config_section = key
+            self._open_picker("config_section", "/config", index=0)
+
+    def _apply_config_section_item(self, key: str) -> None:
+        spec = SPEC_BY_KEY.get(key)
+        if spec is None:
+            self._finish_config()
+            return
+        if spec.kind == "bool":
+            self._toggle_config_bool(spec)
+            return
+        if spec.kind == "reasoning":
+            self._config_model_target = "model_name"
+            self._open_config_reasoning_picker()
+            return
+        if spec.kind == "model":
+            self._config_model_target = spec.key
+            current = self._active_config_model_slug()
+            index = next(
+                (i for i, item in enumerate(self._config_model_items()) if item.key == current),
+                0,
+            )
+            self._open_picker("config_models", "", index=index)
+            if self._catalog_refresh_task is None or self._catalog_refresh_task.done():
+                self._catalog_refresh_task = asyncio.create_task(
+                    self._refresh_model_catalog_menu()
+                )
+            return
+        if spec.kind == "select":
+            self._config_select_key = spec.key
+            items = self._config_select_items()
+            current = str(getattr(settings, spec.key))
+            index = next((i for i, item in enumerate(items) if item.key == current), 0)
+            self._open_picker("config_select", "/config", index=index)
+            return
+        # text / number / secret entry form
+        self._open_form(spec)
+
+    # --- bool toggle (Enter or left/right arrows) ---------------------------
+    def _toggle_config_bool(self, spec: ConfigSpec) -> None:
+        new_value = not bool(getattr(settings, spec.key))
+        setattr(settings, spec.key, new_value)
+        self._persist_spec(spec, new_value)
+        self._apply_spec_flags(spec)
+        self.invalidate()
+
+    def _toggle_menu_value(self) -> None:
+        """Left/right arrow toggle for bool rows in the open section menu."""
+        if self._menu_kind != "config_section":
+            return
+        items = self._visible_menu_items()
+        if not (0 <= self._menu_index < len(items)):
+            return
+        spec = SPEC_BY_KEY.get(items[self._menu_index].key)
+        if spec is not None and spec.kind == "bool":
+            self._toggle_config_bool(spec)
+
+    async def _refresh_model_catalog_menu(self) -> None:
+        selected_model: str | None = None
+        if self._menu_kind == "config_models":
+            items = self._visible_menu_items()
+            if 0 <= self._menu_index < len(items):
+                selected_model = items[self._menu_index].key
+        result = await refresh_catalog()
+        if result.error and not self._catalog_refresh_warned:
+            self._catalog_refresh_warned = True
+            self.append_warning(
+                f"Model catalog refresh failed; using cached fallback: {result.error}"
+            )
+        if self._menu_kind == "config_models":
+            if selected_model is not None:
+                refreshed = self._visible_menu_items()
+                self._menu_index = next(
+                    (
+                        index
+                        for index, item in enumerate(refreshed)
+                        if item.key == selected_model
+                    ),
+                    self._menu_index,
+                )
+            self._clamp_menu_index()
+            self.invalidate()
 
     def _open_config_reasoning_picker(self) -> None:
         model_name = active_model_name()
@@ -155,15 +230,31 @@ class ConfigFlowMixin:
         self._open_picker("config_reasoning", "/config", index=index)
 
     def _apply_config_model(self, model_name: str) -> None:
+        target = self._config_model_target or "model_name"
+        if target != "model_name":
+            # reflection / goal-judge model: persist only, no reasoning chain.
+            spec = SPEC_BY_KEY[target]
+            if model_name == "":
+                self._persist_spec(spec, None)
+                reload_settings()
+                self._config_note(f"{spec.label} cleared.")
+            else:
+                self._persist_spec(spec, model_name)
+                reload_settings()
+                self._config_note(f"{spec.label} set to {model_name}.")
+            self._apply_spec_flags(spec)
+            self._config_model_target = "model_name"
+            self._finish_config()
+            return
         current = self._current_model_slug()
         self._model_pick_changed = model_name != current
         self._model_pick_name = model_name
         coerced: str | None = None
         if self._model_pick_changed:
             coerced = set_active_model(model_name)
-            write_env("MODEL_NAME", model_name)
+            write_config("model_name", model_name)
             if coerced:
-                write_env("REASONING_EFFORT", coerced)
+                write_config("reasoning_effort", coerced)
             self._config_rebuild()
             self._config_session_update()
         efforts = reasoning_efforts_for_model(model_name)
@@ -185,7 +276,7 @@ class ConfigFlowMixin:
         reasoning_changed = effort != current
         if reasoning_changed:
             set_active_reasoning_effort(effort)  # type: ignore[arg-type]
-            write_env("REASONING_EFFORT", effort)
+            write_config("reasoning_effort", effort)
             self._config_rebuild()
         if self._config_result is not None:
             note_model_reasoning_changes(
@@ -197,10 +288,25 @@ class ConfigFlowMixin:
             )
         self._finish_config()
 
-    def _open_form(self, kind: str, label: str) -> None:
+    def _apply_config_select(self, value: str) -> None:
+        key = self._config_select_key
+        self._config_select_key = ""
+        spec = SPEC_BY_KEY.get(key)
+        if spec is None:
+            self._finish_config()
+            return
+        setattr(settings, spec.key, value)
+        self._persist_spec(spec, value)
+        self._apply_spec_flags(spec)
+        self._config_note(f"{spec.label} set to {value}.")
+        self._finish_config()
+
+    # --- text / number / secret entry forms ---------------------------------
+    def _open_form(self, spec: ConfigSpec) -> None:
         self._close_menu()
-        self._form_kind = kind
-        self._form_label = label
+        self._form_kind = spec.key
+        self._form_label = spec.label
+        self._form_example = spec.example
         self._form_buffer.text = ""
         self._form_buffer.cursor_position = 0
         self._set_buffer_text("/config")
@@ -211,6 +317,7 @@ class ConfigFlowMixin:
         had_form = self._form_kind is not None
         self._form_kind = None
         self._form_label = ""
+        self._form_example = ""
         self._form_buffer.text = ""
         if had_form and reset_buffer:
             self._reset_buffer()
@@ -218,27 +325,34 @@ class ConfigFlowMixin:
 
     def _submit_form(self) -> None:
         kind = self._form_kind
-        value = self._form_buffer.text.strip()
         if kind is None:
             return
-        if kind == "openai_key":
-            if not value:
-                self.append_error("Provider API key cannot be empty.")
+        spec = SPEC_BY_KEY.get(kind)
+        if spec is None:
+            return
+        value = self._form_buffer.text.strip()
+        if not value:
+            if spec.optional:
+                self._persist_spec(spec, None)
+                reload_settings()
+                self._apply_spec_flags(spec)
+                self._config_note(f"{spec.label} cleared.")
+                self._finish_config()
+            else:
+                self.append_error(f"{spec.label} cannot be empty.")
+            return
+        parsed: Any = value
+        if spec.kind == "number":
+            try:
+                parsed = parse_number(spec, value)
+            except ValueError:
+                self.append_error(f"{spec.label} must be a number ({spec.example}).")
                 return
-            write_env("OPENAI_API_KEY", value)
-            reload_settings()
-            self._config_rebuild()
-            self._config_note("Provider API key saved to .env.")
-        elif kind == "exa_key":
-            if not value:
-                self.append_error("Exa API key cannot be empty.")
-                return
-            write_env("EXA_API_KEY", value)
-            reload_settings()
-            self._config_note("Exa API key saved to .env.")
-        elif kind == "base_url":
-            write_env("OPENAI_BASE_URL", value)
-            reload_settings()
-            self._config_rebuild()
-            self._config_note("Base URL saved to .env." if value else "Base URL cleared.")
+        self._persist_spec(spec, parsed)
+        reload_settings()
+        self._apply_spec_flags(spec)
+        note = f"{spec.label} saved to {'secrets' if spec.secret else 'configs'}.json"
+        if spec.deferred:
+            note += " (applies to new sessions)"
+        self._config_note(note + ".")
         self._finish_config()

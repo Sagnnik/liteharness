@@ -44,6 +44,13 @@ def build_key_bindings(ui) -> KeyBindings:
         ui._wheel_menu_index(-1)
         event.app.invalidate()
 
+    @kb.add("left", filter=ui._menu_navigation_open)
+    @kb.add("right", filter=ui._menu_navigation_open)
+    def _menu_toggle_value(event) -> None:
+        # Bool rows in /config section menus flip on left/right arrows.
+        ui._toggle_menu_value()
+        event.app.invalidate()
+
     @kb.add("tab", filter=ui._question_prompt_open)
     def _toggle_question_note(event) -> None:
         ui._prompt_note_active = not ui._prompt_note_active
@@ -152,8 +159,9 @@ def build_key_bindings(ui) -> KeyBindings:
         if buff is not ui._buffer:
             return
 
-        if ui._menu_kind in PICKER_MODES and ui._visible_menu_items():
-            ui._apply_picker_selection()
+        if ui._menu_kind in PICKER_MODES:
+            if ui._visible_menu_items():
+                ui._apply_picker_selection()
             event.app.invalidate()
             return
 
@@ -162,7 +170,7 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
-        if ui._menu_kind == "rollback" and ui._visible_menu_items():
+        if ui._menu_kind in {"rollback", "threads", "fork"} and ui._visible_menu_items():
             ui._apply_picker_selection()
             event.app.invalidate()
             return

@@ -1,6 +1,6 @@
-"""LiteHarness CLI startup header dashboard.
+"""NessAgent CLI startup header dashboard.
 
-Renders a concept-faithful header (gradient loop logo + LiteHarness title +
+Renders a concept-faithful header (gradient loop logo + NessAgent title +
 rounded dashboard panel + hints) as a list of ``TranscriptLine`` rows
 that the prompt_toolkit transcript pane prints before the first prompt.
 
@@ -17,17 +17,20 @@ from functools import lru_cache
 
 from liteharness_cli.tui.models import TranscriptLine
 from liteharness_cli.tui.theme import (
-    BLUE,
     CYAN,
+    GRAY,
     GRAY_BRIGHT,
     GRAY_DIM,
     PURPLE,
 )
 
-# --- palette (mirrors assets/cli-header-concept.svg) ------------------------
-_LOOP_STOPS = (CYAN, BLUE, PURPLE)  # cyan -> blue -> purple
+# --- palette ----------------------------------------------------------------
+# Ring uses the full symmetric silver sweep (highlight orbits the circle).
+_SILVER_STOPS = (GRAY_DIM, GRAY, GRAY_BRIGHT, "#f0f2f5", GRAY_BRIGHT, GRAY, GRAY_DIM)
+# Title reads left-to-right: dim → silver → near-white (matches working label at frame 0).
+_BRAND_GRADIENT_STOPS = (GRAY_DIM, GRAY, GRAY_BRIGHT, "#f0f2f5")
 _NODE_TOP_COLOR = "#6ee7b7"  # mint
-_NODE_BR_COLOR = "#6d28d9"  # dark purple
+_NODE_BR_COLOR = "#c084fc" # dark purple
 _NODE_BL_COLOR = "#f97316"  # orange
 
 # --- braille (2x4 dot matrix) -----------------------------------------------
@@ -95,7 +98,7 @@ _NodeSpec = tuple[str, float, float, float, str]
 def _ring_color_for_angle(angle: float) -> str:
     """Map an angle to a gradient color (matches the SVG loop-gradient)."""
     t = math.sin(angle) * 0.5 + 0.5
-    return _interp_hex(_LOOP_STOPS, t)
+    return _interp_hex(_SILVER_STOPS, t)
 
 
 def _svg_node_positions(cx: float, cy: float, ring_r: float) -> dict[str, tuple[float, float]]:
@@ -279,13 +282,13 @@ def _logo_height() -> int:  # noqa: D401 (tiny accessor)
 
 
 def _gradientized_title(text: str) -> list[tuple[str, str]]:
-    """Return fragments for a gradientized title string (cyan -> blue -> purple)."""
+    """Return fragments for a silver gradient title string (dim → bright)."""
     if not text:
         return []
     out: list[tuple[str, str]] = []
     last = len(text) - 1
     for i, ch in enumerate(text):
-        color = _interp_hex(_LOOP_STOPS, i / max(1, last))
+        color = _interp_hex(_BRAND_GRADIENT_STOPS, i / max(1, last))
         out.append((_char_style(color, bold=True), ch))
     return out
 
@@ -367,21 +370,21 @@ def _panel_rows(
 
 
 def _title_line(*, version: str, width: int) -> TranscriptLine:
-    """Build the Lite + Harness (gradient) + version row. Title bold."""
-    left = "Lite"
+    """Build the Ness + Agent (silver gradient) + version row. Title bold."""
+    left = "Ness"
     title_style = _char_style(GRAY_BRIGHT, bold=True)
     title_fragments: list[tuple[str, str]] = [(title_style, left)]
-    title_fragments.extend(_gradientized_title("Harness"))
+    title_fragments.extend(_gradientized_title("Agent"))
     # version appended with a dim style and one space gap
     ver_text = f" v{version}"
     title_fragments.append((_char_style(GRAY_DIM), ver_text))
 
     # right-pad with spaces to fill `width` so subsequent rows align
-    used = len(left) + len("Harness") + len(ver_text)
+    used = len(left) + len("Agent") + len(ver_text)
     pad = max(0, width - used)
     title_fragments.append(("", " " * pad))
 
-    text = "Lite" + "Harness" + ver_text + (" " * pad)
+    text = "Ness" + "Agent" + ver_text + (" " * pad)
     return TranscriptLine(style="", text=text, fragments=title_fragments)
 
 
@@ -417,8 +420,10 @@ def _hints_line(*, width: int) -> TranscriptLine:
     return TranscriptLine(style=dim, text=text, fragments=fragments)
 
 
-def _mode_label(mode: str, approval: bool) -> str:
+def _mode_label(mode: str, approval: bool, yolo: bool = False) -> str:
     mode = (mode or "").lower()
+    if mode == "act" and yolo:
+        return "Act (yolo)"
     if mode == "act" and approval:
         return "Act (auto-approval)"
     return mode.capitalize() or "Act"
@@ -437,13 +442,14 @@ def header_lines(
     mode: str,
     model: str,
     approval: bool,
+    yolo: bool = False,
     project: str,
     addons_summary: str,
     version: str,
     width: int,
     show_logo: bool,
 ) -> list[TranscriptLine]:
-    """Render the LiteHarness startup header.
+    """Render the NessAgent startup header.
 
     Returns ordered ``TranscriptLine`` rows (top to bottom), each exactly
     ``width`` columns wide. Empty list is returned when ``width < 40`` so
@@ -470,7 +476,7 @@ def header_lines(
                     ),
                     (
                         "Mode    :",
-                        _mode_label(mode, approval),
+                        _mode_label(mode, approval, yolo),
                         "Add-ons :",
                         _truncate(addons_summary, max(20, body_w // 2 - 18)),
                     ),
@@ -502,7 +508,7 @@ def header_lines(
                 ),
                 (
                     "Mode    :",
-                    _mode_label(mode, approval),
+                    _mode_label(mode, approval, yolo),
                     "Add-ons :",
                     _truncate(addons_summary, max(20, body_w // 2 - 18)),
                 ),

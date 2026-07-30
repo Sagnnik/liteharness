@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from liteharness_cli.config import settings
 
 from liteharness_cli.tui import render
 from liteharness_cli.tui.commands import dispatch
+from liteharness_cli.tui.config_flow import ConfigResult
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
@@ -45,18 +47,61 @@ def test_status_command_shows_session_summary(make_app):
     assert "cache read" in text
 
 
-def test_config_action_can_update_persisted_setting(make_app):
+def test_config_session_toggles_update_active_runtime(make_app):
+    app = make_app()
+    options = SimpleNamespace(
+        enable_approval=True,
+        yolo_mode=False,
+        auto_save_threads=True,
+        session_end_reflection=False,
+    )
+    app.coding.cfg = SimpleNamespace(options=options)
+    app.coding.thread_store.auto_save = True
+    old = (
+        settings.enable_approval,
+        settings.auto_save_threads,
+        settings.session_end_reflection,
+    )
+    settings.enable_approval = False
+    settings.auto_save_threads = False
+    settings.session_end_reflection = True
+    try:
+        with patch(
+            "liteharness_cli.tui.commands.run_config",
+            new_callable=AsyncMock,
+            return_value=ConfigResult(session_update=True),
+        ):
+            asyncio.run(_dispatch_with_sink(app, "/config"))
+    finally:
+        (
+            settings.enable_approval,
+            settings.auto_save_threads,
+            settings.session_end_reflection,
+        ) = old
+
+    assert options.enable_approval is False
+    assert options.auto_save_threads is False
+    assert options.session_end_reflection is True
+    assert app.coding.thread_store.auto_save is False
+
+
+def test_config_action_can_update_persisted_setting(make_app, tmp_path, monkeypatch):
+    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
+    from liteharness_cli.config_store import load_configs
+
     app = make_app()
     previous = settings.enable_approval
     settings.enable_approval = True
     try:
-        app._open_picker("config_action", "/config", index=0)
-        items = app._config_action_items()
-        app._menu_index = next(i for i, item in enumerate(items) if item.key == "approval")
-        with patch("liteharness_cli.tui.config_flow.write_env"):
-            app._apply_picker_selection()
+        app._config_section = "behavior"
+        app._open_picker("config_section", "/config", index=0)
+        items = app._visible_menu_items()
+        app._menu_index = next(i for i, item in enumerate(items) if item.key == "enable_approval")
+        app._apply_picker_selection()
         assert settings.enable_approval is False
-        assert app._menu_kind is None
+        # Bool toggles stay in the section menu and persist to configs.json.
+        assert app._menu_kind == "config_section"
+        assert load_configs()["enable_approval"] is False
     finally:
         settings.enable_approval = previous
 

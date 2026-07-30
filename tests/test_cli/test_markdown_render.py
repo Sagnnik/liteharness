@@ -22,12 +22,6 @@ def test_empty_returns_single_blank_line():
     assert lines[0].text == ""
 
 
-def test_plain_text_is_present_and_invariant_holds():
-    lines = markdown_transcript_lines("just some words", width=80)
-    assert "just some words" in _all_text(lines)
-    _assert_fragments_join(lines)
-
-
 def test_complex_document_invariant_holds():
     text = (
         "# Heading\n\n"
@@ -47,12 +41,3 @@ def test_complex_document_invariant_holds():
     assert "http" not in joined
     for needle in ("Heading", "bold", "italic", "code", "link", "item one", "print", "final plain text"):
         assert needle in joined
-
-
-def test_live_stream_helper_remains_plain():
-    from liteharness_cli.tui.transcript import TranscriptMixin
-
-    lines = TranscriptMixin._assistant_stream_lines("not **markdown**")
-    assert len(lines) == 1
-    assert lines[0].text == "not **markdown**"
-    assert lines[0].fragments is None

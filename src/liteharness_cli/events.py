@@ -142,7 +142,13 @@ def events_to_messages(
             content = event.get("content")
             text = "" if content is None else str(content)
             if text or tool_calls:
-                messages.append(AIMessage(content=text, tool_calls=tool_calls))
+                messages.append(
+                    AIMessage(
+                        content=text,
+                        tool_calls=tool_calls,
+                        additional_kwargs=dict(event.get("additional_kwargs") or {}),
+                    )
+                )
                 pending_calls = list(tool_calls)
         elif kind == "tool":
             call_id = str(event.get("call_id") or "")
@@ -177,7 +183,7 @@ def restore_cost_from_events(events: list[dict], cost_tracker: Any) -> None:
     reproduce the persisted ones exactly rather than being re-estimated.
     """
     for event in events:
-        if event.get("kind") != "usage":
+        if event.get("kind") != "usage" or event.get("inherited"):
             continue
         model = str(event.get("model") or "")
         usage = {

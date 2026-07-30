@@ -6,7 +6,6 @@ Stdlib-only: must not import config or permissions (cwd is set before those load
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -86,13 +85,6 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     return result.returncode == 0
 
 
-def _copy_env_file(repo: Path, worktree: Path) -> None:
-    source = repo / ".env"
-    target = worktree / ".env"
-    if source.is_file() and not target.exists():
-        shutil.copy2(source, target)
-
-
 def ensure_worktree(name: str) -> Path:
     """Create or reuse an isolated worktree and return its absolute path."""
     repo = _main_repo_root()
@@ -105,7 +97,6 @@ def ensure_worktree(name: str) -> Path:
 
     registered = _registered_worktree_paths(repo)
     if path in registered:
-        _copy_env_file(repo, path)
         return path
 
     if path.exists():
@@ -126,5 +117,4 @@ def ensure_worktree(name: str) -> Path:
         detail = (result.stderr or result.stdout or "").strip()
         raise WorktreeError(f"git worktree add failed: {detail}")
 
-    _copy_env_file(repo, path)
     return path

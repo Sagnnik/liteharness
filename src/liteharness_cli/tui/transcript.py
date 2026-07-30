@@ -115,6 +115,7 @@ class TranscriptMixin:
         mode: str,
         model: str,
         approval: bool,
+        yolo: bool = False,
         autosave: bool,
         session_end_reflection: bool,
     ) -> None:
@@ -129,6 +130,7 @@ class TranscriptMixin:
             "mode": mode,
             "model": model,
             "approval": approval,
+            "yolo": yolo,
             "project": _header_project(),
             # getattr chains: bare TranscriptMixin harnesses (tests) have no
             # mcp/coding wired; both summary inputs degrade to empty.
@@ -537,7 +539,7 @@ class TranscriptMixin:
     def _sync_transcript_buffer(
         self, *, scroll: bool = True, invalidate_ui: bool = True
     ) -> None:
-        self._transcript_store.reset()
+        self._transcript_store.reset([])
         self._transcript_revision = self._transcript_store.revision
         if scroll:
             self._scroll_transcript_to_bottom()
@@ -545,8 +547,13 @@ class TranscriptMixin:
             self.invalidate()
 
     def clear_transcript(self) -> None:
-        # Public sink entry point used by /resume (and --resume startup) to
-        # wipe the visible pane before replaying the prior conversation.
+        # Reset every index that points into the old transcript before the
+        # store revision changes. Session switches, rollback, and /new all
+        # share this path.
+        self._header_block = None
+        self._todos_block_start = None
+        self._todos_block_count = 0
+        self._reasoning_spans = []
         self._sync_transcript_buffer()
 
     # Tool calls & results -------------------------------------------------
@@ -679,6 +686,26 @@ class TranscriptMixin:
         title = f"shell {header}".strip()
         body_lines = body.splitlines() if body.strip() else ["(no output)"]
         self._append_transcript(*_shell_output_lines(title, body_lines))
+
+    def append_subagent_output(self, content: str) -> None:
+        from liteharness_cli.tui.tool_display import format_subagent_output
+
+        header, body = format_subagent_output(content)
+        body_lines = body.splitlines() if body.strip() else ["(no output)"]
+        lines = _shell_output_lines(header, body_lines)
+        # Prefer the dedicated subagent summary style for body rows.
+        styled = [lines[0]]
+        for line in lines[1:-1]:
+            styled.append(
+                TranscriptLine(
+                    "class:transcript.subagent.summary",
+                    line.text,
+                    fragments=[("class:transcript.subagent.summary", line.text)],
+                )
+            )
+        if lines:
+            styled.append(lines[-1])
+        self._append_transcript(*styled)
 
     # Streaming adapters ---------------------------------------------------
     def start_assistant_stream(self) -> TuiAssistantStream:

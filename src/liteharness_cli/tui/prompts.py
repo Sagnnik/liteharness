@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from liteharness_cli.tui.models import MenuItem
+from liteharness_cli.tui.tool_display import format_tool_args
 from liteharness_cli.tui.utils import term_width
 from liteharness.utils import preview_diff
 
@@ -33,7 +34,11 @@ class PromptMixin:
             MenuItem("diff", "show diff", "Preview file changes."),
             MenuItem("show", "show args", "Inspect full arguments."),
         ]
-        self._prompt_detail_lines = [json.dumps(args, ensure_ascii=False)[: max(20, term_width() - 8)]]
+        preview = format_tool_args(name, args) or json.dumps(args, ensure_ascii=False)
+        self._prompt_summary_lines = [
+            line[: max(20, term_width() - 6)] for line in preview.splitlines()[:3]
+        ]
+        self._prompt_detail_lines = []
         self._prompt_question = {"name": name, "args": args}
         self._open_picker("approval", "", index=0)
         result = await self._prompt_future
@@ -101,6 +106,7 @@ class PromptMixin:
         self._prompt_title = message
         self._prompt_hint = "Enter submit - Esc cancel"
         self._prompt_items = []
+        self._prompt_summary_lines = []
         self._prompt_detail_lines = []
         self._reset_buffer()
         self._focus_command_input()
@@ -137,11 +143,71 @@ class PromptMixin:
         self._clear_prompt()
         return str(result or "")
 
+    async def request_threads_picker(
+        self,
+        threads: list[dict],
+        *,
+        current_thread_id: str,
+    ) -> str:
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "threads"
+        self._prompt_title = "saved threads"
+        self._prompt_hint = "↑/↓ select · Enter switch · Esc cancel"
+        self._prompt_items = []
+        current_index = 0
+        for index, thread in enumerate(threads):
+            thread_id = str(thread.get("thread_id") or "")
+            label = str(thread.get("label") or thread.get("summary") or "(no messages)")
+            suffixes: list[str] = []
+            if thread_id == current_thread_id:
+                suffixes.append("(current)")
+                current_index = index
+            # Root shows how many forks exist; each child shows its ordinal so
+            # the original conversation is distinct from the fork sequence.
+            if thread.get("fork_parent_id"):
+                suffixes.append(f"fork #{int(thread.get('fork_index') or 1)}")
+            else:
+                forks = int(thread.get("fork_count") or 0)
+                if forks:
+                    suffixes.append(f"×{forks}")
+            self._prompt_items.append(
+                MenuItem(thread_id, label[:100], suffix=" ".join(suffixes))
+            )
+        self._prompt_summary_lines = []
+        self._prompt_detail_lines = []
+        self._open_picker("threads", "", index=current_index)
+        result = await self._prompt_future
+        self._clear_prompt()
+        return str(result or "")
+
+    async def request_fork_picker(self, turns: list[dict]) -> str:
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "fork"
+        self._prompt_title = "fork before user message"
+        self._prompt_hint = "↑/↓ select · Enter fork · Esc cancel"
+        self._prompt_items = [
+            MenuItem(
+                str(turn["seq"]),
+                "[user] " + (
+                    str(turn.get("content") or "").strip().splitlines()[0][:90]
+                    or "(empty)"
+                ),
+            )
+            for turn in turns
+        ]
+        self._prompt_summary_lines = []
+        self._prompt_detail_lines = []
+        self._open_picker("fork", "", index=max(0, len(turns) - 1))
+        result = await self._prompt_future
+        self._clear_prompt()
+        return str(result or "")
+
     def _clear_prompt(self) -> None:
         self._prompt_kind = None
         self._prompt_title = ""
         self._prompt_hint = ""
         self._prompt_items = []
+        self._prompt_summary_lines = []
         self._prompt_detail_lines = []
         self._prompt_question = None
         self._prompt_note_active = False

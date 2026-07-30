@@ -178,7 +178,7 @@ def test_resume_replays_saved_thread(tmp_path: Path):
     text = _transcript_text(app)
     assert "old question" in text
     assert "old reply" in text
-    assert "Resumed thread t-old." in text
+    assert "Resumed thread" not in text
     assert app.assistant_history[-1] == "old reply"
 
 

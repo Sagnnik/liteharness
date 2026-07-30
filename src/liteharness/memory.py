@@ -8,8 +8,8 @@ There are 3 main memory files:
 from __future__ import annotations
 
 import re
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from liteharness.options import MemoryConfig
 
@@ -18,41 +18,54 @@ MAX_NESS_INCLUDE_CHARS = 40_000
 _NESS_INCLUDE_RE = re.compile(r"^@(\S+)\s*$")
 
 
-@runtime_checkable
-class MemoryBackend(Protocol):
+class MemoryBackend(ABC):
     """Pluggable project / user / session memory backend.
 
-    Inject via ``AgentSpec.memory_store=...``. When omitted,
-    :class:`MemoryStore` is constructed from :class:`MemoryConfig`.
+    Subclass and implement all abstract methods. Inject via
+    ``AgentSpec.memory_store=...``. When omitted, :class:`MemoryStore`
+    is constructed from :class:`MemoryConfig`. Duck-typed objects are
+    rejected at agent construction.
     """
 
     @property
+    @abstractmethod
     def disabled(self) -> bool: ...
 
+    @abstractmethod
     def load_project(self) -> str: ...
 
+    @abstractmethod
     def append_project(self, text: str) -> str: ...
 
+    @abstractmethod
     def write_project(self, text: str, overwrite: bool = False) -> str: ...
 
+    @abstractmethod
     def load_user(self) -> str: ...
 
+    @abstractmethod
     def append_user(self, text: str) -> str: ...
 
+    @abstractmethod
     def write_user(self, text: str, overwrite: bool = False) -> str: ...
 
+    @abstractmethod
     def load_session(self, thread_id: str) -> str: ...
 
+    @abstractmethod
     def append_session_bullets(self, thread_id: str, bullets: list[str]) -> bool: ...
 
+    @abstractmethod
     def read_session_raw(self, thread_id: str) -> str: ...
 
+    @abstractmethod
     def write_session_raw(self, thread_id: str, text: str) -> None: ...
 
+    @abstractmethod
     def check_health(self) -> str | None: ...
 
 
-class MemoryStore:
+class MemoryStore(MemoryBackend):
     """Filesystem-backed project/user/session memory at configurable paths."""
 
     def __init__(
@@ -152,11 +165,20 @@ class MemoryStore:
         return self._append_markdown(self.ness_file, text)
 
     def write_project(self, text: str, overwrite: bool = False) -> str:
-        """Create/overwrite NESS.md (CLI ``/init``)."""
+        """Create/overwrite NESS.md (CLI ``/memory create``).
+
+        Writes when the file is missing or empty/whitespace-only even without
+        ``overwrite``. Non-empty existing content requires ``overwrite=True``.
+        """
         if self.disabled:
             return "disabled"
         if self.ness_file.exists() and not overwrite:
-            return f"Error: {self.ness_file} exists"
+            try:
+                existing = self.ness_file.read_text(encoding="utf-8")
+            except OSError:
+                return f"Error: {self.ness_file} exists (unreadable; use force to overwrite)"
+            if existing.strip():
+                return f"Error: {self.ness_file} exists"
 
         self.ness_file.parent.mkdir(parents=True, exist_ok=True)
         self.ness_file.write_text(text.strip() + "\n", encoding="utf-8")

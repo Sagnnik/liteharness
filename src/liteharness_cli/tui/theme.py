@@ -130,6 +130,7 @@ PTK_STYLE_RULES: dict[str, str] = {
     "chrome.path": GRAY,
     "chrome.menu.header": CYAN,
     "chrome.menu.hint": GRAY_DIM,
+    "chrome.approval.command": f"bold {GREEN}",
     "chrome.menu.row": GRAY,
     "chrome.menu.row.current": f"bg:{NAVY}",
     "chrome.menu.arrow": f"bg:{NAVY} {CYAN}",

@@ -48,6 +48,29 @@ class SessionStorageTests(unittest.TestCase):
         self.assertEqual(events[1]["tool_calls"][0]["id"], "call-1")
         self.assertEqual(events[2]["result"], "file contents")
 
+    def test_load_thread_events_since_filters_by_seq(self) -> None:
+        self.store.append_event("session-since", {"kind": "user", "content": "before"})
+        start = self.store.append_event(
+            "session-since",
+            {"kind": "goal", "phase": "start", "goal": "do the thing"},
+        )
+        self.store.append_event("session-since", {"kind": "user", "content": "do the thing"})
+        self.store.append_event(
+            "session-since",
+            {"kind": "assistant", "content": "done", "tool_calls": []},
+        )
+
+        sliced = self.store.load_thread_events_since("session-since", start)
+        self.assertEqual(len(sliced), 3)
+        self.assertEqual(sliced[0]["kind"], "goal")
+        self.assertEqual(sliced[0]["seq"], start)
+        self.assertEqual(sliced[1]["content"], "do the thing")
+        self.assertNotIn("before", [e.get("content") for e in sliced])
+        # Full load still omits seq so existing callers stay unchanged.
+        full = self.store.load_thread_events("session-since")
+        self.assertEqual(len(full), 4)
+        self.assertNotIn("seq", full[0])
+
     def test_usage_updates_thread_aggregates(self) -> None:
         self.store.append_event("session-cost", {"kind": "user", "content": "hi"})
         self.store.append_event(

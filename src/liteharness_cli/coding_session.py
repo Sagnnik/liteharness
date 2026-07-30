@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +95,9 @@ class CodingSession:
 
         # Per-turn plan text accumulator
         self._plan_turn_texts: list[str] = []
+        # This tracker is process-wide for the coding agent. Durable usage is
+        # replayed once per thread, never on every A→B→A switch.
+        self._restored_cost_threads: set[str] = {thread_id}
 
     # ----------------------------------------------------------------------
     # Properties delegating to the underlying SDK Session
@@ -207,14 +211,27 @@ class CodingSession:
             create_model,
             create_reflection_model,
         )
-        from liteharness_cli.config import context_window_for
+        from liteharness_cli.config import context_window_for, settings
+        from liteharness_cli.model_catalog import model_record
 
         self.cfg.model = create_model(self.thread_id)
         self.cfg.compaction_model = create_compaction_model(self.thread_id)
         self.cfg.reflection_model = create_reflection_model(self.thread_id)
+        self._vision = settings.supports_vision
+        self._session._vision = self._vision
         window = context_window_for(active_model_name())
-        if window:
-            self.cfg.options.context_window = window
+        self.cfg.options.context_window = window
+        record = model_record(active_model_name())
+        if (
+            record is not None
+            and record.input_price is not None
+            and record.output_price is not None
+        ):
+            self.cost_tracker.pricing[record.id] = (
+                record.input_price,
+                record.output_price,
+                record.cache_read_ratio,
+            )
         self._session.rebuild_graph()
 
     def save_thread(self) -> str:
@@ -468,7 +485,13 @@ class CodingSession:
     # Resume / reset / rollback
     # ----------------------------------------------------------------------
 
-    async def resume(self, thread_id: str, *, replay_cost: bool = True) -> bool:
+    async def resume(
+        self,
+        thread_id: str,
+        *,
+        replay_cost: bool = True,
+        allow_empty: bool = False,
+    ) -> bool:
         """Rebuild the live graph from persisted events for ``thread_id``.
 
         Mirrors the CLI's ``resume_thread`` semantics:
@@ -486,7 +509,7 @@ class CodingSession:
         truncated messages and duplicate the replayed prefix.
         """
         events = self.thread_store.load_thread_events(thread_id)
-        if not events and thread_id != self.thread_id:
+        if not events and thread_id != self.thread_id and not allow_empty:
             return False
         if thread_id != self.thread_id:
             await self.finalize_reflection()
@@ -499,16 +522,50 @@ class CodingSession:
             vision=self._vision,
             permission_store=self.permission_store,
         )
-        if replay_cost:
+        if replay_cost and thread_id not in self._restored_cost_threads:
             restore_cost_from_events(events, self.cost_tracker)
+            self._restored_cost_threads.add(thread_id)
 
         self.thread_id = thread_id
         self._session.thread_id = thread_id
+        self._restored_cost_threads.add(thread_id)
         self._plan_turn_texts = []
         self._session.reset_checkpointer()
         self._session.bootstrap(messages)
         await self.refresh_context_snapshot()
         return True
+
+    async def fork_before(
+        self,
+        user_seq: int,
+    ) -> tuple[str, str, list[dict[str, Any]]]:
+        """Fork immediately before a persisted user message and switch to it."""
+        selected = next(
+            (
+                turn
+                for turn in self.thread_store.list_user_turns(self.thread_id)
+                if int(turn.get("seq", -1)) == user_seq
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError(f"Fork target seq {user_seq} is not a user message")
+        checkpoint = self.thread_store.get_checkpoint(self.thread_id, user_seq)
+        if checkpoint is None:
+            raise ValueError(f"No checkpoint for seq {user_seq} in this thread")
+        target = f"session-{uuid.uuid4().hex[:8]}"
+        events = self.thread_store.copy_thread_prefix(
+            self.thread_id,
+            target,
+            user_seq,
+        )
+        await asyncio.to_thread(
+            self.memory_store.write_session_raw,
+            target,
+            str(checkpoint.get("mem_snapshot") or ""),
+        )
+        await self.resume(target, replay_cost=False, allow_empty=True)
+        return target, str(selected.get("content") or ""), events
 
     async def reset(self, thread_id: str) -> None:
         """Archive the current thread and start fresh from ``thread_id``.
@@ -522,6 +579,7 @@ class CodingSession:
         self.thread_store.archive_thread(self.thread_id)
         self.thread_id = thread_id
         self._session.thread_id = thread_id
+        self._restored_cost_threads.add(thread_id)
         self._plan_turn_texts = []
         self._session.reset_checkpointer()
         await self.refresh_context_snapshot()
