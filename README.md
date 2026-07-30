@@ -18,7 +18,7 @@ Or skip the env var and set the key in-session: `uv run ness`, then `/config` > 
 
 Useful settings (env var shown; all except `NESS_DIR` are also editable via `/config`):
 
-- `MODEL_NAME`: model passed to `ChatOpenRouter` (`deepseek-v4-flash` by default).
+- `MODEL_NAME`: model passed to `ChatOpenRouter` (`deepseek/deepseek-v4-flash` by default).
 - `REFLECTION_MODEL_NAME`: model for background session-memory reflection (defaults to `MODEL_NAME`).
 - `ENABLE_APPROVAL`: require approval for destructive tools.
 - `AUTO_SAVE_THREADS`: write thread events to `.ness/threads/`.
@@ -362,7 +362,7 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "assistant", "content": "...", "tool_calls": [], "t": "..."}
 {"kind": "tool", "tool": "read", "args": {}, "result": "...", "call_id": "...", "duration_ms": 10, "exit": "ok", "t": "..."}
 {"kind": "approval", "tool": "edit", "decision": "yes", "t": "..."}
-{"kind": "usage", "model": "deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
+{"kind": "usage", "model": "deepseek/deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
 {"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}

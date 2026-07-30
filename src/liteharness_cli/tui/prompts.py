@@ -61,11 +61,27 @@ class PromptMixin:
         if self._prompt_future is not None and not self._prompt_future.done():
             self._prompt_future.set_result(key)
 
+    @staticmethod
+    def _cancelled_question_answer(index: int, question: dict) -> dict:
+        return {
+            "id": question.get("id", str(index)),
+            "selected": None,
+            "note": "cancelled by user",
+        }
+
+    @staticmethod
+    def _is_cancelled_question_answer(answer: dict) -> bool:
+        return answer.get("selected") is None and answer.get("note") == "cancelled by user"
+
     async def ask_questions(self, questions: list[dict]) -> list[dict]:
         answers: list[dict] = []
         for index, question in enumerate(questions, 1):
             answer = await self._ask_question(index, question)
             answers.append(answer)
+            if self._is_cancelled_question_answer(answer):
+                for rest_index, rest in enumerate(questions[index:], index + 1):
+                    answers.append(self._cancelled_question_answer(rest_index, rest))
+                break
         return answers
 
     async def _ask_question(self, index: int, question: dict) -> dict:
@@ -73,7 +89,7 @@ class PromptMixin:
         self._prompt_future = asyncio.get_running_loop().create_future()
         self._prompt_kind = "question"
         self._prompt_title = f"question {index}: {question.get('prompt', '')}"
-        self._prompt_hint = "↑/↓ option · Tab note · Enter submit"
+        self._prompt_hint = "↑/↓ option · Tab note · Enter submit · Esc cancel"
         self._prompt_items = [
             MenuItem(str(i), str(option.get("label", "")), "(recommended)" if option.get("recommended") else "")
             for i, option in enumerate(options)
@@ -84,6 +100,8 @@ class PromptMixin:
         self._open_picker("question", "", index=default_question_index(options))
         result = await self._prompt_future
         self._clear_prompt()
+        if result is None or (isinstance(result, dict) and result.get("cancelled")):
+            return self._cancelled_question_answer(index, question)
         selected_index = int(result["index"])
         selected = options[selected_index]
         return {

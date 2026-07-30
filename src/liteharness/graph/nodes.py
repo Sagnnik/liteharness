@@ -10,7 +10,8 @@ from liteharness.graph.helpers import (
     _effective_conversation,
     _with_working_state_tail,
     _needs_approval,
-    _denied_messages,
+    _denial_tool_messages,
+    _all_calls_denied,
     _reflection_token_delta,
     extract_tool_calls,
     _tool_event,
@@ -203,7 +204,7 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         # reset some states
         updates: AgentState = {
             "messages": [],
-            "approval_declined": False,
+            "approval_declined": {},
             "force_compact": False,
             "activate_skills": [],
             "mode_switch": "",
@@ -312,16 +313,18 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         """The approval gate node that handles the approval logic."""
         calls = extract_tool_calls(state["messages"][-1])
         gated = [(n, a, cid) for n, a, cid in calls if _needs_approval(n, a, options, permission_store, tools_reg)]
-        
-        if not gated: 
-            return {"approval_declined": False}
-        
+
+        if not gated:
+            return {"approval_declined": {}}
+
         ah = config.approval_handler
-        for name, args, _ in gated:
+        denials: dict[str, str] = {}
+        for name, args, call_id in gated:
             if ah is None:
                 persist.append_event(thread_id, {"kind": "approval", "tool": name, "decision": "no"})
-                return _denied_messages(calls, f"Approval required but no handler configured: {name}")
-            
+                denials[call_id] = f"Approval required but no handler configured: {name}"
+                continue
+
             decision = await ah(name, args)
 
             if decision == "always":
@@ -344,9 +347,14 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
                 persist.append_event(
                     thread_id, {"kind": "approval", "tool": name, "decision": "never", "rule": rule}
                 )
-                return _denied_messages(calls, f"Denied by persisted permission rule: {rule}")
+                denials[call_id] = f"Denied by persisted permission rule: {rule}"
+                continue
             if decision == "yes":
                 persist.append_event(thread_id, {"kind": "approval", "tool": name, "decision": "yes"})
+                continue
+            if decision == "no":
+                persist.append_event(thread_id, {"kind": "approval", "tool": name, "decision": "no"})
+                denials[call_id] = f"Denied by user approval: {name}"
                 continue
             warnings.warn(
                 f"Unknown approval decision {decision!r} from {ah!r} for tool {name!r} — "
@@ -354,16 +362,21 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
                 stacklevel=2,
             )
             persist.append_event(thread_id, {"kind": "approval", "tool": name, "decision": "no"})
-            return _denied_messages(calls, f"Denied by user approval: {name}")
-        
-        return {"approval_declined": False}
+            denials[call_id] = f"Denied by user approval: {name}"
+
+        updates: AgentState = {"approval_declined": denials}
+        # When every tool_call in the batch is denied, emit ToolMessages here and
+        # skip tools_node. Partial denials are left for tools_node so siblings run.
+        if _all_calls_denied(calls, denials):
+            updates["messages"] = _denial_tool_messages(calls, denials)
+        return updates
 
     async def tools_node(state: AgentState) -> AgentState:
         """The tools node that handles the tool calls and tool results logic."""
         # get the last AIMessage and extract the tool calls
         calls = extract_tool_calls(state["messages"][-1])
         if not calls:
-            return {"messages": []}
+            return {"messages": [], "approval_declined": {}}
 
         set_subagent_runtime(main_model, thread_id)
         set_question_runtime(config.question_handler)
@@ -376,8 +389,25 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         newly_loaded_names: set[str] = set()
         # Fresh catalog for loaded_skills eligibility (matches skill_view context).
         all_skills = skills_loader.load()
+        denials = state.get("approval_declined") or {}
+        if not isinstance(denials, dict):
+            denials = {}
 
         for name, args, call_id in calls:
+            if call_id in denials:
+                content = denials[call_id]
+                results.append(ToolMessage(
+                    tool_call_id=call_id,
+                    name=name,
+                    content=content,
+                    additional_kwargs={"duration_ms": 0},
+                ))
+                persist.append_event(
+                    thread_id,
+                    _tool_event(name, args, content, 0, call_id=call_id, exit_status="denied"),
+                )
+                continue
+
             # Plan-mode write gate: honors ModeConfig.plan_mode_readonly
             # (default True even when modes is unset).
             readonly = (
@@ -500,7 +530,12 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
                     "description": sk.get("description", ""),
                     "path": sk.get("source", ""),
                 })
-        return {"messages": results, "todos": get_thread_todos(thread_id), "loaded_skills": existing}
+        return {
+            "messages": results,
+            "todos": get_thread_todos(thread_id),
+            "loaded_skills": existing,
+            "approval_declined": {},
+        }
 
     async def route_after_agent(state) -> Literal["approval_gate", "tools", "__end__"]:
         calls = extract_tool_calls(state["messages"][-1])
@@ -536,7 +571,22 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         return "tools"
 
     async def route_after_approval(state) -> Literal["agent", "tools"]:
-        if state.get("approval_declined"):
+        denials = state.get("approval_declined") or {}
+        if not isinstance(denials, dict):
+            denials = {}
+        if not denials:
+            return "tools"
+        # Denial ToolMessages may already be appended when every call was
+        # rejected, so look up the AIMessage that requested the tools.
+        messages = state.get("messages") or []
+        ai = next(
+            (m for m in reversed(messages) if isinstance(m, AIMessage) or getattr(m, "type", None) == "ai"),
+            None,
+        )
+        if ai is None:
+            return "tools"
+        calls = extract_tool_calls(ai)
+        if _all_calls_denied(calls, denials):
             return "agent"
         return "tools"
 

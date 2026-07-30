@@ -6,7 +6,6 @@ from langchain_core.messages import ToolMessage, AIMessage
 from liteharness.compaction import resolve_token_count
 from liteharness.context.overlay import wrap_system_reminder
 from liteharness.tools import ToolRegistry
-from liteharness.graph.state import AgentState
 
 def _effective_conversation(messages, state) -> list[BaseMessage]:
     """
@@ -60,15 +59,23 @@ def _needs_approval(name, args, options, permission_store, tools_reg: ToolRegist
     # check if the tool is destructive
     return tools_reg.is_destructive(name, args)
 
-def _denied_messages(calls, content) -> AgentState:
-    """Build messages to inject when tool execution is denied by approval gate."""
-    return {
-        "messages": [
-            ToolMessage(tool_call_id=call_id, name=name, content=content)
-            for name, _, call_id in calls
-        ],
-        "approval_declined": True,
-    }
+def _denial_tool_messages(
+    calls: list[tuple[str, dict[str, Any], str]],
+    denials: dict[str, str],
+) -> list[ToolMessage]:
+    """Build ToolMessages for call_ids present in ``denials``."""
+    return [
+        ToolMessage(tool_call_id=call_id, name=name, content=denials[call_id])
+        for name, _, call_id in calls
+        if call_id in denials
+    ]
+
+
+def _all_calls_denied(
+    calls: list[tuple[str, dict[str, Any], str]],
+    denials: dict[str, str],
+) -> bool:
+    return bool(calls) and bool(denials) and all(call_id in denials for _, _, call_id in calls)
 
 def _reflection_token_delta(messages, since_index) -> int:
     """Estimate tokens in messages not yet covered by the last reflection run."""

@@ -143,5 +143,5 @@ def test_settings_defaults_without_json(config_dir: Path, monkeypatch):
     from liteharness_cli.config import Settings
 
     fresh = Settings()
-    assert fresh.model_name == "deepseek-v4-flash"
+    assert fresh.model_name == "deepseek/deepseek-v4-flash"
     assert fresh.openai_api_key is None

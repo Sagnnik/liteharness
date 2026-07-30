@@ -53,4 +53,5 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 markers = [
     "live: opt-in tests that contact paid external providers",
+    "packaging: opt-in wheel build and clean-install smoke tests",
 ]

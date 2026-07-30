@@ -156,11 +156,11 @@ class TranscriptMixin:
             ]
 
         if self._header_block is None:
-            # First render: append at the top of an (initially empty) transcript.
-            start = len(self._transcript_store.lines)
-            self._transcript_store.append(block_lines)
+            # First render: always pin to the top. Startup notices may already
+            # be in the transcript (appended before run_async); insert above them.
+            self._transcript_store.insert(0, block_lines)
             self._header_block = {
-                "start": start,
+                "start": 0,
                 "count": len(block_lines),
                 "width": width,
                 "source": source,
@@ -644,7 +644,27 @@ class TranscriptMixin:
         )
 
     def append_usage(self, usage: dict[str, Any]) -> None:
-        self.invalidate()
+        if not usage:
+            self.invalidate()
+            return
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cached = int(usage.get("cached_input_tokens") or 0)
+        parts = [f"↑ {input_tokens:,}", f"↓ {output_tokens:,}"]
+        if cached:
+            parts.append(f"⟳ {cached:,}")
+        cost = usage.get("cost_usd")
+        if cost is not None and float(cost) > 0:
+            parts.append(f"${float(cost):.4f}")
+        body = "  ".join(parts)
+        self._append_transcript(
+            TranscriptLine(
+                "class:chrome.stats.value",
+                body,
+                fragments=[("class:chrome.stats.value", body)],
+            ),
+            TranscriptLine("class:transcript.muted", ""),
+        )
 
     # Todos / diff / shell output ------------------------------------------
     def append_todos(self, todos: list[dict]) -> None:
@@ -664,13 +684,13 @@ class TranscriptMixin:
             *todos_transcript_lines(todos, width=width),
             TranscriptLine("class:transcript.muted", ""),
         ]
+        # Active list: always sit at the end of the transcript, not pinned mid-history.
         if self._todos_block_start is not None:
-            self._transcript_store.replace(
-                self._todos_block_start, self._todos_block_count, lines
+            self._transcript_store.delete(
+                self._todos_block_start, self._todos_block_count
             )
-        else:
-            self._todos_block_start = len(self._transcript_store.lines)
-            self._transcript_store.append(lines)
+        self._todos_block_start = len(self._transcript_store.lines)
+        self._transcript_store.append(lines)
         self._todos_block_count = len(lines)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()

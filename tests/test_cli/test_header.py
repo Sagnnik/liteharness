@@ -111,6 +111,11 @@ class _FakeStore:
         self.lines.extend(lines)
         self.revision += 1
 
+    def insert(self, start: int, lines: list[TranscriptLine]) -> None:
+        start = max(0, min(start, len(self.lines)))
+        self.lines[start:start] = lines
+        self.revision += 1
+
     def replace(self, start: int, count: int, lines: list[TranscriptLine]) -> None:
         self.lines[start : start + count] = lines
         self.revision += 1
@@ -147,6 +152,25 @@ def _patch_addon_helpers() -> None:
     transcript_module._header_project = lambda: "~/projects/liteharness"
     transcript_module._header_addons_summary = lambda *args: "0 MCPs, 1 Skills"
     transcript_module._header_version = lambda: "0.1.0"
+
+
+def test_append_header_inserts_above_existing_startup_notices():
+    _patch_addon_helpers()
+    m = _HeaderHarness(width=120)
+    m._transcript_store.append(
+        [TranscriptLine("class:transcript.warning", "missing API key")]
+    )
+    m.append_header(
+        mode="act",
+        model="m1",
+        approval=True,
+        autosave=True,
+        session_end_reflection=True,
+    )
+    assert m._header_block["start"] == 0
+    text = "\n".join(line.text for line in m._transcript_store.lines)
+    assert "Ness" in text
+    assert text.index("Ness") < text.index("missing API key")
 
 
 def test_append_header_replaces_block_in_place_instead_of_duplicating():

@@ -344,9 +344,10 @@ def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
 
     # Simulate the usage bridge the agent node would fire mid-turn.
     from liteharness.session import _active_session
+    from liteharness.session_context import reset_session_context
 
     async def _run():
-        session._install_session_runtime()
+        ctx_token = session._install_session_runtime()
         session._last_usage = None
         session._turn_usages = []
         token = _active_session.set(session)
@@ -363,5 +364,6 @@ def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
             assert total.cost_usd == pytest.approx(0.3)
         finally:
             _active_session.reset(token)
+            reset_session_context(ctx_token)
 
     asyncio.run(_run())

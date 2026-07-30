@@ -204,8 +204,8 @@ def test_approval_session_and_never_persist(tmp_path: Path):
             content="",
             tool_calls=[{"name": "shell", "args": args_session, "id": "c1"}],
         )
-        result = await rt.approval_gate({"messages": [ai], "approval_declined": False})
-        assert result.get("approval_declined") is False
+        result = await rt.approval_gate({"messages": [ai], "approval_declined": {}})
+        assert result.get("approval_declined") == {}
         assert cfg.permission_store.check("shell", args_session) == "allow"
 
         args_never = {"action": "run", "command": "cargo test"}
@@ -213,11 +213,92 @@ def test_approval_session_and_never_persist(tmp_path: Path):
             content="",
             tool_calls=[{"name": "shell", "args": args_never, "id": "c2"}],
         )
-        result2 = await rt.approval_gate({"messages": [ai2], "approval_declined": False})
-        assert result2.get("approval_declined") is True
+        result2 = await rt.approval_gate({"messages": [ai2], "approval_declined": {}})
+        denials = result2.get("approval_declined") or {}
+        assert "c2" in denials
+        assert "Denied by persisted permission rule" in denials["c2"]
         assert cfg.permission_store.check("shell", args_never) == "deny"
 
     asyncio.run(_run())
+
+
+def test_approval_deny_preserves_sibling_tools(tmp_path: Path):
+    """Denying one gated call must not cancel independent siblings in the batch."""
+    from liteharness.types import ApprovalHandler
+    from liteharness.session_context import SessionContext, set_session_context, reset_session_context
+
+    class DenyOnce(ApprovalHandler):
+        async def __call__(self, name: str, args: dict) -> str:
+            return "no"
+
+    agent = _agent(
+        tools=["read", "shell"],
+        approval_handler=DenyOnce(),
+        options=NessAgentOptions(
+            project_root=tmp_path,
+            ness_dir=tmp_path / ".ness",
+            enable_approval=True,
+            auto_save_threads=True,
+        ),
+    )
+    cfg = agent.config
+    cfg.thread_store.auto_save = True
+    rt = make_nodes(cfg, thread_id="t-partial-deny", mode="act", git_available=False)
+
+    safe_path = tmp_path / "note.txt"
+    safe_path.write_text("hello sibling\n", encoding="utf-8")
+    ctx_token = set_session_context(
+        SessionContext(
+            permissions=cfg.permission_store,
+            options=cfg.options,
+            thread_store=cfg.thread_store,
+            ness_dir=cfg.options.ness_dir or (tmp_path / ".ness"),
+            project_root=tmp_path,
+            agent_config=cfg,
+        )
+    )
+
+    async def _run():
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "read", "args": {"path": str(safe_path)}, "id": "safe"},
+                {
+                    "name": "shell",
+                    "args": {"action": "run", "command": "npm run build"},
+                    "id": "gated",
+                },
+            ],
+        )
+        with patch("warnings.warn") as warn:
+            gate = await rt.approval_gate({"messages": [ai], "approval_declined": {}})
+            warn.assert_not_called()
+
+        denials = gate.get("approval_declined") or {}
+        assert list(denials) == ["gated"]
+        assert "Denied by user approval: shell" in denials["gated"]
+        assert not gate.get("messages")
+
+        route = await rt.route_after_approval({"messages": [ai], "approval_declined": denials})
+        assert route == "tools"
+
+        out = await rt.tools_node(
+            {
+                "messages": [ai],
+                "approval_declined": denials,
+                "todos": [],
+                "mode": "act",
+            }
+        )
+        by_id = {msg.tool_call_id: msg for msg in out["messages"]}
+        assert "hello sibling" in by_id["safe"].content
+        assert "Denied by user approval: shell" in by_id["gated"].content
+        assert out.get("approval_declined") == {}
+
+    try:
+        asyncio.run(_run())
+    finally:
+        reset_session_context(ctx_token)
 
 
 def test_session_emits_assistant_events():
@@ -231,6 +312,71 @@ def test_session_emits_assistant_events():
         assert "assistant_delta" in events or "assistant_final" in events or "error" in events
 
     asyncio.run(_run())
+
+
+def test_session_context_restored_after_turn(tmp_path: Path):
+    """Turn install must reset SessionContext so a prior CLI install is restored."""
+    from liteharness.session_context import (
+        SessionContext,
+        set_session_context,
+        reset_session_context,
+        try_get_session_context,
+    )
+
+    agent = _agent(
+        options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
+    )
+    session = agent.session(thread_id="t-ctx-reset")
+    prior = SessionContext(
+        permissions=agent.config.permission_store,
+        options=agent.config.options,
+        thread_store=agent.config.thread_store,
+        ness_dir=tmp_path / ".ness",
+        project_root=tmp_path,
+        agent_config=agent.config,
+        all_skills={"marker": {"name": "marker"}},
+    )
+    # Isolate from ContextVar leaks left by other tests in the process.
+    baseline = set_session_context(None)
+    prior_token = set_session_context(prior)
+    try:
+        async def _run():
+            assert try_get_session_context() is prior
+            async for _ in session.stream("hello"):
+                pass
+            restored = try_get_session_context()
+            assert restored is prior
+            assert restored.all_skills == {"marker": {"name": "marker"}}
+
+        asyncio.run(_run())
+    finally:
+        reset_session_context(prior_token)
+        reset_session_context(baseline)
+
+
+def test_session_context_cleared_when_no_prior(tmp_path: Path):
+    from liteharness.session_context import (
+        set_session_context,
+        reset_session_context,
+        try_get_session_context,
+    )
+
+    agent = _agent(
+        options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
+    )
+    session = agent.session(thread_id="t-ctx-clear")
+    baseline = set_session_context(None)
+    try:
+        assert try_get_session_context() is None
+
+        async def _run():
+            async for _ in session.stream("hello"):
+                pass
+            assert try_get_session_context() is None
+
+        asyncio.run(_run())
+    finally:
+        reset_session_context(baseline)
 
 
 # ---------------------------------------------------------------------------

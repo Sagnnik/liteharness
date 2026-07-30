@@ -419,6 +419,8 @@ HANDLERS: dict[str, CommandHandler] = {
 
 # Slash commands safe to run while a task is streaming: read-only or file-write
 # side effects that do not touch the live graph or thread state.
+# Exception: /memory create invokes the chat model and is refused when busy
+# (see ``dispatch``); /memory read and /memory add remain allowed.
 BUSY_SAFE_COMMANDS: frozenset[str] = frozenset(
     {
         "help",
@@ -445,6 +447,9 @@ async def dispatch(app: "TuiApp", command_line: str, *, busy: bool = False) -> N
     if handler is not None:
         if busy and name not in BUSY_SAFE_COMMANDS:
             render.render_warning(f"/{name} is not available while a task is running")
+            return
+        if busy and name == "memory" and args.strip().startswith("create"):
+            render.render_warning("/memory create is not available while a task is running")
             return
         await handler(app, args)
         return
