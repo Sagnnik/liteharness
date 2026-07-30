@@ -213,8 +213,8 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (init_settings, env_settings, _JsonDirSource(settings_cls))
 
-    model_name: str = Field(default="deepseek-v4-flash", alias="MODEL_NAME")
-    reflection_model_name: str = Field(default="deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
+    model_name: str = Field(default="deepseek/deepseek-v4-flash", alias="MODEL_NAME")
+    reflection_model_name: str = Field(default="deepseek/deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
     reasoning_effort: ReasoningEffort = Field(default="xhigh", alias="REASONING_EFFORT")
     api_max_retries: int = Field(default=3, alias="API_MAX_RETRIES")
     enable_approval: bool = Field(default=True, alias="ENABLE_APPROVAL")

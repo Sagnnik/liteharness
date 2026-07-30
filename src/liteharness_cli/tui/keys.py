@@ -70,8 +70,13 @@ def build_key_bindings(ui) -> KeyBindings:
     @kb.add("escape", filter=ui._form_open, eager=True)
     def _form_cancel(event) -> None:
         if ui._prompt_kind == "question":
-            ui._prompt_note_active = False
-            ui._focus_command_input()
+            # Note field open: Esc leaves the note. Otherwise soft-cancel the
+            # question (same sentinel as Ctrl+C / _cancel_menu).
+            if ui._prompt_note_active:
+                ui._prompt_note_active = False
+                ui._focus_command_input()
+            else:
+                ui._cancel_menu()
         elif ui._form_kind:
             ui._finish_config()
         event.app.invalidate()

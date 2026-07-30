@@ -30,6 +30,7 @@ class NessPaths:
     user_file: Path
     configs_file: Path
     secrets_file: Path
+    instructions_dir: Path
     plans_dir: Path
     sessions_dir: Path
     shells_dir: Path
@@ -121,6 +122,7 @@ def resolve_paths(
         user_file=cfg / "USER.md",
         configs_file=cfg / "configs.json",
         secrets_file=cfg / "secrets.json",
+        instructions_dir=cfg / "instructions",
         plans_dir=plans_root / slug,
         sessions_dir=ness / "runtime" / "sessions",
         shells_dir=ness / "runtime" / "shells",
@@ -132,8 +134,8 @@ def resolve_paths(
 
 
 def ensure_global_config(paths: NessPaths) -> list[str]:
-    """Create global config dir, plans slug dir + marker, empty USER.md and
-    ``secrets.json`` if missing.
+    """Create global config dir, plans slug dir + marker, empty USER.md,
+    ``secrets.json``, and instruction templates if missing.
 
     ``configs.json`` is created lazily on first write (see
     :mod:`liteharness_cli.config_store`). Returns a list of paths that were
@@ -171,6 +173,26 @@ def ensure_global_config(paths: NessPaths) -> list[str]:
         except OSError:
             marker.write_text(root_str + "\n", encoding="utf-8")
 
+    created.extend(_ensure_instruction_files(paths))
+
+    return created
+
+
+def _ensure_instruction_files(paths: NessPaths) -> list[str]:
+    """Seed packaged ``instructions/*.md`` into the global config dir."""
+    from liteharness_cli.instructions import default_instruction_files
+
+    created: list[str] = []
+    if not paths.instructions_dir.exists():
+        paths.instructions_dir.mkdir(parents=True, exist_ok=True)
+        created.append(str(paths.instructions_dir))
+
+    for filename, content in default_instruction_files().items():
+        path = paths.instructions_dir / filename
+        if path.exists():
+            continue
+        path.write_text(content, encoding="utf-8")
+        created.append(str(path))
     return created
 
 

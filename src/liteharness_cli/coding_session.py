@@ -63,6 +63,7 @@ class CodingSession:
         vision: bool | None = None,
         git_available: bool | None = None,
         metadata: dict[str, Any] | None = None,
+        instructions_dir: Path | None = None,
     ) -> None:
         self.agent = agent
         self.cfg = agent.config
@@ -71,6 +72,12 @@ class CodingSession:
 
         self.ness_dir = Path(self.cfg.options.ness_dir or Path.cwd() / ".ness")
         self.project_root = Path(self.cfg.options.project_root or Path.cwd())
+        if instructions_dir is not None:
+            self.instructions_dir = Path(instructions_dir)
+        else:
+            from liteharness_cli.paths import config_dir_from_env
+
+            self.instructions_dir = config_dir_from_env() / "instructions"
 
         self.thread_store = self.cfg.thread_store
         self.cost_tracker = self.cfg.cost_tracker

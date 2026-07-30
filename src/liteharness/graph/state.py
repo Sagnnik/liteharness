@@ -8,7 +8,7 @@ from langgraph.graph.message import add_messages
 class AgentState(TypedDict, total=False):
     """Checkpointed graph state for one thread."""
     messages: Annotated[list[BaseMessage], add_messages]
-    approval_declined: bool
+    approval_declined: dict[str, str]
     todos: list[dict]
     mode: str
     activate_skills: list[str]  

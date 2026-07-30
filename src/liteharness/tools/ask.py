@@ -100,13 +100,15 @@ def _format_answers(
         qid = str(question["id"])
         answer = by_id.get(qid, {})
         selected = answer.get("selected") if isinstance(answer, dict) else None
+        note = str((answer.get("note") if isinstance(answer, dict) else "") or "").strip()
         if isinstance(selected, dict):
             chosen = str(selected.get("label") or selected.get("id") or "(no selection)")
         elif selected:
             chosen = str(selected)
+        elif note == "cancelled by user":
+            chosen = "(cancelled)"
         else:
             chosen = "(no selection)"
-        note = str((answer.get("note") if isinstance(answer, dict) else "") or "").strip()
         lines.append(f"- Q: {question['prompt']}")
         lines.append(f"  A: {chosen}")
         if note:

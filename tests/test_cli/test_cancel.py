@@ -41,12 +41,8 @@ def test_cancel_mid_stream_records_interrupted_text(make_app):
     assert "Partial assistant text" in app.assistant_history[-1]
 
 
-def test_cancel_renders_banner_and_suppresses_footer(make_app, monkeypatch):
+def test_cancel_renders_banner_and_suppresses_footer(make_app):
     app = make_app()
-    footers: list[dict] = []
-    monkeypatch.setattr(
-        "liteharness_cli.tui.app.render.render_usage_footer", lambda usage: footers.append(usage)
-    )
     app.coding.queue_events(
         SessionEvent("assistant_delta", {"text": "half"}),
         SessionEvent("usage", {"model": "m", "input_tokens": 10, "output_tokens": 5}),
@@ -54,16 +50,13 @@ def test_cancel_renders_banner_and_suppresses_footer(make_app, monkeypatch):
     )
     _run_turn(app)
 
-    assert "Turn interrupted by user." in _transcript_text(app)
-    assert footers == []
+    text = _transcript_text(app)
+    assert "Turn interrupted by user." in text
+    assert "↑ 10" not in text
 
 
-def test_normal_turn_records_text_and_renders_footer(make_app, monkeypatch):
+def test_normal_turn_records_text_and_renders_footer(make_app):
     app = make_app()
-    footers: list[dict] = []
-    monkeypatch.setattr(
-        "liteharness_cli.tui.app.render.render_usage_footer", lambda usage: footers.append(usage)
-    )
     app.coding.queue_events(
         SessionEvent("assistant_delta", {"text": "hello "}),
         SessionEvent("assistant_delta", {"text": "world"}),
@@ -74,15 +67,9 @@ def test_normal_turn_records_text_and_renders_footer(make_app, monkeypatch):
 
     assert app.assistant_history[-1] == "hello world"
     assert app.coding.turn_count == 1
-    assert footers == [
-        {
-            "model": "m",
-            "input_tokens": 12,
-            "uncached_input_tokens": 0,
-            "cached_input_tokens": 0,
-            "output_tokens": 3,
-        }
-    ]
+    text = _transcript_text(app)
+    assert "↑ 12" in text
+    assert "↓ 3" in text
 
 
 def test_non_streamed_final_renders_panel(make_app):

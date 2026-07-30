@@ -435,7 +435,7 @@ async def _invoke_subagent(
         result = await app.ainvoke(
             {
                 "messages": [HumanMessage(content=prepared.agent_prompt)],
-                "approval_declined": False,
+                "approval_declined": {},
                 "todos": [],
                 "mode": "act",
             },

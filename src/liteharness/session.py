@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ from liteharness.compaction import (
 )
 from liteharness.graph.builder import build_graph
 from liteharness.graph.helpers import _effective_conversation
-from liteharness.session_context import SessionContext, set_session_context
+from liteharness.session_context import SessionContext, set_session_context, reset_session_context
 from liteharness.tracing.semconv import (
     AGENT_MODE,
     COST_USD,
@@ -273,13 +273,13 @@ class Session:
                 break
         return out
 
-    def _install_session_runtime(self) -> None:
+    def _install_session_runtime(self) -> Token:
         # sets up a runtime context for this session
         # it has everything specifications loaded into it (tools, models, options, permissions, threads etc.)
         cfg = self._cfg
         project_root = (cfg.options.project_root or Path.cwd()).resolve()
         ness_dir = (cfg.options.ness_dir or (project_root / ".ness")).resolve()
-        set_session_context(
+        return set_session_context(
             SessionContext(
                 permissions=cfg.permission_store,
                 options=cfg.options,
@@ -698,7 +698,7 @@ class Session:
             self._pending_bootstrap = []
         payload = {
             "messages": [*initial, user_message],
-            "approval_declined": False,
+            "approval_declined": {},
             "mode": self.mode,
             "force_compact": self._consume_force_compact(),
             "activate_skills": skills,
@@ -939,7 +939,7 @@ class Session:
         """Yield (event, assistant_text_so_far) pairs from the graph stream."""
 
         # sets up a runtime context for this session
-        self._install_session_runtime()
+        ctx_token = self._install_session_runtime()
         # reset per-turn usage (last call + turn aggregate)
         self._last_usage = None
         self._turn_usages = []
@@ -1093,6 +1093,7 @@ class Session:
                     span.set_attribute(COST_USD, turn_usage.cost_usd or 0)
                 # remove the active session object from memory or contextvar
                 _active_session.reset(token)
+                reset_session_context(ctx_token)
 
     async def run(
         self,

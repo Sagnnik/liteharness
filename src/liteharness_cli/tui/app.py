@@ -32,7 +32,7 @@ from liteharness_cli.tui.pickers import MenuMixin
 from liteharness_cli.tui.models import MenuItem, TranscriptLine
 from liteharness_cli.tui.prompts import PromptMixin
 from liteharness_cli.tui.transcript import TranscriptMixin
-from liteharness_cli.tui.turn_renderer import TurnRenderer
+from liteharness_cli.tui.turn_renderer import TurnRenderer, render_persisted_tool_result
 from liteharness_cli.tui.utils import display_cwd
 from liteharness_cli.tui.widgets import TranscriptStore, TranscriptViewportControl
 
@@ -407,13 +407,12 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
         Runs before turn-cancel/queue-clear so Ctrl+C during a permission or
         clarification prompt dismisses the prompt instead of stranding its
-        ``asyncio.Future``. Mirrors the existing Esc/_cancel_menu behaviour
-        but resolves question prompts to option 0 (the recommended default)
-        instead of ``None`` so ``_ask_question`` doesn't crash on indexing.
+        ``asyncio.Future``. Questions resolve to ``None`` (soft cancel); other
+        prompts use an empty string, matching Esc/_cancel_menu coercion.
         """
         if self._prompt_future is not None and not self._prompt_future.done():
             if self._prompt_kind == "question":
-                self._prompt_future.set_result({"index": 0, "note": ""})
+                self._prompt_future.set_result(None)
             else:
                 self._prompt_future.set_result("")
             self._clear_prompt()
@@ -653,7 +652,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         """Run a bounded worker–judge goal loop in the current transcript."""
         from liteharness_cli.goal import GoalCoordinator
 
-        coordinator = GoalCoordinator(self.coding)
+        coordinator = GoalCoordinator(
+            self.coding,
+            instructions_dir=self.coding.instructions_dir,
+        )
 
         async def worker_turn(instruction: str) -> None:
             render.render_user_echo(instruction)
@@ -736,10 +738,12 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
                 result = str(event.get("result") or "")
                 if not tool_name:
                     continue
-                if tool_name == "spawn_subagent":
-                    render.render_subagent_output(result)
-                else:
-                    render.render_tool_result(tool_name, result)
+                exit_status = event.get("exit")
+                render_persisted_tool_result(
+                    tool_name,
+                    result,
+                    exit_status=str(exit_status) if exit_status else None,
+                )
 
     # --- the turn -----------------------------------------------------------
     async def _run_turn(self, text: str, images: list[str]) -> None:

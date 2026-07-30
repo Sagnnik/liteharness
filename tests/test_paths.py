@@ -34,6 +34,7 @@ def test_resolve_paths_uses_env_overrides(tmp_path: Path, monkeypatch):
     assert paths.user_file == cfg.resolve() / "USER.md"
     assert paths.configs_file == cfg.resolve() / "configs.json"
     assert paths.secrets_file == cfg.resolve() / "secrets.json"
+    assert paths.instructions_dir == cfg.resolve() / "instructions"
     assert paths.plans_dir == cfg.resolve() / "plans" / "myproj"
     assert paths.sessions_dir == paths.ness_dir / "runtime" / "sessions"
     assert paths.shells_dir == paths.ness_dir / "runtime" / "shells"
@@ -82,3 +83,25 @@ def test_ensure_global_config_creates_user_and_marker(tmp_path: Path, monkeypatc
     assert json.loads(paths.secrets_file.read_text()) == {}
     assert stat.S_IMODE(paths.secrets_file.stat().st_mode) == 0o600
     assert not paths.configs_file.exists()
+    assert paths.instructions_dir.is_dir()
+    from liteharness_cli.instructions import INSTRUCTION_FILES
+
+    for name in INSTRUCTION_FILES:
+        assert (paths.instructions_dir / name).is_file()
+        assert (paths.instructions_dir / name).read_text(encoding="utf-8").strip()
+
+
+def test_ensure_global_config_does_not_overwrite_instructions(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("LITEHARNESS_CACHE_DIR", str(tmp_path / "cache"))
+    project = tmp_path / "repo"
+    project.mkdir()
+    paths = resolve_paths(project_root=project)
+    ensure_global_config(paths)
+    custom = "CUSTOM L0\n"
+    target = paths.instructions_dir / "l0_harness.md"
+    target.write_text(custom, encoding="utf-8")
+    ensure_global_config(paths)
+    assert target.read_text(encoding="utf-8") == custom

@@ -117,3 +117,35 @@ def test_rollback_command_no_turns_warns(make_app):
     with patch.object(app.coding.thread_store, "list_user_turns", return_value=[]):
         asyncio.run(_dispatch_with_sink(app, "/rollback"))
     assert app.coding.rolled_back_seq is None
+
+
+async def _dispatch_busy(app, command: str) -> None:
+    render.set_sink(app)
+    try:
+        await dispatch(app, command, busy=True)
+    finally:
+        render.set_sink(None)
+
+
+def test_memory_create_refused_while_busy(make_app):
+    app = make_app()
+    invoke = AsyncMock(return_value=SimpleNamespace(content="# Project"))
+    app.coding.agent.config.model = SimpleNamespace(ainvoke=invoke)
+    asyncio.run(_dispatch_busy(app, "/memory create"))
+    text = "\n".join(line.text for line in app._lines)
+    assert "/memory create is not available while a task is running" in text
+    invoke.assert_not_called()
+
+
+def test_memory_read_and_add_allowed_while_busy(make_app):
+    app = make_app()
+    with patch.object(app.coding.memory_store, "load_project", return_value="existing notes"):
+        asyncio.run(_dispatch_busy(app, "/memory"))
+    text = "\n".join(line.text for line in app._lines)
+    assert "existing notes" in text
+
+    with patch.object(
+        app.coding.memory_store, "append_project", return_value="Updated .ness/NESS.md"
+    ) as append:
+        asyncio.run(_dispatch_busy(app, "/memory add remember this"))
+        append.assert_called_once_with("remember this")

@@ -33,6 +33,45 @@ from liteharness_cli.tui.tool_display import extract_diff_section, extract_edit_
 INTERRUPTED_SUFFIX = " … [interrupted]"
 
 
+def render_persisted_tool_result(
+    name: str,
+    content: str,
+    *,
+    exit_status: str | None = None,
+) -> None:
+    """Route a tool result the same way live ``tool_end`` events do.
+
+    Used by :class:`TurnRenderer` and resume replay so edit diffs, shell
+    panels, and exit markers stay visually faithful.
+    """
+    if name == "todo":
+        render.render_tool_result(name, content, exit_status=exit_status)
+        return
+    if name in ("edit", "write"):
+        summary = extract_edit_summary(content)
+        if summary:
+            render.render_tool_result(name, summary, exit_status=exit_status)
+        diff = extract_diff_section(content)
+        if diff:
+            render.render_diff(diff, title=f"diff {name}")
+        return
+    if name == "shell":
+        # Non-ok exits (e.g. approval denial) must not use the success-looking
+        # shell panel — show the same [denied] / [error] tool-result line.
+        if exit_status and exit_status != "ok":
+            render.render_tool_result(name, content, exit_status=exit_status)
+        else:
+            render.render_shell_output(content)
+        return
+    if name == "spawn_subagent":
+        if exit_status and exit_status != "ok":
+            render.render_tool_result(name, content, exit_status=exit_status)
+        else:
+            render.render_subagent_output(content)
+        return
+    render.render_tool_result(name, content, exit_status=exit_status)
+
+
 class TurnRenderer:
     """Map one turn's SessionEvent stream onto the render facade."""
 
@@ -129,24 +168,12 @@ class TurnRenderer:
     def _on_tool_end(self, data: dict[str, Any]) -> None:
         name = str(data.get("name") or "tool")
         content = str(data.get("content") or "")
-        if name == "todo":
-            render.render_tool_result(name, content)
-            return
-        if name in ("edit", "write"):
-            summary = extract_edit_summary(content)
-            if summary:
-                render.render_tool_result(name, summary)
-            diff = extract_diff_section(content)
-            if diff:
-                render.render_diff(diff, title=f"diff {name}")
-            return
-        if name == "shell":
-            render.render_shell_output(content)
-            return
-        if name == "spawn_subagent":
-            render.render_subagent_output(content)
-            return
-        render.render_tool_result(name, content)
+        exit_status = data.get("exit") or data.get("exit_status")
+        render_persisted_tool_result(
+            name,
+            content,
+            exit_status=str(exit_status) if exit_status else None,
+        )
 
     # ------------------------------------------------------------------
     # Usage / compaction
