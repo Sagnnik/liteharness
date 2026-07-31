@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from liteharness.types import SessionEvent
-from liteharness_cli.tui import render
+from ness_ai.types import SessionEvent
+from ness_cli.tui import render
 
 
 def _transcript_text(app) -> str:

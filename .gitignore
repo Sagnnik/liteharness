@@ -14,7 +14,7 @@ wheels/
 .venv
 .env
 
-# LiteHarness runtime data
+# Ness AI runtime data
 .ness/worktrees/
 .ness/threads/
 .ness/runtime/

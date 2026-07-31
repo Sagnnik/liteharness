@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import liteharness_cli.tui.transcript as transcript_module
-from liteharness_cli.tui.header import header_lines
-from liteharness_cli.tui.models import TranscriptLine
-from liteharness_cli.tui.transcript import TranscriptMixin
+import ness_cli.tui.transcript as transcript_module
+from ness_cli.tui.header import header_lines
+from ness_cli.tui.models import TranscriptLine
+from ness_cli.tui.transcript import TranscriptMixin
 
 
 def _all_text(lines: list[TranscriptLine]) -> str:
@@ -23,7 +23,7 @@ def _common_kwargs(**over: object) -> dict:
         mode="act",
         model="deepseek-v4-flash",
         approval=True,
-        project="~/projects/liteharness",
+        project="~/projects/ness-agent",
         addons_summary="2 MCPs (echo, fs), 3 Skills",
         version="0.1.0",
     )
@@ -38,7 +38,7 @@ def test_wide_layout_has_logo_title_dashboard_and_hints():
     assert "Ness" in text
     assert "Agent" in text
     assert "Session" in text and "deepseek-v4-flash" in text
-    assert "Project" in text and "~/projects/liteharness" in text
+    assert "Project" in text and "~/projects/ness-agent" in text
     assert "Mode" in text and "Act (auto-approval)" in text
     assert "Add-ons" in text and "3 Skills" in text
     assert "Hints:" in text
@@ -149,7 +149,7 @@ class _HeaderHarness(TranscriptMixin):
 
 def _patch_addon_helpers() -> None:
     """Pin the lazy project/addons/version helpers to deterministic values."""
-    transcript_module._header_project = lambda: "~/projects/liteharness"
+    transcript_module._header_project = lambda: "~/projects/ness-agent"
     transcript_module._header_addons_summary = lambda *args: "0 MCPs, 1 Skills"
     transcript_module._header_version = lambda: "0.1.0"
 

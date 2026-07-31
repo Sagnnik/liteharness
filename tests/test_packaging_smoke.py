@@ -38,7 +38,7 @@ def test_wheel_clean_install_smoke(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    wheels = list(dist.glob("liteharness-*.whl"))
+    wheels = list(dist.glob("ness_ai-*.whl"))
     assert len(wheels) == 1, f"expected one wheel, got {wheels}"
     wheel = wheels[0]
 
@@ -69,20 +69,20 @@ def test_wheel_clean_install_smoke(tmp_path: Path) -> None:
             "VIRTUAL_ENV",
         }
     }
-    env["LITEHARNESS_CONFIG_DIR"] = str(config_home)
+    env["NESS_AI_CONFIG_DIR"] = str(config_home)
     env["HOME"] = str(tmp_path / "home")
     Path(env["HOME"]).mkdir(exist_ok=True)
 
     probe = r"""
-from liteharness.defaults import default_agent_profiles
-from liteharness_cli.config import Settings
-from liteharness_cli.instructions import default_instruction_files
+from ness_ai.defaults import default_agent_profiles
+from ness_cli.config import Settings
+from ness_cli.instructions import default_instruction_files
 
-import liteharness
-import liteharness_cli
+import ness_ai
+import ness_cli
 
-assert liteharness.__name__ == "liteharness"
-assert liteharness_cli.__name__ == "liteharness_cli"
+assert ness_ai.__name__ == "ness_ai"
+assert ness_cli.__name__ == "ness_cli"
 
 settings = Settings()
 assert settings.model_name == "deepseek/deepseek-v4-flash", settings.model_name

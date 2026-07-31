@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from liteharness.types import SessionEvent
-from liteharness_cli.tui import render
-from liteharness_cli.tui.turn_renderer import TurnRenderer
+from ness_ai.types import SessionEvent
+from ness_cli.tui import render
+from ness_cli.tui.turn_renderer import TurnRenderer
 
 
 class _SpySink(render._NullSink):

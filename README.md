@@ -1,15 +1,14 @@
 <p align="center">
-  <img src="assets/banner-light-geo.svg" alt="LiteHarness — hackable coding-agent harness" width="100%">
+  <img src="assets/banner-light-geo.svg" alt="Ness AI — hackable coding-agent harness" width="100%">
 </p>
 
-# LiteHarness
+# Ness AI
 
-[![CI](https://github.com/Sagnnik/liteharness/actions/workflows/ci.yml/badge.svg)](https://github.com/Sagnnik/liteharness/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/pypi/pyversions/liteharness)](https://pypi.org/project/liteharness/)
-[![License](https://img.shields.io/github/license/Sagnnik/liteharness)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/liteharness)](https://pypi.org/project/liteharness/)
+[![CI](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/github/license/Sagnnik/ness-agent)](LICENSE)
 
-LiteHarness is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
+Ness AI is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
 
 > **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](CHANGELOG.md).
 
@@ -27,23 +26,23 @@ LiteHarness is an experimental, hackable coding-agent harness for engineers who 
 
 | Component | What it is |
 |-----------|------------|
-| **LiteHarness SDK** | LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, tracing |
+| **Ness AI SDK** | LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, tracing |
 | **Ness CLI** | Terminal UI (`ness`), plan/act modes, git worktrees, global config, `.ness/` project layout |
 
-Both are included in the `liteharness` PyPI package. OpenRouter-compatible chat models, native tool-calling, and filesystem-driven extension points under `.ness/`.
+Both are included in the `ness-ai` PyPI package. OpenRouter-compatible chat models, native tool-calling, and filesystem-driven extension points under `.ness/`.
 
 ## Installation
 
 Requires **Python 3.12+**.
 
 ```bash
-pip install liteharness
+pip install ness-ai
 ```
 
 Optional tracing support:
 
 ```bash
-pip install liteharness[tracing]
+pip install ness-ai[tracing]
 ```
 
 **From source:**
@@ -51,8 +50,8 @@ pip install liteharness[tracing]
 Contributors (run tests, use project venv):
 
 ```bash
-git clone https://github.com/Sagnnik/liteharness.git
-cd liteharness
+git clone https://github.com/Sagnnik/ness-agent.git
+cd ness-agent
 uv sync
 uv run ness
 ```
@@ -60,8 +59,8 @@ uv run ness
 Install `ness` on your PATH from a local clone (editable):
 
 ```bash
-git clone https://github.com/Sagnnik/liteharness.git
-cd liteharness
+git clone https://github.com/Sagnnik/ness-agent.git
+cd ness-agent
 uv tool install -e .
 ness
 ```
@@ -95,7 +94,7 @@ Full CLI reference: [docs/cli.md](docs/cli.md) · Configuration: [docs/configura
 ```python
 import asyncio
 from langchain_core.tools import tool
-from liteharness import NessAgent, PromptLayers, PromptLayersConfig
+from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
 
 @tool
 def ping() -> str:

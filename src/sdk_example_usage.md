@@ -1,6 +1,6 @@
-# LiteHarness SDK examples
+# Ness AI SDK examples
 
-Domain-agnostic agent harness in `src/liteharness/`. The coding CLI adapter lives in `src/liteharness_cli/` (tools, overlays, pricing, OpenRouter wiring).
+Domain-agnostic agent harness in `src/ness_ai/`. The coding CLI adapter lives in `src/ness_cli/` (tools, overlays, pricing, OpenRouter wiring).
 
 Construct agents with `NessAgent(...)` kwargs (builds an `AgentSpec` internally) or `NessAgent.from_spec(AgentSpec(...))`. Compaction budget knobs live on `NessAgentOptions` — there is no separate budget config.
 
@@ -8,7 +8,7 @@ Construct agents with `NessAgent(...)` kwargs (builds an `AgentSpec` internally)
 
 - Supply `l2_context` in the prompt when the model needs project/domain structure (SDK does not auto-load repo context).
 - Append user events / call `thread_store.save_checkpoint` if you want resumable threads (the coding CLI does this around the graph).
-- Pass `cost_tracker=make_sdk_cost_tracker()` from `liteharness_cli.config` when you want estimated USD for non-provider-cost models.
+- Pass `cost_tracker=make_sdk_cost_tracker()` from `ness_cli.config` when you want estimated USD for non-provider-cost models.
 
 ---
 
@@ -17,15 +17,15 @@ Construct agents with `NessAgent(...)` kwargs (builds an `AgentSpec` internally)
 `tools=` and `overlay=` are both optional. The SDK ships with a fully wired `CodingOverlay` (plan/act blocks, git snapshot, compaction note, todos, session memory, loaded skills) and defaults `AuxPrompts` (compaction / reflection / subagent / thread_summary / init_memory) to internal instruction texts — so a bare agent is a working coding agent.
 
 ```python
-from liteharness import NessAgent, PromptLayersConfig
+from ness_ai import NessAgent, PromptLayersConfig
 from langchain_openai import ChatOpenAI
 
 agent = NessAgent(
     model=ChatOpenAI(model="gpt-4o"),
-    prompt=PromptLayersConfig(),   # default L0 from liteharness.instructions.L0_HARNESS
+    prompt=PromptLayersConfig(),   # default L0 from ness_ai.instructions.L0_HARNESS
     # tools=      omitted -> all SDK built-in tools (BUILTIN_TOOLS)
     # overlay=    omitted -> CodingOverlay (plan/act, git, todos, compaction, ...)
-    # aux_prompts= omitted -> defaults to liteharness.instructions.{COMPACTION,REFLECTION,...}
+    # aux_prompts= omitted -> defaults to ness_ai.instructions.{COMPACTION,REFLECTION,...}
 )
 session = agent.session(thread_id="proj-1")
 # session.toggle_mode() flips plan <-> act using the SDK's default plan/act instruction texts
@@ -34,19 +34,19 @@ await session.run("Plan then implement: add a rate limiter on /api/login")
 
 ### Default overlay
 
-- If `overlay=` is omitted, the agent is configured with `CodingOverlay` (`from liteharness import CodingOverlay`). It renders:
-  - `<plan-mode path="...">...</plan-mode>` when `session.mode == "plan"`, using `liteharness.instructions.PLAN_MODE` (or `modes.plan_mode_template` if you supply a `ModeConfig`). The coding CLI sets `modes.plans_dir` to the global `plans/<project-slug>/` directory; the SDK default string is `.ness/plans/`.
-  - `mode_switch` on the first act turn after a plan->act toggle, using `liteharness.instructions.ACT_MODE` (or `modes.act_mode_template`)
+- If `overlay=` is omitted, the agent is configured with `CodingOverlay` (`from ness_ai import CodingOverlay`). It renders:
+  - `<plan-mode path="...">...</plan-mode>` when `session.mode == "plan"`, using `ness_ai.instructions.PLAN_MODE` (or `modes.plan_mode_template` if you supply a `ModeConfig`). The coding CLI sets `modes.plans_dir` to the global `plans/<project-slug>/` directory; the SDK default string is `.ness/plans/`.
+  - `mode_switch` on the first act turn after a plan->act toggle, using `ness_ai.instructions.ACT_MODE` (or `modes.act_mode_template`)
   - `git`, `compaction`, `todos`, `session_memory`, `loaded_skills`, and `skill_request` sections from the `OverlayContext`
 - To **opt out of L3 entirely** pass `overlay=NoOverlay()` (apps that need no working-state overlay, or want to drive everything from the model alone).
 - To use a **custom L3**, pass your own `OverlayProvider` (see the four examples below).
 
 ### Instruction texts are Python-importable
 
-The default instruction bodies live in the `liteharness.instructions` package, not as opaque `.md` files:
+The default instruction bodies live in the `ness_ai.instructions` package, not as opaque `.md` files:
 
 ```python
-from liteharness.instructions import L0_HARNESS, COMPACTION, REFLECTION, SUBAGENT, THREAD_SUMMARY, INIT_MEMORY, PLAN_MODE, ACT_MODE, L1_PROFILE
+from ness_ai.instructions import L0_HARNESS, COMPACTION, REFLECTION, SUBAGENT, THREAD_SUMMARY, INIT_MEMORY, PLAN_MODE, ACT_MODE, L1_PROFILE
 
 # Copy and modify, then feed the modified text back in:
 my_l0 = L0_HARNESS.replace("NESS", "Acme Assistant")
@@ -63,7 +63,7 @@ agent = NessAgent(
 `tools=` accepts a mix of `BaseTool` instances, plain callables (auto-wrapped with `StructuredTool.from_function`), and strings naming SDK built-ins (`"read"`, `"grep"`, `"glob"`, `"shell"`, ...):
 
 ```python
-from liteharness import NessAgent, PromptLayersConfig
+from ness_ai import NessAgent, PromptLayersConfig
 
 agent = NessAgent(
     model=...,
@@ -78,7 +78,7 @@ agent = NessAgent(
 
 ```python
 from pathlib import Path
-from liteharness import (
+from ness_ai import (
     NessAgent, NessAgentOptions, MemoryConfig,
     OverlayProvider, OverlayContext,
 )
@@ -160,7 +160,7 @@ async def answer(user_id: str, question: str) -> str:
 
 ```python
 from pathlib import Path
-from liteharness import (
+from ness_ai import (
     NessAgent, NessAgentOptions, SubagentConfig,
     OverlayProvider, OverlayContext,
 )
@@ -233,7 +233,7 @@ async def research(topic: str) -> str:
 ## Video Generation Application
 
 ```python
-from liteharness import (
+from ness_ai import (
     NessAgent, NessAgentOptions, SubagentConfig,
     OverlayProvider, OverlayContext,
 )
@@ -317,7 +317,7 @@ async def produce_video(brief: str) -> str:
 
 ```python
 from pathlib import Path
-from liteharness import (
+from ness_ai import (
     AgentSpec, NessAgent, NessAgentOptions, MemoryConfig,
     OverlayProvider, OverlayContext, ApprovalHandler,
 )
@@ -498,7 +498,7 @@ next turn would put in the system message and working-state tail.
 ## SDK persistence recipe
 
 `Session` is the turn engine. Durable thread CRUD lives on
-`agent.config.thread_store` (`ThreadStore`, exported from `liteharness`).
+`agent.config.thread_store` (`ThreadStore`, exported from `ness_ai`).
 Resume/archive are not CLI-only — wire them with the primitives below (or use
 `CodingSession.resume` / `CodingSession.reset` for the batteries-included
 coding path).
@@ -521,8 +521,8 @@ coding path).
   pass.
 
 ```python
-from liteharness import NessAgent, PromptLayersConfig, ThreadStore
-from liteharness_cli.events import events_to_messages  # coding transcript rebuild
+from ness_ai import NessAgent, PromptLayersConfig, ThreadStore
+from ness_cli.events import events_to_messages  # coding transcript rebuild
 
 
 # --- small helpers apps can copy --------------------------------------------
@@ -600,13 +600,13 @@ Public reads on `Session`: `get_state()`, `get_messages()`, `get_todos()`,
 
 ## Hooks (three different concepts)
 
-LiteHarness uses the word “hooks” in three places — do not confuse them:
+Ness AI uses the word “hooks” in three places — do not confuse them:
 
 1. **`HookRunner`** — tool pre/post hooks (`preToolUse` / `postToolUse` only).
    Loaded from `{ness_dir}/hooks.json` by default, and/or registered in-memory:
 
    ```python
-   from liteharness import Hook, NessAgent, PromptLayersConfig
+   from ness_ai import Hook, NessAgent, PromptLayersConfig
 
    def deny_shell(payload: dict) -> tuple[bool, str]:
        if payload.get("tool") == "shell":
@@ -643,13 +643,13 @@ OpenTelemetry-style tracing emits one span per turn, LLM call, tool execution, c
 
 Install the optional tracing extra for the OTLP exporter:
 ```bash
-pip install 'liteharness[tracing]'
+pip install 'ness-ai[tracing]'
 ```
 
 ### SDK examples
 
 ```python
-from liteharness import (
+from ness_ai import (
     NessAgent, PromptLayersConfig, TracingConfig, CostTracker, MultiTracer, build_tracer,
 )
 from langchain_openai import ChatOpenAI

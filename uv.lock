@@ -684,74 +684,6 @@ wheels = [
 ]
 
 [[package]]
-name = "liteharness"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "beautifulsoup4" },
-    { name = "httpx" },
-    { name = "langchain-core" },
-    { name = "langchain-openai" },
-    { name = "langchain-openrouter" },
-    { name = "langgraph" },
-    { name = "mcp" },
-    { name = "pillow" },
-    { name = "platformdirs" },
-    { name = "prompt-toolkit" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyperclip" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "trafilatura" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-tracing = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "beautifulsoup4", specifier = ">=4.15.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "langchain-core", specifier = ">=1.4.0" },
-    { name = "langchain-openai", specifier = ">=1.2.2" },
-    { name = "langchain-openrouter", specifier = ">=0.2.3" },
-    { name = "langgraph", specifier = ">=1.2.1" },
-    { name = "mcp", specifier = ">=1.27.1" },
-    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'tracing'", specifier = ">=1.20" },
-    { name = "opentelemetry-sdk", marker = "extra == 'tracing'", specifier = ">=1.20" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "platformdirs", specifier = ">=4.0.0" },
-    { name = "prompt-toolkit", specifier = ">=3.0.52" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.14.1" },
-    { name = "pyperclip", specifier = ">=1.11.0" },
-    { name = "python-dotenv", specifier = ">=1.2.2" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "requests", specifier = ">=2.32.5" },
-    { name = "rich", specifier = ">=12.6.0" },
-    { name = "trafilatura", specifier = ">=2.1.0" },
-    { name = "typer", specifier = ">=0.24.2" },
-]
-provides-extras = ["tracing"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.3" }]
-
-[[package]]
 name = "lxml"
 version = "6.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -893,6 +825,74 @@ sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
 ]
+
+[[package]]
+name = "ness-ai"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "httpx" },
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
+    { name = "langchain-openrouter" },
+    { name = "langgraph" },
+    { name = "mcp" },
+    { name = "pillow" },
+    { name = "platformdirs" },
+    { name = "prompt-toolkit" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyperclip" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "trafilatura" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+tracing = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.15.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langchain-core", specifier = ">=1.4.0" },
+    { name = "langchain-openai", specifier = ">=1.2.2" },
+    { name = "langchain-openrouter", specifier = ">=0.2.3" },
+    { name = "langgraph", specifier = ">=1.2.1" },
+    { name = "mcp", specifier = ">=1.27.1" },
+    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'tracing'", specifier = ">=1.20" },
+    { name = "opentelemetry-sdk", marker = "extra == 'tracing'", specifier = ">=1.20" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "platformdirs", specifier = ">=4.0.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.52" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pydantic-settings", specifier = ">=2.14.1" },
+    { name = "pyperclip", specifier = ">=1.11.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "requests", specifier = ">=2.32.5" },
+    { name = "rich", specifier = ">=12.6.0" },
+    { name = "trafilatura", specifier = ">=2.1.0" },
+    { name = "typer", specifier = ">=0.24.2" },
+]
+provides-extras = ["tracing"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.3" }]
 
 [[package]]
 name = "openai"

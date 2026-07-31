@@ -8,12 +8,12 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.tools import StructuredTool
 
-from liteharness.options import NessAgentOptions
-from liteharness.permissions import PermissionStore
-from liteharness.persistence import ThreadStore
-from liteharness.session_context import SessionContext, set_session_context
-from liteharness.tools import ToolRegistry
-from liteharness.tools.discover import add_tools, search_tools
+from ness_ai.options import NessAgentOptions
+from ness_ai.permissions import PermissionStore
+from ness_ai.persistence import ThreadStore
+from ness_ai.session_context import SessionContext, set_session_context
+from ness_ai.tools import ToolRegistry
+from ness_ai.tools.discover import add_tools, search_tools
 
 
 FAKE_TOOLS = {

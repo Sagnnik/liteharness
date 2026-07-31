@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial public release of **LiteHarness** (SDK) and **Ness** (CLI).
+- Initial public release of **Ness AI** (SDK) and **Ness** (CLI).
 - SDK: LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, and tracing.
 - CLI: interactive TUI (`ness`), headless print mode (`-p`), plan/act modes, git worktrees, global config, and `.ness/` project layout.
 
-[Unreleased]: https://github.com/Sagnnik/liteharness/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Sagnnik/liteharness/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Sagnnik/ness-agent/releases/tag/v0.1.0

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from liteharness.permissions import DEFAULT_RULES, PermissionStore
+from ness_ai.permissions import DEFAULT_RULES, PermissionStore
 
 
 def _store(tmp: str | Path | None = None) -> tuple[PermissionStore, tempfile.TemporaryDirectory | None]:

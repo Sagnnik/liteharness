@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from liteharness_cli.tui.tool_display import (
+from ness_cli.tui.tool_display import (
     format_shell_output,
     format_subagent_output,
     format_tool_args,

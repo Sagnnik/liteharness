@@ -1,4 +1,4 @@
-# LiteHarness documentation
+# Ness AI documentation
 
 | Guide | Description |
 |-------|-------------|

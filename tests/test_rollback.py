@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from liteharness.persistence import ThreadStore
-import liteharness_cli.rollback as rollback
+from ness_ai.persistence import ThreadStore
+import ness_cli.rollback as rollback
 
 
 def _git_init(path: Path) -> None:

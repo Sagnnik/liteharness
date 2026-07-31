@@ -1,1 +1,1 @@
-"""Focused tests for the production LiteHarness TUI."""
+"""Focused tests for the production Ness AI TUI."""

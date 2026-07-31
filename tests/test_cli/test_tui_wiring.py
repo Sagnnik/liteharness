@@ -2,7 +2,7 @@
 
 The rest of the TUI suite runs against FakeCoding; these tests pin the
 actual seam — a TuiApp consuming the SessionEvent stream of a real
-``liteharness_cli.CodingSession`` (real LangGraph run over a bindable fake
+``ness_cli.CodingSession`` (real LangGraph run over a bindable fake
 chat model), covering the full turn, the cooperative cancel path, and the
 resume guard.
 """
@@ -17,11 +17,11 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from liteharness import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
-from liteharness_cli import CodingSession
+from ness_ai import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
+from ness_cli import CodingSession
 
-from liteharness_cli.tui import render
-from liteharness_cli.tui.app import TuiApp
+from ness_cli.tui import render
+from ness_cli.tui.app import TuiApp
 
 
 class _BindableFakeModel:

@@ -6,26 +6,26 @@ from pathlib import Path
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-from liteharness import (
+from ness_ai import (
     ApprovalHandler,
     Hook,
     MemoryConfig,
     MemoryStore,
     setup_ness_structure,
 )
-from liteharness.hooks import HookRunner
-from liteharness_cli.config import settings
-from liteharness_cli.factory import build_coding_agent
+from ness_ai.hooks import HookRunner
+from ness_cli.config import settings
+from ness_cli.factory import build_coding_agent
 
 
 def test_factory_wires_hooks_and_skills(tmp_path: Path, monkeypatch):
     ness = tmp_path / ".ness"
     ness.mkdir()
     monkeypatch.setattr(settings, "ness_dir", str(ness))
-    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("LITEHARNESS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.chdir(tmp_path)
-    from liteharness_cli import factory as fac
+    from ness_cli import factory as fac
 
     monkeypatch.setattr(fac, "create_model", lambda *_a, **_k: FakeListChatModel(responses=["ok"]))
     monkeypatch.setattr(
@@ -36,7 +36,7 @@ def test_factory_wires_hooks_and_skills(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(fac, "make_sdk_cost_tracker", lambda: None)
 
-    from liteharness_cli.paths import sanitize_slug
+    from ness_cli.paths import sanitize_slug
 
     agent = build_coding_agent(thread_id="session-wire")
     assert agent.config.hooks_config == ness.resolve() / "hooks.json"
@@ -64,11 +64,11 @@ def test_memory_include_resolves_from_project_root(tmp_path: Path):
 
 
 def test_build_coding_agent_accepts_render_approval_handler(tmp_path: Path, monkeypatch):
-    from liteharness_cli.factory import build_coding_agent, prepare_paths
-    from liteharness_cli.tui import render
+    from ness_cli.factory import build_coding_agent, prepare_paths
+    from ness_cli.tui import render
 
-    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("LITEHARNESS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.chdir(tmp_path)
 
     agent = build_coding_agent(

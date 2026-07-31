@@ -18,9 +18,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from typer.testing import CliRunner
 
-from liteharness import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig, SessionEvent
-from liteharness_cli import CodingSession, headless
-from liteharness_cli.tui import main as tui_main
+from ness_ai import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig, SessionEvent
+from ness_cli import CodingSession, headless
+from ness_cli.tui import main as tui_main
 
 
 class _BindableFakeModel:

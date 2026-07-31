@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from liteharness_cli.tui.commands import BUSY_SAFE_COMMANDS
+from ness_cli.tui.commands import BUSY_SAFE_COMMANDS
 
 
 def test_queue_helpers_round_trip(make_app):

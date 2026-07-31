@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from liteharness.memory import MemoryStore
-from liteharness.options import MemoryConfig
+from ness_ai.memory import MemoryStore
+from ness_ai.options import MemoryConfig
 
 
 class MemoryModuleTests(unittest.TestCase):

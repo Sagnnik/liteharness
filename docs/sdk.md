@@ -1,8 +1,8 @@
 # SDK guide
 
-The **LiteHarness SDK** (`liteharness` on PyPI) is a LangGraph-based agent harness you can embed in your own apps, scripts, and internal tools. It provides the agent loop, built-in tools, permissions, memory, skills, hooks, compaction, reflection, and optional tracing.
+The **Ness AI SDK** (`ness-ai` on PyPI) is a LangGraph-based agent harness you can embed in your own apps, scripts, and internal tools. It provides the agent loop, built-in tools, permissions, memory, skills, hooks, compaction, reflection, and optional tracing.
 
-The **Ness CLI** is a reference coding adapter built on top of this SDK (`liteharness_cli`).
+The **Ness CLI** is a reference coding adapter built on top of this SDK (`ness_cli`).
 
 See also: [Architecture](architecture.md) · [Configuration](configuration.md) · [CLI guide](cli.md)
 
@@ -11,13 +11,13 @@ See also: [Architecture](architecture.md) · [Configuration](configuration.md) �
 ## Installation
 
 ```bash
-pip install liteharness
+pip install ness-ai
 ```
 
 Optional OpenTelemetry tracing:
 
 ```bash
-pip install liteharness[tracing]
+pip install ness-ai[tracing]
 ```
 
 Requires **Python 3.12+**.
@@ -34,7 +34,7 @@ import asyncio
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import tool
 
-from liteharness import NessAgent, PromptLayers, PromptLayersConfig
+from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
 
 
 @tool
@@ -67,20 +67,20 @@ Replace `FakeListChatModel` with any LangChain `BaseChatModel` (OpenAI-compatibl
 If you want the same wiring as the Ness CLI — OpenRouter models, `.ness/` paths, plan/act overlays, pricing — use the coding adapter:
 
 ```python
-from liteharness_cli.factory import build_coding_session
+from ness_cli.factory import build_coding_session
 
 coding = build_coding_session(thread_id="session-abc123")
 async for event in coding.run_turn("add a rate limiter"):
     ...
 ```
 
-This module is included in the same `liteharness` package; the CLI entry point is `ness`.
+This module is included in the same `ness-ai` package; the CLI entry point is `ness`.
 
 ---
 
 ## Public API
 
-Core exports from `liteharness`:
+Core exports from `ness_ai`:
 
 | Symbol | Purpose |
 |--------|---------|
@@ -111,8 +111,8 @@ When using the SDK directly, you supply L0–L2 via `PromptLayers` / `PromptLaye
 Install the tracing extra, then pass `TracingConfig` through `NessAgentOptions`:
 
 ```python
-from liteharness import NessAgent, NessAgentOptions
-from liteharness.tracing import TracingConfig
+from ness_ai import NessAgent, NessAgentOptions
+from ness_ai.tracing import TracingConfig
 
 agent = NessAgent(
     model=model,
@@ -127,4 +127,4 @@ See `tests/tracing/` for integration examples.
 
 ## Stability
 
-LiteHarness is **0.x experimental**. Public APIs may change until 1.0. Pin versions in production and watch [CHANGELOG](../CHANGELOG.md).
+Ness AI is **0.x experimental**. Public APIs may change until 1.0. Pin versions in production and watch [CHANGELOG](../CHANGELOG.md).

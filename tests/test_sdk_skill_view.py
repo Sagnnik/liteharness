@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from liteharness.skills import SkillLoader
+from ness_ai.skills import SkillLoader
 
 
 def test_skill_loader_skips_invalid_name(tmp_path: Path):
@@ -67,7 +67,7 @@ def test_render_catalog_empty_when_no_skills():
 
 
 def test_skill_view_returns_skill_content(tmp_path: Path):
-    from liteharness.session_context import SessionContext, set_session_context, reset_session_context
+    from ness_ai.session_context import SessionContext, set_session_context, reset_session_context
 
     skill_dir = tmp_path / ".ness" / "skills" / "view_me"
     skill_dir.mkdir(parents=True)
@@ -89,7 +89,7 @@ def test_skill_view_returns_skill_content(tmp_path: Path):
     )
     token = set_session_context(rt)
     try:
-        from liteharness.tools.skill import skill_view
+        from ness_ai.tools.skill import skill_view
 
         result = skill_view.invoke({"name": "view_me"})
         data = json.loads(result)
@@ -102,7 +102,7 @@ def test_skill_view_returns_skill_content(tmp_path: Path):
 
 
 def test_skill_view_returns_linked_files(tmp_path: Path):
-    from liteharness.session_context import SessionContext, set_session_context, reset_session_context
+    from ness_ai.session_context import SessionContext, set_session_context, reset_session_context
 
     skill_dir = tmp_path / ".ness" / "skills" / "linked"
     skill_dir.mkdir(parents=True)
@@ -131,7 +131,7 @@ def test_skill_view_returns_linked_files(tmp_path: Path):
     )
     token = set_session_context(rt)
     try:
-        from liteharness.tools.skill import skill_view
+        from ness_ai.tools.skill import skill_view
 
         result = skill_view.invoke({"name": "linked"})
         data = json.loads(result)
@@ -151,7 +151,7 @@ def test_skill_view_returns_linked_files(tmp_path: Path):
 
 
 def test_skill_view_unknown_skill(tmp_path: Path):
-    from liteharness.session_context import SessionContext, set_session_context, reset_session_context
+    from ness_ai.session_context import SessionContext, set_session_context, reset_session_context
 
     rt = SessionContext(
         permissions=MagicMock(),
@@ -164,7 +164,7 @@ def test_skill_view_unknown_skill(tmp_path: Path):
     )
     token = set_session_context(rt)
     try:
-        from liteharness.tools.skill import skill_view
+        from ness_ai.tools.skill import skill_view
 
         result = skill_view.invoke({"name": "nonexistent"})
         assert result.startswith("Error: unknown skill")
@@ -173,7 +173,7 @@ def test_skill_view_unknown_skill(tmp_path: Path):
 
 
 def test_skill_view_registered():
-    from liteharness.tools import BUILTIN_TOOLS, ALWAYS_ON, READ_ONLY_TOOLS, TOOL_NAMES
+    from ness_ai.tools import BUILTIN_TOOLS, ALWAYS_ON, READ_ONLY_TOOLS, TOOL_NAMES
     assert any(t.name == "skill_view" for t in BUILTIN_TOOLS)
     assert "skill_view" in ALWAYS_ON
     assert "skill_view" in READ_ONLY_TOOLS

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from liteharness_cli.model_catalog import parse_catalog
+from ness_cli.model_catalog import parse_catalog
 
 
 def test_parse_catalog_filters_and_preserves_literal_reasoning() -> None:

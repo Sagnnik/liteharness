@@ -5,8 +5,8 @@ import threading
 import unittest
 from pathlib import Path
 
-from liteharness.persistence import ThreadStore
-from liteharness_cli.events import _enrich_spawn_subagent_result, events_to_messages
+from ness_ai.persistence import ThreadStore
+from ness_cli.events import _enrich_spawn_subagent_result, events_to_messages
 
 
 class SessionStorageTests(unittest.TestCase):
