@@ -27,8 +27,7 @@ from ness_cli.tui.theme import (
 # --- palette ----------------------------------------------------------------
 # Ring uses the full symmetric silver sweep (highlight orbits the circle).
 _SILVER_STOPS = (GRAY_DIM, GRAY, GRAY_BRIGHT, "#f0f2f5", GRAY_BRIGHT, GRAY, GRAY_DIM)
-# Title reads left-to-right: dim → silver → near-white (matches working label at frame 0).
-_BRAND_GRADIENT_STOPS = (GRAY_DIM, GRAY, GRAY_BRIGHT, "#f0f2f5")
+_BRAND_TITLE_COLOR = "#e4e7ec"  # very light gray (a step down from near-white)
 _NODE_TOP_COLOR = "#6ee7b7"  # mint
 _NODE_BR_COLOR = "#c084fc" # dark purple
 _NODE_BL_COLOR = "#f97316"  # orange
@@ -281,18 +280,6 @@ def _logo_height() -> int:  # noqa: D401 (tiny accessor)
     return _GRID_ROWS
 
 
-def _gradientized_title(text: str) -> list[tuple[str, str]]:
-    """Return fragments for a silver gradient title string (dim → bright)."""
-    if not text:
-        return []
-    out: list[tuple[str, str]] = []
-    last = len(text) - 1
-    for i, ch in enumerate(text):
-        color = _interp_hex(_BRAND_GRADIENT_STOPS, i / max(1, last))
-        out.append((_char_style(color, bold=True), ch))
-    return out
-
-
 # --- rounded banner rows ----------------------------------------------------
 # Rounded box drawing for a left-aligned body inside a fixed width.
 # columns: total available width; margins: chars to indent the body from left/right.
@@ -370,11 +357,14 @@ def _panel_rows(
 
 
 def _title_line(*, version: str, width: int) -> TranscriptLine:
-    """Build the Ness + Agent (silver gradient) + version row. Title bold."""
+    """Build the NessAgent title (light gray) + version row."""
     left = "Ness"
-    title_style = _char_style(GRAY_BRIGHT, bold=True)
-    title_fragments: list[tuple[str, str]] = [(title_style, left)]
-    title_fragments.extend(_gradientized_title("Agent"))
+    agent = "Agent"
+    title_style = _char_style(_BRAND_TITLE_COLOR, bold=True)
+    title_fragments: list[tuple[str, str]] = [
+        (title_style, left),
+        (title_style, agent),
+    ]
     # version appended with a dim style and one space gap
     ver_text = f" v{version}"
     title_fragments.append((_char_style(GRAY_DIM), ver_text))
