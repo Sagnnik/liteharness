@@ -10,7 +10,7 @@
 
 Ness Agent is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
 
-> **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](CHANGELOG.md).
+> **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md).
 
 ## Table of contents
 
@@ -87,7 +87,7 @@ Parallel isolated session:
 ness --worktree feature-x
 ```
 
-Full CLI reference: [docs/cli.md](docs/cli.md) · Configuration: [docs/configuration.md](docs/configuration.md)
+Full CLI reference: [docs/cli.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/cli.md) · Configuration: [docs/configuration.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/configuration.md)
 
 ## Quick start — SDK
 
@@ -114,22 +114,22 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Full SDK guide: [docs/sdk.md](docs/sdk.md) · Architecture: [docs/architecture.md](docs/architecture.md)
+Full SDK guide: [docs/sdk.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/sdk.md) · Architecture: [docs/architecture.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/architecture.md)
 
 ## Documentation
 
 | Guide | Description |
 |-------|-------------|
-| [docs/README.md](docs/README.md) | Documentation index |
-| [docs/sdk.md](docs/sdk.md) | SDK usage, public API, tracing |
-| [docs/cli.md](docs/cli.md) | Ness TUI, slash commands, MCP, permissions |
-| [docs/configuration.md](docs/configuration.md) | Global config, `.ness/` layout, env vars |
-| [docs/architecture.md](docs/architecture.md) | Prompt layers, modes, memory, compaction |
+| [docs/README.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/README.md) | Documentation index |
+| [docs/sdk.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/sdk.md) | SDK usage, public API, tracing |
+| [docs/cli.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/cli.md) | Ness TUI, slash commands, MCP, permissions |
+| [docs/configuration.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/configuration.md) | Global config, `.ness/` layout, env vars |
+| [docs/architecture.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/architecture.md) | Prompt layers, modes, memory, compaction |
 
 ## Contributing
 
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and PR guidelines.
+Contributions welcome. See [CONTRIBUTING.md](https://github.com/Sagnnik/ness-agent/blob/main/CONTRIBUTING.md) for dev setup and PR guidelines.
 
 ## License
 
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+Licensed under the Apache License 2.0. See [LICENSE](https://github.com/Sagnnik/ness-agent/blob/main/LICENSE).

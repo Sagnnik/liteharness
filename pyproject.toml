@@ -12,6 +12,17 @@ description = "Ness Agent is an experimental, hackable agent harness."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
+authors = [{ name = "Sagnnik Biswas" }]
+keywords = ["agent", "langgraph", "coding-agent", "cli", "mcp", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "beautifulsoup4>=4.15.0",
     "httpx>=0.28.1",
@@ -41,6 +52,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/Sagnnik/ness-agent"
+Documentation = "https://github.com/Sagnnik/ness-agent/tree/main/docs"
 Repository = "https://github.com/Sagnnik/ness-agent"
 Issues = "https://github.com/Sagnnik/ness-agent/issues"
 Changelog = "https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md"
