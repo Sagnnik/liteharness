@@ -5,9 +5,8 @@
 # Ness AI
 
 [![CI](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/pypi/pyversions/ness-ai)](https://pypi.org/project/ness-ai/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/github/license/Sagnnik/ness-agent)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/ness-ai)](https://pypi.org/project/ness-ai/)
 
 Ness AI is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
 
