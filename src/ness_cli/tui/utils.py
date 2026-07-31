@@ -52,7 +52,7 @@ def display_cwd() -> str:
         display = f"~/{path.relative_to(home)}"
     except ValueError:
         display = str(path)
-    branch = os.environ.get("NESS_AI_WORKTREE") or git_branch()
+    branch = os.environ.get("NESS_AGENT_WORKTREE") or git_branch()
     return f"{display} ({branch})" if branch else display
 
 

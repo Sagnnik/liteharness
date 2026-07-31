@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 import yaml
 from langchain_core.messages import HumanMessage
 
-from ness_ai.tools.discover import TOOL_COUNT_WARN_THRESHOLD
-from ness_ai.workspace import setup_ness_structure
-from ness_ai.workspace.project_context import get_project_context
+from ness_agent.tools.discover import TOOL_COUNT_WARN_THRESHOLD
+from ness_agent.workspace import setup_ness_structure
+from ness_agent.workspace.project_context import get_project_context
 from ness_cli.chat_model import (
     active_model_name,
     active_reasoning_effort,

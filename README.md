@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="assets/banner-light-geo.svg" alt="Ness AI — hackable coding-agent harness" width="100%">
+  <img src="https://raw.githubusercontent.com/Sagnnik/ness-agent/main/assets/banner-light-geo.svg" alt="Ness Agent — hackable coding-agent harness" width="100%">
 </p>
 
-# Ness AI
+# Ness Agent
 
 [![CI](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/github/license/Sagnnik/ness-agent)](LICENSE)
 
-Ness AI is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
+Ness Agent is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
 
 > **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](CHANGELOG.md).
 
@@ -26,23 +26,23 @@ Ness AI is an experimental, hackable coding-agent harness for engineers who want
 
 | Component | What it is |
 |-----------|------------|
-| **Ness AI SDK** | LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, tracing |
+| **Ness Agent SDK** | LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, tracing |
 | **Ness CLI** | Terminal UI (`ness`), plan/act modes, git worktrees, global config, `.ness/` project layout |
 
-Both are included in the `ness-ai` PyPI package. OpenRouter-compatible chat models, native tool-calling, and filesystem-driven extension points under `.ness/`.
+Both are included in the `ness-agent` PyPI package. OpenRouter-compatible chat models, native tool-calling, and filesystem-driven extension points under `.ness/`.
 
 ## Installation
 
 Requires **Python 3.12+**.
 
 ```bash
-pip install ness-ai
+pip install ness-agent
 ```
 
 Optional tracing support:
 
 ```bash
-pip install ness-ai[tracing]
+pip install ness-agent[tracing]
 ```
 
 **From source:**
@@ -94,7 +94,7 @@ Full CLI reference: [docs/cli.md](docs/cli.md) · Configuration: [docs/configura
 ```python
 import asyncio
 from langchain_core.tools import tool
-from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
+from ness_agent import NessAgent, PromptLayers, PromptLayersConfig
 
 @tool
 def ping() -> str:

@@ -238,7 +238,7 @@ def _question_token(args: dict[str, Any]) -> str:
 
 
 def _mcp_arg_names(full_name: str) -> list[str]:
-    from ness_ai.session_context import try_get_session_context
+    from ness_agent.session_context import try_get_session_context
 
     ctx = try_get_session_context()
     catalog: dict = {}

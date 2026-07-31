@@ -1,4 +1,4 @@
-"""Shared fixtures for the Ness AI TUI test suite.
+"""Shared fixtures for the Ness Agent TUI test suite.
 
 The TUI is wired directly to a ``ness_cli.CodingSession``: TuiApp
 owns the TUI-side session state (prompt queue, exit flag, staged skills,
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ness_ai.types import SessionEvent
+from ness_agent.types import SessionEvent
 
 from ness_cli.tui.app import TuiApp
 

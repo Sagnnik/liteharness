@@ -1,1 +1,1 @@
-"""Focused tests for the production Ness AI TUI."""
+"""Focused tests for the production Ness Agent TUI."""

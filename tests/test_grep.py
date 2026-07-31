@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ness_ai.tools.search import grep
+from ness_agent.tools.search import grep
 
 from tests.sdk_fixtures import SessionContextTestMixin
 

@@ -23,8 +23,8 @@ def test_resolve_paths_uses_env_overrides(tmp_path: Path, monkeypatch):
     project.mkdir()
     cfg = tmp_path / "config"
     cache = tmp_path / "cache"
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(cfg))
-    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(cache))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("NESS_AGENT_CACHE_DIR", str(cache))
     monkeypatch.setenv("NESS_DIR", ".ness")
 
     paths = resolve_paths(project_root=project)
@@ -44,8 +44,8 @@ def test_resolve_paths_uses_env_overrides(tmp_path: Path, monkeypatch):
 
 
 def test_slug_collision_appends_hash(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AGENT_CACHE_DIR", str(tmp_path / "cache"))
 
     a = tmp_path / "apps" / "demo"
     b = tmp_path / "other" / "demo"
@@ -66,8 +66,8 @@ def test_slug_collision_appends_hash(tmp_path: Path, monkeypatch):
 
 
 def test_ensure_global_config_creates_user_and_marker(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AGENT_CACHE_DIR", str(tmp_path / "cache"))
     project = tmp_path / "repo"
     project.mkdir()
     paths = resolve_paths(project_root=project)
@@ -94,8 +94,8 @@ def test_ensure_global_config_creates_user_and_marker(tmp_path: Path, monkeypatc
 def test_ensure_global_config_does_not_overwrite_instructions(
     tmp_path: Path, monkeypatch
 ):
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AGENT_CACHE_DIR", str(tmp_path / "cache"))
     project = tmp_path / "repo"
     project.mkdir()
     paths = resolve_paths(project_root=project)

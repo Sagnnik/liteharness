@@ -13,7 +13,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Iterable, Protocol
 
-from ness_ai import ApprovalHandler
+from ness_agent import ApprovalHandler
 
 # ``AssistantStream`` lives in ness_cli.tui.stream next to ``TuiAssistantStream`` (the
 # live assistant-stream class it coordinates reasoning with). Re-exported here so

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ness_ai.persistence import ThreadStore
+from ness_agent.persistence import ThreadStore
 import ness_cli.rollback as rollback
 
 

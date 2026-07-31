@@ -18,9 +18,9 @@ import sys
 import uuid
 from typing import TYPE_CHECKING
 
-from ness_ai.mcp import MCPManager
-from ness_ai.session_context import SessionContext, set_session_context
-from ness_ai.tools import is_git_repo
+from ness_agent.mcp import MCPManager
+from ness_agent.session_context import SessionContext, set_session_context
+from ness_agent.tools import is_git_repo
 
 from ness_cli.chat_model import provider_key_missing
 from ness_cli.config import settings

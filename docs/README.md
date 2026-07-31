@@ -1,4 +1,4 @@
-# Ness AI documentation
+# Ness Agent documentation
 
 | Guide | Description |
 |-------|-------------|

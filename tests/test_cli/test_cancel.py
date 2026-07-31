@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ness_ai.types import SessionEvent
+from ness_agent.types import SessionEvent
 
 from ness_cli.tui import render
 

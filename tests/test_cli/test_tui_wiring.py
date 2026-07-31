@@ -17,7 +17,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from ness_ai import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
+from ness_agent import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
 from ness_cli import CodingSession
 
 from ness_cli.tui import render

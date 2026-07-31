@@ -17,8 +17,8 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import tool
 
-from ness_ai import NessAgent, PromptLayers, PromptLayersConfig, SessionEvent
-from ness_ai.options import NessAgentOptions
+from ness_agent import NessAgent, PromptLayers, PromptLayersConfig, SessionEvent
+from ness_agent.options import NessAgentOptions
 from ness_cli import CodingSession
 from ness_cli.events import events_to_messages
 

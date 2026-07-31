@@ -276,14 +276,14 @@ def reload_settings() -> None:
     fresh = Settings()
     for field in type(fresh).model_fields:
         setattr(settings, field, getattr(fresh, field))
-    from ness_ai.tools.web import reset_provider
+    from ness_agent.tools.web import reset_provider
 
     reset_provider()
 
 
 def make_sdk_cost_tracker():
     """SDK CostTracker wired with CLI MODEL_PRICING estimates for non-provider costs."""
-    from ness_ai.tracing.cost import CostTracker
+    from ness_agent.tracing.cost import CostTracker
 
     pricing = dict(MODEL_PRICING)
     for record in cached_models():

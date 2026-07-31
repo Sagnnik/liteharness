@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ness_ai.instructions import (
+from ness_agent.instructions import (
     ACT_MODE,
     COMPACTION,
     INIT_MEMORY,
@@ -136,14 +136,14 @@ def test_build_coding_session_threads_instructions_dir(
     from ness_cli.factory import build_coding_session
     from ness_cli.paths import resolve_paths, ensure_global_config
 
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AGENT_CACHE_DIR", str(tmp_path / "cache"))
     project = tmp_path / "repo"
     project.mkdir()
     monkeypatch.chdir(project)
 
     # Custom instructions dir distinct from env default would be via NessPaths;
-    # resolve_paths uses NESS_AI_CONFIG_DIR, then we pass that NessPaths through.
+    # resolve_paths uses NESS_AGENT_CONFIG_DIR, then we pass that NessPaths through.
     paths = resolve_paths(project_root=project)
     ensure_global_config(paths)
     custom = paths.instructions_dir

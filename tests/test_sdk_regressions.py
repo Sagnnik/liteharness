@@ -11,15 +11,15 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
-from ness_ai.compaction import CompactionResult, apply_force_floor, summarize_history
-from ness_ai.context.layers import AuxPrompts
-from ness_ai.graph.nodes import make_nodes
-from ness_ai.memory import MemoryStore
-from ness_ai.options import MemoryConfig, NessAgentOptions
-from ness_ai.persistence import ThreadStore
-from ness_ai.reflection import finalize_session_reflection, run_reflection_gate
-from ness_ai.tracing.cost import CostTracker
+from ness_agent import NessAgent, PromptLayers, PromptLayersConfig
+from ness_agent.compaction import CompactionResult, apply_force_floor, summarize_history
+from ness_agent.context.layers import AuxPrompts
+from ness_agent.graph.nodes import make_nodes
+from ness_agent.memory import MemoryStore
+from ness_agent.options import MemoryConfig, NessAgentOptions
+from ness_agent.persistence import ThreadStore
+from ness_agent.reflection import finalize_session_reflection, run_reflection_gate
+from ness_agent.tracing.cost import CostTracker
 
 
 def _agent(tmp_path: Path, **kwargs):
@@ -114,7 +114,7 @@ def test_agent_node_tool_loop_without_overlay(tmp_path: Path):
 
     with (
         patch(
-            "ness_ai.graph.nodes.progressive_compact",
+            "ness_agent.graph.nodes.progressive_compact",
             side_effect=lambda conv, **kw: replace(
                 not_compacted, messages=list(conv)
             ),
@@ -219,7 +219,7 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
 
     with (
         patch(
-            "ness_ai.graph.nodes.progressive_compact",
+            "ness_agent.graph.nodes.progressive_compact",
             return_value=CompactionResult(
                 messages=[HumanMessage(content="hi")],
                 compacted=False,
@@ -249,7 +249,7 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
 
 
 def test_options_context_window_drives_usable_budget():
-    from ness_ai.compaction import resolve_usable_context_budget
+    from ness_agent.compaction import resolve_usable_context_budget
 
     opts = NessAgentOptions(
         context_window=100_000,
@@ -265,8 +265,8 @@ def test_options_context_window_drives_usable_budget():
 
 
 def test_agent_spec_resolves_backends(tmp_path: Path):
-    from ness_ai import AgentSpec, NessAgent
-    from ness_ai.tracing.tracer import NoopTracer
+    from ness_agent import AgentSpec, NessAgent
+    from ness_agent.tracing.tracer import NoopTracer
 
     model = FakeListChatModel(responses=["ok"])
 
@@ -295,7 +295,7 @@ def test_agent_spec_resolves_backends(tmp_path: Path):
 
 
 def test_aggregate_usage_sums_calls_and_costs():
-    from ness_ai.types import UsageEvent, aggregate_usage
+    from ness_agent.types import UsageEvent, aggregate_usage
 
     assert aggregate_usage([]) is None
     total = aggregate_usage(
@@ -326,7 +326,7 @@ def test_aggregate_usage_sums_calls_and_costs():
 
 def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
     """Session.run exposes usage_total as the sum of per-call usage events."""
-    from ness_ai.types import UsageEvent, aggregate_usage
+    from ness_agent.types import UsageEvent, aggregate_usage
 
     model = FakeListChatModel(responses=["done"])
     agent = NessAgent(
@@ -343,8 +343,8 @@ def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
     session = agent.session(thread_id="t-usage-total")
 
     # Simulate the usage bridge the agent node would fire mid-turn.
-    from ness_ai.session import _active_session
-    from ness_ai.session_context import reset_session_context
+    from ness_agent.session import _active_session
+    from ness_agent.session_context import reset_session_context
 
     async def _run():
         ctx_token = session._install_session_runtime()

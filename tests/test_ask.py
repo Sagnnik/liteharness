@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from ness_ai.tools.ask import question, set_question_runtime
+from ness_agent.tools.ask import question, set_question_runtime
 
 
 class QuestionToolTests(unittest.IsolatedAsyncioTestCase):

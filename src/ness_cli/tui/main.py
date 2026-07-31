@@ -1,4 +1,4 @@
-"""Ness AI CLI entrypoint (Ness).
+"""Ness Agent CLI entrypoint (Ness).
 
 A clean, scrollable Rich + prompt_toolkit CLI. Run with:
 
@@ -14,7 +14,7 @@ Headless one-shot queries (final response to stdout, then exit):
 The TUI is wired directly to the SDK stack: a
 :class:`~ness_cli.CodingSession` built via
 :func:`ness_cli.factory.build_coding_session`, an SDK
-:class:`~ness_ai.mcp.MCPManager`, and the SDK tool registry. The old
+:class:`~ness_agent.mcp.MCPManager`, and the SDK tool registry. The old
 root-level monolith modules are no longer imported here.
 """
 
@@ -51,18 +51,18 @@ def _bootstrap_worktree() -> None:
         print(f"worktree error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     os.chdir(path)
-    os.environ["NESS_AI_WORKTREE"] = name
-    os.environ["NESS_AI_WORKTREE_PATH"] = str(path)
+    os.environ["NESS_AGENT_WORKTREE"] = name
+    os.environ["NESS_AGENT_WORKTREE_PATH"] = str(path)
 
 
 _bootstrap_worktree()
 
 import typer
 
-from ness_ai.compaction import resolve_token_count
-from ness_ai.mcp import MCPManager
-from ness_ai.session_context import SessionContext, set_session_context
-from ness_ai.tools import is_git_repo
+from ness_agent.compaction import resolve_token_count
+from ness_agent.mcp import MCPManager
+from ness_agent.session_context import SessionContext, set_session_context
+from ness_agent.tools import is_git_repo
 from ness_cli.chat_model import (
     ModelOverrides,
     configure_model,
@@ -77,7 +77,7 @@ from ness_cli.tui import render
 from ness_cli.tui.app import TuiApp
 from ness_cli.tui.theme import build_console
 
-app = typer.Typer(add_completion=False, help="Ness AI agent CLI")
+app = typer.Typer(add_completion=False, help="Ness Agent agent CLI")
 
 
 def _overrides(
@@ -147,7 +147,7 @@ def run(
         help="Run the query non-interactively, print the final response, and exit",
     ),
 ) -> None:
-    """Start an interactive Ness AI session (or a one-shot query with -p)."""
+    """Start an interactive Ness Agent session (or a one-shot query with -p)."""
     configure_model(
         _overrides(
             model, reflection_model, api_key, base_url, session_id, reasoning_effort
@@ -271,9 +271,9 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
     # pre-wrapped TranscriptLines aren't built against a stale fallback width
     # and re-wrap into a half-screen artifact on first render.
 
-    worktree_name = os.environ.get("NESS_AI_WORKTREE")
+    worktree_name = os.environ.get("NESS_AGENT_WORKTREE")
     if worktree_name:
-        worktree_path = os.environ.get("NESS_AI_WORKTREE_PATH", os.getcwd())
+        worktree_path = os.environ.get("NESS_AGENT_WORKTREE_PATH", os.getcwd())
         render.render_notice(
             f"worktree: {worktree_name} @ {worktree_path}",
             title="worktree",

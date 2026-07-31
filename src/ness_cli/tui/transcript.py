@@ -76,7 +76,7 @@ def _header_version() -> str:
         from importlib.metadata import PackageNotFoundError, version
 
         try:
-            return version("ness-ai")
+            return version("ness-agent")
         except PackageNotFoundError:
             return "dev"
     except Exception:

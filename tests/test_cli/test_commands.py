@@ -86,7 +86,7 @@ def test_config_session_toggles_update_active_runtime(make_app):
 
 
 def test_config_action_can_update_persisted_setting(make_app, tmp_path, monkeypatch):
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path / "cfg"))
     from ness_cli.config_store import load_configs
 
     app = make_app()

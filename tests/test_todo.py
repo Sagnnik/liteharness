@@ -6,9 +6,9 @@ import uuid
 
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-from ness_ai.context.coding_overlay import CodingOverlay
-from ness_ai.context.overlay import OverlayContext
-from ness_ai.tools.todo import get_thread_todos, render_todos, set_current_thread, set_thread_todos, todo
+from ness_agent.context.coding_overlay import CodingOverlay
+from ness_agent.context.overlay import OverlayContext
+from ness_agent.tools.todo import get_thread_todos, render_todos, set_current_thread, set_thread_todos, todo
 
 
 class TodoToolTests(unittest.TestCase):

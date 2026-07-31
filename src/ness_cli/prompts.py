@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ness_ai.context.layers import PromptLayers, PromptLayersConfig, AuxPrompts
-from ness_ai.options import ModeConfig
+from ness_agent.context.layers import PromptLayers, PromptLayersConfig, AuxPrompts
+from ness_agent.options import ModeConfig
 from ness_cli.instructions import load_instruction
 
 

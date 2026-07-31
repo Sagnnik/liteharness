@@ -1,6 +1,6 @@
 # Ness CLI
 
-**Ness** is the interactive coding-agent CLI shipped with Ness AI. It uses OpenRouter-compatible chat models, plan/act modes, filesystem-driven extension points under `.ness/`, and a full TUI for approvals, thread history, and configuration.
+**Ness** is the interactive coding-agent CLI shipped with Ness Agent. It uses OpenRouter-compatible chat models, plan/act modes, filesystem-driven extension points under `.ness/`, and a full TUI for approvals, thread history, and configuration.
 
 See also: [Configuration](configuration.md) · [Architecture](architecture.md) · [SDK](sdk.md)
 
@@ -9,7 +9,7 @@ See also: [Configuration](configuration.md) · [Architecture](architecture.md) �
 ## Getting started
 
 ```bash
-pip install ness-ai
+pip install ness-agent
 export OPENAI_API_KEY=...    # or set via /config on first launch
 ness
 ```
@@ -118,7 +118,7 @@ The fallback requires no API key but is less capable: no neural search, weaker s
 
 ## MCP
 
-Ness AI connects to local **stdio** MCP servers at CLI startup. Each server is a child process; Ness AI discovers its tools and exposes them to the agent.
+Ness Agent connects to local **stdio** MCP servers at CLI startup. Each server is a child process; Ness Agent discovers its tools and exposes them to the agent.
 
 **Security:** MCP servers run arbitrary commands with your user permissions. Only add servers you trust, same as running `npx @some/mcp-server` directly.
 
@@ -232,7 +232,7 @@ Markdown files under `.ness/commands/*.md` become project-local slash commands. 
 
 ## Thread events
 
-When autosave is on, Ness AI stores events in `.ness/threads/threads.db`:
+When autosave is on, Ness Agent stores events in `.ness/threads/threads.db`:
 
 - **`threads`**: user `session-*` metadata (cost, turns, summaries, archive state)
 - **`events`**: append-only JSON payloads for user sessions only

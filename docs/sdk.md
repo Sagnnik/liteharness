@@ -1,6 +1,6 @@
 # SDK guide
 
-The **Ness AI SDK** (`ness-ai` on PyPI) is a LangGraph-based agent harness you can embed in your own apps, scripts, and internal tools. It provides the agent loop, built-in tools, permissions, memory, skills, hooks, compaction, reflection, and optional tracing.
+The **Ness Agent SDK** (`ness-agent` on PyPI) is a LangGraph-based agent harness you can embed in your own apps, scripts, and internal tools. It provides the agent loop, built-in tools, permissions, memory, skills, hooks, compaction, reflection, and optional tracing.
 
 The **Ness CLI** is a reference coding adapter built on top of this SDK (`ness_cli`).
 
@@ -11,13 +11,13 @@ See also: [Architecture](architecture.md) · [Configuration](configuration.md) �
 ## Installation
 
 ```bash
-pip install ness-ai
+pip install ness-agent
 ```
 
 Optional OpenTelemetry tracing:
 
 ```bash
-pip install ness-ai[tracing]
+pip install ness-agent[tracing]
 ```
 
 Requires **Python 3.12+**.
@@ -34,7 +34,7 @@ import asyncio
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import tool
 
-from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
+from ness_agent import NessAgent, PromptLayers, PromptLayersConfig
 
 
 @tool
@@ -74,13 +74,13 @@ async for event in coding.run_turn("add a rate limiter"):
     ...
 ```
 
-This module is included in the same `ness-ai` package; the CLI entry point is `ness`.
+This module is included in the same `ness-agent` package; the CLI entry point is `ness`.
 
 ---
 
 ## Public API
 
-Core exports from `ness_ai`:
+Core exports from `ness_agent`:
 
 | Symbol | Purpose |
 |--------|---------|
@@ -111,8 +111,8 @@ When using the SDK directly, you supply L0–L2 via `PromptLayers` / `PromptLaye
 Install the tracing extra, then pass `TracingConfig` through `NessAgentOptions`:
 
 ```python
-from ness_ai import NessAgent, NessAgentOptions
-from ness_ai.tracing import TracingConfig
+from ness_agent import NessAgent, NessAgentOptions
+from ness_agent.tracing import TracingConfig
 
 agent = NessAgent(
     model=model,
@@ -127,4 +127,4 @@ See `tests/tracing/` for integration examples.
 
 ## Stability
 
-Ness AI is **0.x experimental**. Public APIs may change until 1.0. Pin versions in production and watch [CHANGELOG](../CHANGELOG.md).
+Ness Agent is **0.x experimental**. Public APIs may change until 1.0. Pin versions in production and watch [CHANGELOG](../CHANGELOG.md).

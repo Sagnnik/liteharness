@@ -1,10 +1,10 @@
-"""Tests for ness_ai.tracing.tracer primitives."""
+"""Tests for ness_agent.tracing.tracer primitives."""
 
 from __future__ import annotations
 
 import pytest
 
-from ness_ai.tracing.tracer import (
+from ness_agent.tracing.tracer import (
     InMemorySpan,
     MultiSpan,
     MultiTracer,
@@ -98,8 +98,8 @@ def test_multispan_records_exception_on_exit():
 
 
 def test_build_tracer_returns_noop_when_disabled():
-    from ness_ai.tracing.config import TracingConfig
-    from ness_ai.tracing.tracer import build_tracer
+    from ness_agent.tracing.config import TracingConfig
+    from ness_agent.tracing.tracer import build_tracer
 
     assert isinstance(build_tracer(None), NoopTracer)
     assert isinstance(build_tracer(TracingConfig()), NoopTracer)
@@ -109,9 +109,9 @@ def test_build_tracer_returns_noop_when_disabled():
 
 
 def test_build_tracer_console_does_not_require_opentelemetry():
-    from ness_ai.tracing.config import TracingConfig
-    from ness_ai.tracing.exporters.console import ConsoleTracer
-    from ness_ai.tracing.tracer import build_tracer
+    from ness_agent.tracing.config import TracingConfig
+    from ness_agent.tracing.exporters.console import ConsoleTracer
+    from ness_agent.tracing.tracer import build_tracer
 
     tracer = build_tracer(TracingConfig(enabled=True, exporter="console"))
     assert isinstance(tracer, ConsoleTracer)
@@ -119,8 +119,8 @@ def test_build_tracer_console_does_not_require_opentelemetry():
 
 def test_build_tracer_otlp_raises_friendly_importerror_without_extra():
     """Without the 'tracing' extra installed, OTLP must give a clear message."""
-    from ness_ai.tracing.config import TracingConfig
-    from ness_ai.tracing.tracer import build_tracer
+    from ness_agent.tracing.config import TracingConfig
+    from ness_agent.tracing.tracer import build_tracer
 
     try:
         import opentelemetry  # noqa: F401
