@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from liteharness.instructions import (
+from ness_ai.instructions import (
     ACT_MODE,
     COMPACTION,
     INIT_MEMORY,
@@ -14,13 +14,13 @@ from liteharness.instructions import (
     SUBAGENT,
     THREAD_SUMMARY,
 )
-from liteharness_cli.instructions import (
+from ness_cli.instructions import (
     INSTRUCTION_FILES,
     default_instruction_files,
     load_instruction,
     packaged_instruction,
 )
-from liteharness_cli.prompts import (
+from ness_cli.prompts import (
     build_init_memory_prompt,
     default_aux_prompts,
     default_prompt_layers,
@@ -52,7 +52,7 @@ def test_packaged_sdk_instruction_parity() -> None:
 
 
 def test_load_instruction_prefers_global_file(tmp_path: Path) -> None:
-    from liteharness_cli.instructions import clear_instruction_cache
+    from ness_cli.instructions import clear_instruction_cache
 
     clear_instruction_cache()
     custom = "custom harness rules"
@@ -63,7 +63,7 @@ def test_load_instruction_prefers_global_file(tmp_path: Path) -> None:
 
 
 def test_load_instruction_falls_back_to_packaged(tmp_path: Path) -> None:
-    from liteharness_cli.instructions import clear_instruction_cache
+    from ness_cli.instructions import clear_instruction_cache
 
     clear_instruction_cache()
     assert (
@@ -102,7 +102,7 @@ def test_default_aux_and_modes_read_global(tmp_path: Path) -> None:
 
 
 def test_goal_templates_load_from_instructions_dir(tmp_path: Path) -> None:
-    from liteharness_cli.goal import GoalCoordinator
+    from ness_cli.goal import GoalCoordinator
 
     (tmp_path / "goal_judge.md").write_text(
         "JUDGE {goal} {attempt}/{max_attempts} {validation} {start_seq} {transcript}\n",
@@ -133,17 +133,17 @@ def test_goal_templates_load_from_instructions_dir(tmp_path: Path) -> None:
 def test_build_coding_session_threads_instructions_dir(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from liteharness_cli.factory import build_coding_session
-    from liteharness_cli.paths import resolve_paths, ensure_global_config
+    from ness_cli.factory import build_coding_session
+    from ness_cli.paths import resolve_paths, ensure_global_config
 
-    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
-    monkeypatch.setenv("LITEHARNESS_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("NESS_AI_CACHE_DIR", str(tmp_path / "cache"))
     project = tmp_path / "repo"
     project.mkdir()
     monkeypatch.chdir(project)
 
     # Custom instructions dir distinct from env default would be via NessPaths;
-    # resolve_paths uses LITEHARNESS_CONFIG_DIR, then we pass that NessPaths through.
+    # resolve_paths uses NESS_AI_CONFIG_DIR, then we pass that NessPaths through.
     paths = resolve_paths(project_root=project)
     ensure_global_config(paths)
     custom = paths.instructions_dir
@@ -161,7 +161,7 @@ def test_build_coding_session_threads_instructions_dir(
         "ctx", instructions_dir=coding.instructions_dir
     )
 
-    from liteharness_cli.goal import GoalCoordinator
+    from ness_cli.goal import GoalCoordinator
 
     coding.thread_store = type(
         "Store",

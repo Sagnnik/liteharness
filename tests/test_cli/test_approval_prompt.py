@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from liteharness_cli.tui.models import MenuItem
-from liteharness_cli.tui.models import TranscriptLine
+from ness_cli.tui.models import MenuItem
+from ness_cli.tui.models import TranscriptLine
 
 
 def test_approval_command_is_rendered_above_choices_in_green(make_app) -> None:

@@ -12,11 +12,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 
-from liteharness import NessAgent, PromptLayers, PromptLayersConfig
-from liteharness.options import NessAgentOptions
-from liteharness.tracing import TracingConfig
-from liteharness.tracing.messages import serialize_messages
-from liteharness.tracing.semconv import (
+from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
+from ness_ai.options import NessAgentOptions
+from ness_ai.tracing import TracingConfig
+from ness_ai.tracing.messages import serialize_messages
+from ness_ai.tracing.semconv import (
     CACHE_HIT_RATE,
     CACHE_READ_TOKENS,
     GEN_AI_COMPLETION,
@@ -29,7 +29,7 @@ from liteharness.tracing.semconv import (
     TOOL_EXEC,
     TURN,
 )
-from liteharness.tracing.tracer import InMemorySpan, MultiTracer, NoopTracer
+from ness_ai.tracing.tracer import InMemorySpan, MultiTracer, NoopTracer
 
 
 class StubChatModel(BaseChatModel):

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from liteharness_cli.config_store import (
+from ness_cli.config_store import (
     ensure_secrets_file,
     load_configs,
     load_secrets,
@@ -21,7 +21,7 @@ from liteharness_cli.config_store import (
 @pytest.fixture
 def config_dir(tmp_path: Path, monkeypatch) -> Path:
     cfg = tmp_path / "cfg"
-    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(cfg))
     return cfg
 
 
@@ -84,7 +84,7 @@ def test_migrate_env_once_imports_and_marks(config_dir: Path, tmp_path: Path):
         "EMPTY_VALUE=\n",
         encoding="utf-8",
     )
-    from liteharness_cli.config import settings_field_env_map
+    from ness_cli.config import settings_field_env_map
 
     imported = migrate_env_once(env, field_for_alias=settings_field_env_map())
     assert set(imported) == {
@@ -110,7 +110,7 @@ def test_migrate_env_existing_json_wins(config_dir: Path, tmp_path: Path):
     write_config("model_name", "deepseek/deepseek-chat", config_dir)
     env = tmp_path / ".env"
     env.write_text("MODEL_NAME=openai/gpt-4o\n", encoding="utf-8")
-    from liteharness_cli.config import settings_field_env_map
+    from ness_cli.config import settings_field_env_map
 
     imported = migrate_env_once(env, field_for_alias=settings_field_env_map())
     assert imported == []
@@ -122,7 +122,7 @@ def test_settings_reads_global_json(config_dir: Path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     write_config("model_name", "openai/gpt-4o")
     write_secret("openai_api_key", "sk-json")
-    from liteharness_cli.config import Settings
+    from ness_cli.config import Settings
 
     fresh = Settings()
     assert fresh.model_name == "openai/gpt-4o"
@@ -132,7 +132,7 @@ def test_settings_reads_global_json(config_dir: Path, monkeypatch):
 def test_settings_env_overrides_json(config_dir: Path, monkeypatch):
     write_config("model_name", "openai/gpt-4o")
     monkeypatch.setenv("MODEL_NAME", "deepseek/deepseek-chat")
-    from liteharness_cli.config import Settings
+    from ness_cli.config import Settings
 
     assert Settings().model_name == "deepseek/deepseek-chat"
 
@@ -140,7 +140,7 @@ def test_settings_env_overrides_json(config_dir: Path, monkeypatch):
 def test_settings_defaults_without_json(config_dir: Path, monkeypatch):
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    from liteharness_cli.config import Settings
+    from ness_cli.config import Settings
 
     fresh = Settings()
     assert fresh.model_name == "deepseek/deepseek-v4-flash"

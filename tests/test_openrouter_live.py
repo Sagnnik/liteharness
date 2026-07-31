@@ -6,7 +6,7 @@ import os
 import pytest
 from langchain_core.messages import HumanMessage
 
-from liteharness_cli.chat_model import (
+from ness_cli.chat_model import (
     ModelOverrides,
     build_chat_model,
     configure_model,

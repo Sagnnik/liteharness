@@ -8,17 +8,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from liteharness_cli.config import settings
-from liteharness_cli.config_store import load_configs, load_secrets
-from liteharness_cli.model_catalog import RefreshResult
-from liteharness_cli.tui.config_flow import current_config_lines
-from liteharness_cli.tui.config_registry import SPEC_BY_KEY
+from ness_cli.config import settings
+from ness_cli.config_store import load_configs, load_secrets
+from ness_cli.model_catalog import RefreshResult
+from ness_cli.tui.config_flow import current_config_lines
+from ness_cli.tui.config_registry import SPEC_BY_KEY
 
 
 @pytest.fixture
 def config_dir(tmp_path: Path, monkeypatch) -> Path:
     cfg = tmp_path / "cfg"
-    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(cfg))
     return cfg
 
 
@@ -153,7 +153,7 @@ def test_select_picker_applies_choice(make_app, config_dir):
 
 
 def test_model_picker_targets_reflection_model(make_app, config_dir, monkeypatch):
-    import liteharness_cli.tui.config_flow as config_flow
+    import ness_cli.tui.config_flow as config_flow
 
     monkeypatch.setattr(
         config_flow,

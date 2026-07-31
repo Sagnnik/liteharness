@@ -17,10 +17,10 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import tool
 
-from liteharness import NessAgent, PromptLayers, PromptLayersConfig, SessionEvent
-from liteharness.options import NessAgentOptions
-from liteharness_cli import CodingSession
-from liteharness_cli.events import events_to_messages
+from ness_ai import NessAgent, PromptLayers, PromptLayersConfig, SessionEvent
+from ness_ai.options import NessAgentOptions
+from ness_cli import CodingSession
+from ness_cli.events import events_to_messages
 
 
 def _make_agent(tmp_path: Path):
@@ -136,7 +136,7 @@ def test_resume_replays_each_threads_cost_only_once(coding):
         )
 
     with patch(
-        "liteharness_cli.coding_session.restore_cost_from_events"
+        "ness_cli.coding_session.restore_cost_from_events"
     ) as restore:
         _run(coding.resume("t-cost-a"))
         _run(coding.resume("t-cost-b"))
@@ -152,12 +152,12 @@ def test_resume_replays_each_threads_cost_only_once(coding):
 def test_reload_model_refreshes_vision_capability(coding):
     model = coding.cfg.model
     with (
-        patch("liteharness_cli.chat_model.create_model", return_value=model),
-        patch("liteharness_cli.chat_model.create_compaction_model", return_value=model),
-        patch("liteharness_cli.chat_model.create_reflection_model", return_value=model),
-        patch("liteharness_cli.config.context_window_for", return_value=128_000),
+        patch("ness_cli.chat_model.create_model", return_value=model),
+        patch("ness_cli.chat_model.create_compaction_model", return_value=model),
+        patch("ness_cli.chat_model.create_reflection_model", return_value=model),
+        patch("ness_cli.config.context_window_for", return_value=128_000),
         patch(
-            "liteharness_cli.config.Settings.supports_vision",
+            "ness_cli.config.Settings.supports_vision",
             new_callable=PropertyMock,
             return_value=True,
         ),
@@ -328,7 +328,7 @@ def test_expand_documents_on_send_and_replay(tmp_path: Path):
     )
     coding = CodingSession(agent, thread_id="t-mentions", mode="act")
 
-    from liteharness_cli.mentions import expand_documents
+    from ness_cli.mentions import expand_documents
 
     expanded = expand_documents("@alpha.txt see this", coding.permission_store)
     assert "ALPHA-CONTENT-v1" in expanded

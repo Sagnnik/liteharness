@@ -1,6 +1,6 @@
-"""Shared fixtures for the LiteHarness TUI test suite.
+"""Shared fixtures for the Ness AI TUI test suite.
 
-The TUI is wired directly to a ``liteharness_cli.CodingSession``: TuiApp
+The TUI is wired directly to a ``ness_cli.CodingSession``: TuiApp
 owns the TUI-side session state (prompt queue, exit flag, staged skills,
 assistant history) and consumes the coding session's SessionEvent stream.
 The fakes below mirror the ``CodingSession`` surface the TUI and slash
@@ -17,9 +17,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from liteharness.types import SessionEvent
+from ness_ai.types import SessionEvent
 
-from liteharness_cli.tui.app import TuiApp
+from ness_cli.tui.app import TuiApp
 
 
 class _FakeThreadStore:
@@ -142,7 +142,7 @@ class _FakeCostTracker:
 
 
 class FakeCoding:
-    """Stand-in for ``liteharness_cli.CodingSession``.
+    """Stand-in for ``ness_cli.CodingSession``.
 
     Mirrors the surface TuiApp and the slash commands use: backend stores,
     mode/context properties, the run_turn event stream (scripted via

@@ -7,7 +7,7 @@ from unittest import mock
 
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-import liteharness.workspace.git_context as git_context
+import ness_ai.workspace.git_context as git_context
 
 
 class AutoGitSnapshotTests(unittest.TestCase):

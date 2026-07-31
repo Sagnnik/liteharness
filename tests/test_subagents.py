@@ -11,8 +11,8 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 
 from langchain_core.messages import AIMessage
 
-import liteharness.tools.subagents as subagents
-from liteharness.tools.subagents import set_subagent_runtime, spawn_subagent, subagent_runs_active
+import ness_ai.tools.subagents as subagents
+from ness_ai.tools.subagents import set_subagent_runtime, spawn_subagent, subagent_runs_active
 
 from tests.sdk_fixtures import SessionContextTestMixin
 
@@ -210,7 +210,7 @@ class SubagentToolTests(SessionContextTestMixin, unittest.IsolatedAsyncioTestCas
             seen["tool_names"] = ",".join(tool.name for tool in cfg.tools)
             return FakeApp()
 
-        with mock.patch("liteharness.graph.builder.build_graph", side_effect=fake_build_graph):
+        with mock.patch("ness_ai.graph.builder.build_graph", side_effect=fake_build_graph):
             result = await spawn_subagent.ainvoke(
                 {"tasks": [{"name": "explore", "prompt": "inspect"}]}
             )

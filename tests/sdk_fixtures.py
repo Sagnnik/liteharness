@@ -10,12 +10,12 @@ from typing import Any, Iterator
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-from liteharness.agent import AgentSpec, NessAgentConfig
-from liteharness.context.layers import PromptLayersConfig
-from liteharness.options import NessAgentOptions
-from liteharness.permissions import PermissionStore
-from liteharness.persistence import ThreadStore
-from liteharness.session_context import SessionContext, reset_session_context, set_session_context
+from ness_ai.agent import AgentSpec, NessAgentConfig
+from ness_ai.context.layers import PromptLayersConfig
+from ness_ai.options import NessAgentOptions
+from ness_ai.permissions import PermissionStore
+from ness_ai.persistence import ThreadStore
+from ness_ai.session_context import SessionContext, reset_session_context, set_session_context
 
 
 def make_session_context(

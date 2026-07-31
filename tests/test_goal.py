@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from liteharness_cli.goal import (
+from ness_cli.goal import (
     GoalCoordinator,
     JudgeStructuredOutput,
     JudgeVerdict,
@@ -77,7 +77,7 @@ def test_format_goal_conversation_renders_core_kinds() -> None:
 def test_format_goal_conversation_drops_oldest_when_over_budget(
     monkeypatch,
 ) -> None:
-    import liteharness_cli.goal as goal_mod
+    import ness_cli.goal as goal_mod
 
     monkeypatch.setattr(goal_mod, "_TRANSCRIPT_CHAR_BUDGET", 80)
     monkeypatch.setattr(goal_mod, "_EVENT_CHAR_BUDGET", 40)

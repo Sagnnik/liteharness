@@ -4,8 +4,8 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.tools import tool
 
 
-def test_import_liteharness_public_api():
-    import liteharness as lh
+def test_import_ness_ai_public_api():
+    import ness_ai as lh
 
     for name in (
         "NessAgent",
@@ -26,7 +26,7 @@ def test_import_liteharness_public_api():
 
 
 def test_ness_agent_session_builds_graph():
-    from liteharness import NessAgent, PromptLayers, PromptLayersConfig
+    from ness_ai import NessAgent, PromptLayers, PromptLayersConfig
 
     @tool
     def ping() -> str:

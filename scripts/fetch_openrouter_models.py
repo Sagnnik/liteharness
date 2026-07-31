@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Refresh and inspect LiteHarness's runtime OpenRouter model catalog."""
+"""Refresh and inspect Ness AI's runtime OpenRouter model catalog."""
 
 from __future__ import annotations
 
 import argparse
 
-from liteharness_cli.model_catalog import catalog_cache_path, fetch_catalog
+from ness_cli.model_catalog import catalog_cache_path, fetch_catalog
 
 
 def main() -> None:

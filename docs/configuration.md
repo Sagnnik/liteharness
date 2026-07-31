@@ -9,17 +9,17 @@ See also: [CLI guide](cli.md) · [Architecture](architecture.md)
 ## Directory layout
 
 ```text
-# Global config (platformdirs user_config_dir("liteharness"))
-# Linux: ~/.config/liteharness/
-# macOS: ~/Library/Application Support/liteharness/
-# Windows: %APPDATA%\liteharness\
+# Global config (platformdirs user_config_dir("ness-ai"))
+# Linux: ~/.config/ness-ai/
+# macOS: ~/Library/Application Support/ness-ai/
+# Windows: %APPDATA%\ness-ai\
 USER.md                  Cross-repo user preferences
 configs.json             Non-secret adapter settings (only values you changed)
 secrets.json             API keys and other secrets (mode 0600)
 instructions/            Editable prompt templates (L0, persona, plan/act, aux, goal)
 plans/<project-slug>/    Saved plan-mode output for this project
 
-# Per-project cache (platformdirs user_cache_dir("liteharness")/<hash>/)
+# Per-project cache (platformdirs user_cache_dir("ness-ai")/<hash>/)
 cli_history              Prompt history for this project root
 
 # Per-project .ness/ (NESS_DIR, default ".ness")
@@ -39,7 +39,7 @@ cli_history              Prompt history for this project root
     └── shells/          Background shell job metadata and logs
 ```
 
-Override roots with `LITEHARNESS_CONFIG_DIR`, `LITEHARNESS_CACHE_DIR`, and `NESS_DIR`.
+Override roots with `NESS_AI_CONFIG_DIR`, `NESS_AI_CACHE_DIR`, and `NESS_DIR`.
 
 ---
 
@@ -83,8 +83,8 @@ All except `NESS_DIR` are also editable via `/config` in the Ness TUI.
 | `OPENAI_API_KEY` | Provider API key (also stored in `secrets.json` via `/config`) |
 | `FORMAT_ON_WRITE` | Auto-format supported file types after writes (default `true`) |
 | `NESS_DIR` | Project config directory (default `.ness`) |
-| `LITEHARNESS_CONFIG_DIR` | Override global config root |
-| `LITEHARNESS_CACHE_DIR` | Override cache root (OpenRouter catalog + per-project `cli_history`) |
+| `NESS_AI_CONFIG_DIR` | Override global config root |
+| `NESS_AI_CACHE_DIR` | Override cache root (OpenRouter catalog + per-project `cli_history`) |
 | `EXA_API_KEY` | Optional Exa API key for higher-quality `web_search` and `fetch_url` ([exa.ai](https://exa.ai)) |
 
 ### CLI flags

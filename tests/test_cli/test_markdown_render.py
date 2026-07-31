@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from liteharness_cli.tui.markdown import markdown_transcript_lines
-from liteharness_cli.tui.models import TranscriptLine
+from ness_cli.tui.markdown import markdown_transcript_lines
+from ness_cli.tui.models import TranscriptLine
 
 
 def _all_text(lines: list[TranscriptLine]) -> str:

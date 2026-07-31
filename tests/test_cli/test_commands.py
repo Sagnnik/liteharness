@@ -4,11 +4,11 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from liteharness_cli.config import settings
+from ness_cli.config import settings
 
-from liteharness_cli.tui import render
-from liteharness_cli.tui.commands import dispatch
-from liteharness_cli.tui.config_flow import ConfigResult
+from ness_cli.tui import render
+from ness_cli.tui.commands import dispatch
+from ness_cli.tui.config_flow import ConfigResult
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
@@ -67,7 +67,7 @@ def test_config_session_toggles_update_active_runtime(make_app):
     settings.session_end_reflection = True
     try:
         with patch(
-            "liteharness_cli.tui.commands.run_config",
+            "ness_cli.tui.commands.run_config",
             new_callable=AsyncMock,
             return_value=ConfigResult(session_update=True),
         ):
@@ -86,8 +86,8 @@ def test_config_session_toggles_update_active_runtime(make_app):
 
 
 def test_config_action_can_update_persisted_setting(make_app, tmp_path, monkeypatch):
-    monkeypatch.setenv("LITEHARNESS_CONFIG_DIR", str(tmp_path / "cfg"))
-    from liteharness_cli.config_store import load_configs
+    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(tmp_path / "cfg"))
+    from ness_cli.config_store import load_configs
 
     app = make_app()
     previous = settings.enable_approval

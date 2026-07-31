@@ -10,8 +10,8 @@ from unittest import mock
 
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-import liteharness.tools.web as web
-from liteharness.tools.web import (
+import ness_ai.tools.web as web
+from ness_ai.tools.web import (
     DuckDuckGoProvider,
     ExaProvider,
     ProviderError,
