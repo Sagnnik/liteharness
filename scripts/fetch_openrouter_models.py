@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh and inspect Ness AI's runtime OpenRouter model catalog."""
+"""Refresh and inspect Ness Agent's runtime OpenRouter model catalog."""
 
 from __future__ import annotations
 

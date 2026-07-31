@@ -827,7 +827,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ness-ai"
+name = "ness-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

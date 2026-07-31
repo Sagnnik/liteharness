@@ -26,8 +26,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ness_ai import ApprovalHandler, MemoryConfig, NessAgent, NessAgentOptions
-from ness_ai.workspace import setup_ness_structure
+from ness_agent import ApprovalHandler, MemoryConfig, NessAgent, NessAgentOptions
+from ness_agent.workspace import setup_ness_structure
 
 from ness_cli.chat_model import (
     active_model_name,

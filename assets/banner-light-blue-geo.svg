@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="540" viewBox="0 0 1800 540" role="img" aria-label="Ness AI">
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="540" viewBox="0 0 1800 540" role="img" aria-label="Ness Agent">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#ffffff"/>
@@ -54,7 +54,7 @@
     font-weight="600"
     letter-spacing="-0.75"
   >
-    <tspan fill="#2f5a96">Ness</tspan><tspan fill="#0b0e14"> AI</tspan>
+    <tspan fill="#2f5a96">Ness</tspan><tspan fill="#0b0e14"> Agent</tspan>
   </text>
 
   <text

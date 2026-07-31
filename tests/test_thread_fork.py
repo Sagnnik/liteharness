@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ness_ai.persistence import ThreadStore
+from ness_agent.persistence import ThreadStore
 
 
 def test_copy_thread_prefix_preserves_lineage_without_double_cost(tmp_path) -> None:

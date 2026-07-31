@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ness_ai.types import SessionEvent
+from ness_agent.types import SessionEvent
 from ness_cli.tui import render
 from ness_cli.tui.turn_renderer import TurnRenderer
 

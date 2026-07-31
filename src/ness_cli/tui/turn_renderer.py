@@ -1,7 +1,7 @@
 """Per-turn SessionEvent -> render-facade mapping.
 
 One ``TurnRenderer`` per user turn. It consumes the
-:class:`~ness_ai.types.SessionEvent` stream produced by
+:class:`~ness_agent.types.SessionEvent` stream produced by
 :meth:`ness_cli.CodingSession.run_turn` and drives the ``ness_cli.tui.render``
 facade, owning the per-turn render state that used to live in SessionApp's
 ``astream_events`` dispatch:
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ness_ai.types import SessionEvent
+from ness_agent.types import SessionEvent
 
 from ness_cli.tui import render
 from ness_cli.tui.tool_display import extract_diff_section, extract_edit_summary

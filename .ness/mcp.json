@@ -8,15 +8,6 @@
         "tests/mcp_echo_server.py"
       ],
       "startup_timeout": 30
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/home/sagnnik/projects/liteharness"
-      ],
-      "startup_timeout": 30
     }
   }
 }

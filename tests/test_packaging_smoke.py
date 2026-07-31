@@ -38,7 +38,7 @@ def test_wheel_clean_install_smoke(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    wheels = list(dist.glob("ness_ai-*.whl"))
+    wheels = list(dist.glob("ness_agent-*.whl"))
     assert len(wheels) == 1, f"expected one wheel, got {wheels}"
     wheel = wheels[0]
 
@@ -69,19 +69,19 @@ def test_wheel_clean_install_smoke(tmp_path: Path) -> None:
             "VIRTUAL_ENV",
         }
     }
-    env["NESS_AI_CONFIG_DIR"] = str(config_home)
+    env["NESS_AGENT_CONFIG_DIR"] = str(config_home)
     env["HOME"] = str(tmp_path / "home")
     Path(env["HOME"]).mkdir(exist_ok=True)
 
     probe = r"""
-from ness_ai.defaults import default_agent_profiles
+from ness_agent.defaults import default_agent_profiles
 from ness_cli.config import Settings
 from ness_cli.instructions import default_instruction_files
 
-import ness_ai
+import ness_agent
 import ness_cli
 
-assert ness_ai.__name__ == "ness_ai"
+assert ness_agent.__name__ == "ness_agent"
 assert ness_cli.__name__ == "ness_cli"
 
 settings = Settings()

@@ -12,8 +12,8 @@ from pydantic import BaseModel
 
 os.environ.setdefault("OPENAI_API_KEY", "test")
 
-from ness_ai.permissions import DEFAULT_RULES, PermissionStore
-from ness_ai.tools.fs import (
+from ness_agent.permissions import DEFAULT_RULES, PermissionStore
+from ness_agent.tools.fs import (
     delete,
     edit,
     glob,

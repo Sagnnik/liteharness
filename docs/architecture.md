@@ -1,14 +1,14 @@
 # Architecture
 
-Ness AI is split into a reusable **SDK** and a **coding CLI adapter** (Ness).
+Ness Agent is split into a reusable **SDK** and a **coding CLI adapter** (Ness).
 
 | Path | Role |
 |------|------|
-| `src/ness_ai/` | SDK — LangGraph agent loop, tools (files, search, web, shell, todos, `question`, subagents), permissions, memory, persistence, prompt layers/overlays, MCP, skills, hooks, compaction, reflection, and tracing |
+| `src/ness_agent/` | SDK — LangGraph agent loop, tools (files, search, web, shell, todos, `question`, subagents), permissions, memory, persistence, prompt layers/overlays, MCP, skills, hooks, compaction, reflection, and tracing |
 | `src/ness_cli/` | Coding adapter — `build_coding_agent` / `CodingSession`, path resolver, chat model factory, settings/pricing, rollback, and git worktree bootstrap |
 | `src/ness_cli/tui/` | Ness TUI entry (`ness` / `ness_cli.tui.main`), streaming, slash commands, and clipboard handling |
 
-**Ness AI** is the project and Python package. **Ness** is the interactive CLI (`ness` command).
+**Ness Agent** is the project and Python package. **Ness** is the interactive CLI (`ness` command).
 
 See also: [SDK guide](sdk.md) · [CLI guide](cli.md) · [Configuration](configuration.md)
 
@@ -16,7 +16,7 @@ See also: [SDK guide](sdk.md) · [CLI guide](cli.md) · [Configuration](configur
 
 ## Prompt layers
 
-Ness AI splits context into four layers to keep prompt caching stable:
+Ness Agent splits context into four layers to keep prompt caching stable:
 
 1. **L0 harness** (`PromptLayers` / `L0_HARNESS`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
@@ -29,7 +29,7 @@ The L1 skill catalog lists every available skill with its path; full skill bodie
 
 ## Agent modes
 
-Ness AI binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). **Plan** mode instructions live in the ephemeral L3 `<plan-mode>` overlay; **act** mode has no mode block (L0 + tools + dynamic L3 state only).
+Ness Agent binds the **full session tool set in every mode** so the provider prefix cache survives plan ↔ act switches without a graph rebuild. Plan mode is enforced at **runtime**: state-changing tool calls are rejected in the tool executor (the model sees the rejection in state; the CLI does not surface it). **Plan** mode instructions live in the ephemeral L3 `<plan-mode>` overlay; **act** mode has no mode block (L0 + tools + dynamic L3 state only).
 
 - **Act** (Shift+Tab): default execution / build mode — full tool set via L0 and permissions. L3 carries git, todos, compaction, and session memory when present. On the first act turn after a plan→act toggle, L3 prepends a one-shot `MODE SWITCH` note (inside the existing `<system-reminder>`) telling the model to call `todo` first, then address the user's message; it is cleared from state after that single model call so it never repeats.
 - **Plan** (Shift+Tab): read-only planning. The agent researches the codebase, may ask clarifying multiple-choice questions via `question` (before any plan prose), then delivers exactly one final plan. Only the terminal plan message is auto-saved under the global `plans/<project-slug>/` directory. Shift+Tab back to act mode to execute.
@@ -69,7 +69,7 @@ A standalone line in `NESS.md` of the form `@<path>` inlines that file's content
 @AGENTS.md
 @CLAUDE.md
 
-<extra Ness AI-specific conventions here>
+<extra Ness Agent-specific conventions here>
 ```
 
 Includes resolve relative to the project root, reject paths that escape it, skip missing files (leaving a `# (missing include: ...)` marker), guard against cycles, and are size-capped. Changes to an included file invalidate the L1 prompt cache. The CLI also warns at startup when the assembled static prefix (L0+L1+L2) exceeds ~7,000 tokens.
@@ -78,7 +78,7 @@ Includes resolve relative to the project root, reject paths that escape it, skip
 
 ## Compaction
 
-Compaction is model-relative by default. Ness AI estimates the usable context budget from the model context window minus output and input reserves. If the model window is unknown, `COMPACTION_TOKEN_BUDGET` is used as the fallback (default `120000`). When reserves exceed the window, the full window size is used as the budget.
+Compaction is model-relative by default. Ness Agent estimates the usable context budget from the model context window minus output and input reserves. If the model window is unknown, `COMPACTION_TOKEN_BUDGET` is used as the fallback (default `120000`). When reserves exceed the window, the full window size is used as the budget.
 
 | Pressure | Action |
 |----------|--------|
@@ -86,4 +86,4 @@ Compaction is model-relative by default. Ness AI estimates the usable context bu
 | 70-80% | Compact large tool outputs |
 | >= 80% | Summarize older history; keep `max(4, min(10, int(10 * (1 - ratio) / 0.20)))` recent messages |
 
-Summary compaction triggers at 80% (not at the context ceiling): past that point the summarizing model is already degraded by context rot, so Ness AI compacts before the summary itself would degrade. Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to act), Ness AI shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
+Summary compaction triggers at 80% (not at the context ceiling): past that point the summarizing model is already degraded by context rot, so Ness Agent compacts before the summary itself would degrade. Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to act), Ness Agent shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.

@@ -8,7 +8,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from ness_ai import (
+from ness_agent import (
     CodingOverlay,
     NessAgent,
     PromptLayers,
@@ -16,8 +16,8 @@ from ness_ai import (
     Session,
     SessionEvent,
 )
-from ness_ai.graph.nodes import make_nodes
-from ness_ai.options import ModeConfig, NessAgentOptions
+from ness_agent.graph.nodes import make_nodes
+from ness_agent.options import ModeConfig, NessAgentOptions
 
 
 def _agent(**kwargs):
@@ -45,7 +45,7 @@ def test_toggle_mode():
 
 
 def test_preview_context_system_and_l3(tmp_path: Path):
-    from ness_ai import ContextPreview
+    from ness_agent import ContextPreview
 
     agent = _agent(
         options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
@@ -175,7 +175,7 @@ def test_yolo_bypasses_deny_rules_but_not_plan_mode(tmp_path: Path):
 
 
 def test_approval_session_and_never_persist(tmp_path: Path):
-    from ness_ai.types import ApprovalHandler
+    from ness_agent.types import ApprovalHandler
 
     decisions = iter(["session", "never"])
 
@@ -224,8 +224,8 @@ def test_approval_session_and_never_persist(tmp_path: Path):
 
 def test_approval_deny_preserves_sibling_tools(tmp_path: Path):
     """Denying one gated call must not cancel independent siblings in the batch."""
-    from ness_ai.types import ApprovalHandler
-    from ness_ai.session_context import SessionContext, set_session_context, reset_session_context
+    from ness_agent.types import ApprovalHandler
+    from ness_agent.session_context import SessionContext, set_session_context, reset_session_context
 
     class DenyOnce(ApprovalHandler):
         async def __call__(self, name: str, args: dict) -> str:
@@ -316,7 +316,7 @@ def test_session_emits_assistant_events():
 
 def test_session_context_restored_after_turn(tmp_path: Path):
     """Turn install must reset SessionContext so a prior CLI install is restored."""
-    from ness_ai.session_context import (
+    from ness_agent.session_context import (
         SessionContext,
         set_session_context,
         reset_session_context,
@@ -355,7 +355,7 @@ def test_session_context_restored_after_turn(tmp_path: Path):
 
 
 def test_session_context_cleared_when_no_prior(tmp_path: Path):
-    from ness_ai.session_context import (
+    from ness_agent.session_context import (
         set_session_context,
         reset_session_context,
         try_get_session_context,
@@ -719,7 +719,7 @@ def _bindable_agent(tmp_path: Path, text: str = "FINAL-ANSWER"):
         """Return pong."""
         return "pong"
 
-    from ness_ai.options import NessAgentOptions
+    from ness_agent.options import NessAgentOptions
 
     return NessAgent(
         model=_BindableFakeModel(text),

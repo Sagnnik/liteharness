@@ -14,7 +14,7 @@ from pathlib import Path
 
 from platformdirs import user_cache_dir, user_config_dir
 
-_APP_NAME = "ness-ai"
+_APP_NAME = "ness-agent"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _PROJECT_MARKER = ".project"
 
@@ -79,14 +79,14 @@ def resolve_project_slug(
 
 
 def config_dir_from_env() -> Path:
-    override = os.environ.get("NESS_AI_CONFIG_DIR")
+    override = os.environ.get("NESS_AGENT_CONFIG_DIR")
     if override:
         return Path(override).expanduser().resolve()
     return Path(user_config_dir(_APP_NAME))
 
 
 def cache_dir_from_env() -> Path:
-    override = os.environ.get("NESS_AI_CACHE_DIR")
+    override = os.environ.get("NESS_AGENT_CACHE_DIR")
     if override:
         return Path(override).expanduser().resolve()
     return Path(user_cache_dir(_APP_NAME))

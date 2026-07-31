@@ -15,7 +15,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.layout import VSplit, Window
 from prompt_toolkit.styles import Style
 
-from ness_ai.types import SessionEvent
+from ness_agent.types import SessionEvent
 from ness_cli.chat_model import active_model_name
 from ness_cli.config import settings
 
@@ -37,7 +37,7 @@ from ness_cli.tui.utils import display_cwd
 from ness_cli.tui.widgets import TranscriptStore, TranscriptViewportControl
 
 if TYPE_CHECKING:
-    from ness_ai.mcp import MCPManager
+    from ness_agent.mcp import MCPManager
     from ness_cli import CodingSession
 
 CommandDispatcher = Callable[["TuiApp", str], Awaitable[None]]

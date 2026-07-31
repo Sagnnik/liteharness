@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ness_ai.memory import MemoryStore
-from ness_ai.options import MemoryConfig
+from ness_agent.memory import MemoryStore
+from ness_agent.options import MemoryConfig
 
 
 class MemoryModuleTests(unittest.TestCase):

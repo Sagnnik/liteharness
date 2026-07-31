@@ -5,7 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from ness_ai.persistence import ThreadStore
+from ness_agent.persistence import ThreadStore
 from ness_cli.events import _enrich_spawn_subagent_result, events_to_messages
 
 

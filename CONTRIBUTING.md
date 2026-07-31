@@ -1,6 +1,6 @@
-# Contributing to Ness AI
+# Contributing to Ness Agent
 
-Thanks for your interest in Ness AI. This project is experimental (0.x): public APIs may change until 1.0.
+Thanks for your interest in Ness Agent. This project is experimental (0.x): public APIs may change until 1.0.
 
 ## Development setup
 
@@ -21,7 +21,7 @@ uv sync --extra tracing
 
 ## Project layout
 
-- `src/ness_ai/` — SDK (agent loop, tools, permissions, memory, etc.)
+- `src/ness_agent/` — SDK (agent loop, tools, permissions, memory, etc.)
 - `src/ness_cli/` — Ness CLI adapter and TUI (`ness` entry point)
 - `tests/` — pytest suite (`test_sdk_*`, `test_cli/`, etc.)
 
@@ -39,7 +39,7 @@ Opt-in suites:
 OPENROUTER_LIVE_TEST=1 OPENAI_API_KEY=... uv run pytest -q -m live
 
 # Wheel build + clean install smoke test
-uv run pytest -q -m packaging
+PACKAGING_SMOKE=1 uv run pytest -q -m packaging
 ```
 
 ## Pull requests

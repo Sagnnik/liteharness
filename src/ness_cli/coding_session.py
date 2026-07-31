@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ness_ai.types import SessionEvent
+from ness_agent.types import SessionEvent
 
 from ness_cli.events import (
     events_to_messages,
@@ -34,11 +34,11 @@ _IMAGE_PLACEHOLDER_RE = re.compile(r"\[Image #\d+\]")
 
 
 class CodingSession:
-    """Coding adapter over :class:`ness_ai.Session`.
+    """Coding adapter over :class:`ness_agent.Session`.
 
     Construct via :class:`NessAgent.session` plus this wrapper, or directly:
 
-        from ness_ai import NessAgent
+        from ness_agent import NessAgent
         from ness_cli import CodingSession
 
         agent = NessAgent(model=..., prompt=...)
@@ -48,7 +48,7 @@ class CodingSession:
 
     The per-Session runtime hooks (``on_plan_turn``, ``on_interrupt``) are
     installed on the underlying :class:`Session` instance rather than the
-    shared :class:`~ness_ai.NessAgentConfig` so concurrent threads on one
+    shared :class:`~ness_agent.NessAgentConfig` so concurrent threads on one
     :class:`NessAgent` never clobber each other's hooks. Rollback mutation
     tracking is adapter-owned: :meth:`run_turn` replays the durable tool log
     after each turn (see :meth:`_record_turn_mutations`).
@@ -112,7 +112,7 @@ class CodingSession:
 
     @property
     def session(self):
-        """The underlying domain-agnostic :class:`~ness_ai.Session`."""
+        """The underlying domain-agnostic :class:`~ness_agent.Session`."""
         return self._session
 
     @property
@@ -159,7 +159,7 @@ class CodingSession:
     @property
     def turn_usage_total(self) -> dict[str, Any] | None:
         """Aggregated token/cost usage for the most recent turn."""
-        from ness_ai.types import aggregate_usage
+        from ness_agent.types import aggregate_usage
 
         usage = aggregate_usage(self._session._turn_usages)
         if usage is None:
@@ -275,10 +275,10 @@ class CodingSession:
 
         Adapter-owned: used by :meth:`run_turn` to suppress child-branch
         stream noise so the TUI spinner is not fed spurious assistant/tool
-        events. Pure :class:`~ness_ai.Session` consumers do not filter.
+        events. Pure :class:`~ness_agent.Session` consumers do not filter.
         """
         try:
-            from ness_ai.tools.subagents import subagent_runs_active
+            from ness_agent.tools.subagents import subagent_runs_active
         except ImportError:
             return False
         try:

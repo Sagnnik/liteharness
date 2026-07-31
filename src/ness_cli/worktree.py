@@ -1,4 +1,4 @@
-"""Git worktree helpers for isolated Ness AI sessions.
+"""Git worktree helpers for isolated Ness Agent sessions.
 
 Stdlib-only: must not import config or permissions (cwd is set before those load).
 """

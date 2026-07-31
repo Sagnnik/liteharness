@@ -10,11 +10,11 @@ Differences vs. the CLI originals:
 
 - ``events_to_messages`` takes an explicit ``vision: bool`` (the heuristic
   lives in :mod:`ness_cli.config`) and a
-  :class:`~ness_ai.permissions.PermissionStore` (the ``@file`` mention
+  :class:`~ness_agent.permissions.PermissionStore` (the ``@file`` mention
   re-expansion needs path validation; the CLI imported the module-level
   ``permissions.PROJECT_ROOT``).
 - ``restore_cost_from_events`` takes a target
-  :class:`~ness_ai.tracing.cost.CostTracker` rather than the CLI's
+  :class:`~ness_agent.tracing.cost.CostTracker` rather than the CLI's
   process-global singleton.
 """
 
@@ -24,7 +24,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from ness_ai.permissions import PermissionStore
+from ness_agent.permissions import PermissionStore
 from ness_cli.mentions import expand_documents
 
 
@@ -172,7 +172,7 @@ def restore_cost_from_events(events: list[dict], cost_tracker: Any) -> None:
     """Replay usage events into a CostTracker so totals continue after resume.
 
     The CLI kept a process-global cost tracker; the SDK adapter threads the
-    session's own :class:`~ness_ai.tracing.cost.CostTracker` so a fresh
+    session's own :class:`~ness_agent.tracing.cost.CostTracker` so a fresh
     resume in a different process picks up where the persisted events left
     off. Writing into a shared cost tracker is the one sanctioned mutable-seam;
     the ``conv_events_to_messages`` path above does not mutate anything.

@@ -6,7 +6,7 @@ without importing the CLI's ``permissions`` module.
 
 Typing ``@`` in the TUI's input buffer inserts a visible ``@<relative/path>``
 token; on submit, :func:`expand_documents` reads each mentioned file
-(validated through :class:`ness_ai.permissions.PermissionStore`) and
+(validated through :class:`ness_agent.permissions.PermissionStore`) and
 prepends one ``<document>`` block per file before the user's prose::
 
     <document>
@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ness_ai.permissions import PermissionStore
+from ness_agent.permissions import PermissionStore
 
 
 # A mention is ``@`` not preceded by a word char, followed by one or more

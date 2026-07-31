@@ -7,7 +7,7 @@ from typing import Any
 from ness_cli.tui.models import MenuItem
 from ness_cli.tui.tool_display import format_tool_args
 from ness_cli.tui.utils import term_width
-from ness_ai.utils import preview_diff
+from ness_agent.utils import preview_diff
 
 
 def default_question_index(options: list[dict]) -> int:

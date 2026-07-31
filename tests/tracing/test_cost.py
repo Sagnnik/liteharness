@@ -1,10 +1,10 @@
-"""Tests for ness_ai.tracing.cost (CostTracker + TokenUsage)."""
+"""Tests for ness_agent.tracing.cost (CostTracker + TokenUsage)."""
 
 from __future__ import annotations
 
 import pytest
 
-from ness_ai.tracing.cost import CostTracker, TokenUsage
+from ness_agent.tracing.cost import CostTracker, TokenUsage
 
 
 def _fake_usage(input_tokens=100, output_tokens=20, cache_read=0):

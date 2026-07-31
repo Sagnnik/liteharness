@@ -1,4 +1,4 @@
-"""Central color palette and styling for the Ness AI CLI."""
+"""Central color palette and styling for the Ness Agent CLI."""
 
 from __future__ import annotations
 
@@ -154,7 +154,7 @@ PTK_STYLE_RULES: dict[str, str] = {
 
 
 def build_console(**kwargs) -> Console:
-    """Create a Console bound to the Ness AI theme."""
+    """Create a Console bound to the Ness Agent theme."""
     return Console(theme=RICH_THEME, **kwargs)
 
 

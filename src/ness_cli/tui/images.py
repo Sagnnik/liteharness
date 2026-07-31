@@ -39,7 +39,7 @@ def image_cache_dir() -> Path:
     """Return the per-user cache directory for pasted images (created on call)."""
     from platformdirs import user_cache_dir
 
-    cache = Path(user_cache_dir("ness-ai")) / "images"
+    cache = Path(user_cache_dir("ness-agent")) / "images"
     cache.mkdir(parents=True, exist_ok=True)
     return cache
 

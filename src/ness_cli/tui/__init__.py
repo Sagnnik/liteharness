@@ -1,1 +1,1 @@
-"""Ness AI TUI package (Ness)."""
+"""Ness Agent TUI package (Ness)."""

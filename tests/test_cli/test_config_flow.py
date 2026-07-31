@@ -18,7 +18,7 @@ from ness_cli.tui.config_registry import SPEC_BY_KEY
 @pytest.fixture
 def config_dir(tmp_path: Path, monkeypatch) -> Path:
     cfg = tmp_path / "cfg"
-    monkeypatch.setenv("NESS_AI_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(cfg))
     return cfg
 
 

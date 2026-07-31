@@ -7,8 +7,8 @@ import time
 import unittest
 from pathlib import Path
 
-import ness_ai.tools.shell as shell
-from ness_ai.session_context import get_session_context
+import ness_agent.tools.shell as shell
+from ness_agent.session_context import get_session_context
 
 from tests.sdk_fixtures import SessionContextTestMixin
 
@@ -144,10 +144,10 @@ class ShellToolTests(SessionContextTestMixin, unittest.TestCase):
     def test_background_job_uses_same_login_shell_context_as_run(self) -> None:
         os.environ["HOME"] = str(self.root)
         (self.root / ".bash_profile").write_text(
-            "export NESS_AI_PROFILE_VALUE=profile-loaded\n",
+            "export NESS_AGENT_PROFILE_VALUE=profile-loaded\n",
             encoding="utf-8",
         )
-        command = 'printf "%s" "$NESS_AI_PROFILE_VALUE"'
+        command = 'printf "%s" "$NESS_AGENT_PROFILE_VALUE"'
 
         foreground = shell.shell.invoke({"action": "run", "command": command})
         started = shell.shell.invoke({"action": "start", "command": command})

@@ -205,7 +205,7 @@ def _write_cache(records: Iterable[ModelRecord]) -> None:
 
 
 def fetch_catalog(timeout: float = 20.0) -> list[ModelRecord]:
-    headers = {"User-Agent": "ness_ai/0.1"}
+    headers = {"User-Agent": "ness_agent/0.1"}
     openrouter = requests.get(
         OPENROUTER_MODELS_URL,
         headers=headers,
