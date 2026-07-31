@@ -5,6 +5,7 @@
 # Ness Agent
 
 [![CI](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Sagnnik/ness-agent/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ness-agent)](https://pypi.org/project/ness-agent/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/github/license/Sagnnik/ness-agent)](LICENSE)
 
@@ -35,19 +36,47 @@ Both are included in the `ness-agent` PyPI package. OpenRouter-compatible chat m
 
 Requires **Python 3.12+**.
 
+### CLI — global install (recommended)
+
+Install `ness` on your PATH with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
+
 ```bash
-pip install ness-agent
+uv tool install ness-agent
+# or: pipx install ness-agent
 ```
+
+Then set your provider API key and base URL. OpenRouter example:
+
+```bash
+export OPENAI_API_KEY=your-openrouter-api-key
+export OPENAI_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Add those lines to `~/.bashrc` or `~/.zshrc` to persist across sessions. Alternatively, launch `ness` and set them via `/config` → **Provider** (stored in global `secrets.json` / `configs.json`).
 
 Optional tracing support:
 
 ```bash
-pip install ness-agent[tracing]
+uv tool install 'ness-agent[tracing]'
+# or: pipx install 'ness-agent[tracing]'
 ```
 
-**From source:**
+Ensure `~/.local/bin` (uv) or pipx's bin directory is on your `PATH`.
 
-Contributors (run tests, use project venv):
+### SDK — library install
+
+For embedding the agent harness in your own Python project (use a venv):
+
+```bash
+pip install ness-agent
+pip install 'ness-agent[tracing]'   # optional
+
+# In a uv-managed project (adds to pyproject.toml):
+uv add ness-agent
+uv add ness-agent --extra tracing   # optional
+```
+
+**From source (contributors):**
 
 ```bash
 git clone https://github.com/Sagnnik/ness-agent.git
@@ -56,7 +85,7 @@ uv sync
 uv run ness
 ```
 
-Install `ness` on your PATH from a local clone (editable):
+Editable global install from a clone:
 
 ```bash
 git clone https://github.com/Sagnnik/ness-agent.git
@@ -65,12 +94,9 @@ uv tool install -e .
 ness
 ```
 
-Or with pip: `pip install -e .` (then run `ness` from that environment).
-
 ## Quick start — CLI (Ness)
 
 ```bash
-export OPENAI_API_KEY=...   # or set via /config on first launch
 ness
 /init                       # create .ness/ and global config
 ```
