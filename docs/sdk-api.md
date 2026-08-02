@@ -1,0 +1,277 @@
+# SDK API reference
+
+This reference covers the symbols exported by `ness_agent.__all__` in the 0.1.0 source tree. It is intentionally an API map rather than a second tutorial: start with the [SDK guide](sdk.md) for the shortest working example, then use this page when choosing a seam to own.
+
+> **0.x experimental.** Names and signatures below describe the current public surface; pin a version before relying on it in production.
+
+## Build an agent and run a thread
+
+### `NessAgent`
+
+```python
+NessAgent(*, model, prompt, tools: Sequence[BaseTool] | None = None, **agent_spec_fields)
+NessAgent.from_spec(spec: AgentSpec) -> NessAgent
+agent.session(*, thread_id: str, mode: str | None = None,
+              metadata: Mapping[str, Any] | None = None,
+              git_available: bool | None = None, vision: bool | None = None,
+              on_plan_turn: PlanTurnHandler | None = None,
+              on_interrupt: InterruptHandler | None = None) -> Session
+agent.new_thread_id(prefix: str = "session") -> str
+```
+
+The top-level SDK entry point owns a resolved shared configuration and creates an isolated `Session` per conversation thread. `model` is a LangChain `BaseChatModel`; `prompt` accepts `PromptLayers`, `PromptLayersConfig`, or a mapping. With `tools=None`, the SDK resolves its built-in tool set. `config` exposes the resolved `NessAgentConfig` when an application needs to inspect the constructed backends.
+
+`session()` accepts optional per-thread metadata for the L3 overlay. `vision=True` sends supplied image URLs; `False` drops them to text and emits a warning event; `None` leaves content shape untouched. The two callback hooks live on a session, not on the shared agent, so concurrent threads do not overwrite each other.
+
+```python
+agent = NessAgent(model=model, prompt=PromptLayersConfig())
+session = agent.session(thread_id=agent.new_thread_id())
+result = await session.run("inspect the deployment flow")
+print(result.assistant_message)
+```
+
+Source: `src/ness_agent/agent.py`.
+
+### `AgentSpec` and `NessAgentConfig`
+
+```python
+AgentSpec(*, model: BaseChatModel,
+          prompt: PromptLayers | PromptLayersConfig | Mapping[str, Any],
+          tools: Sequence[BaseTool] | None = None,
+          compaction_model: BaseChatModel | None = None,
+          reflection_model: BaseChatModel | None = None,
+          options: NessAgentOptions = NessAgentOptions(),
+          overlay: OverlayProvider | None = None,
+          memory: MemoryConfig = MemoryConfig(),
+          memory_store: MemoryBackend | None = None,
+          modes: ModeConfig | None = None,
+          subagents: SubagentConfig | None = None,
+          aux_prompts: AuxPrompts = AuxPrompts(),
+          skills_dir: Path | None = None, hooks_config: Path | None = None,
+          hooks: Sequence[Hook] | None = None,
+          approval_handler: ApprovalHandler | None = None,
+          question_handler: QuestionHandler | None = None,
+          checkpoint_factory: Callable[[], BaseCheckpointSaver] | None = None,
+          tracing: TracingConfig = TracingConfig(),
+          cost_tracker: CostTracker | None = None, tracer: Tracer | None = None)
+
+NessAgentConfig.resolve(spec: AgentSpec) -> NessAgentConfig
+```
+
+`AgentSpec` is the declarative construction surface. Supply it to `NessAgent.from_spec()` when an application wants to assemble all dependencies in one place. `NessAgentConfig` is the fully wired result: prompt layers, normalized tools, stores, permission and hook runners, skill loader, cost tracker, and tracer. Prefer the spec or `NessAgent(...)` for normal construction; use `resolve()` only when the application deliberately needs the fully resolved dependencies.
+
+With an absent overlay, resolution installs `CodingOverlay`; use `NoOverlay()` to opt out. An injected memory backend must subclass `MemoryBackend`, and an injected approval handler must subclass `ApprovalHandler`.
+
+### `Session`
+
+```python
+await session.run(message: str, *, images: Sequence[str] | None = None,
+                  active_skills: Sequence[str] | None = None,
+                  mode: str | None = None) -> RunResult
+
+async for event in session.stream(message: str, *, images=None,
+                                  active_skills=None, mode=None): ...
+```
+
+`run()` collects one complete turn. It returns assistant text, the last usage record, an aggregate usage record, the current todos, and every intermediate event. `stream()` yields those `SessionEvent` records as the graph advances. `mode=` is a one-turn override; otherwise the session’s current `act` or `plan` mode is used.
+
+Important control and inspection methods:
+
+| Method | Purpose |
+| --- | --- |
+| `set_mode(mode)` / `toggle_mode() -> str` | Change between `"act"` and `"plan"`; a plan → act switch schedules the context checkpoint. |
+| `bootstrap(messages)` | Seed prior messages into the next turn once; use for resume or rollback replay. |
+| `cancel()` / `is_cancelled()` | Request and inspect cooperative cancellation of the active stream. |
+| `request_compact()` | Request compaction on the next turn. |
+| `active_skills(names)` / `stage_skills(names)` | Replace or append one-shot skills for the next turn. |
+| `get_state()`, `get_messages()`, `get_todos()` | Async snapshots of the checkpointed state. |
+| `preview_context(mode=None) -> ContextPreview` | Assemble L0–L3 for debugging without running the model. |
+| `refresh_context_snapshot()` / `finalize_reflection()` | Refresh pressure metrics or run end-of-session reflection when enabled. |
+| `rebuild_graph()` / `reset_checkpointer()` | Recompile the graph; the latter swaps in a fresh checkpointer before replay. |
+
+Source: `src/ness_agent/session.py`.
+
+### Turn records and handler types
+
+| Export | Shape / contract |
+| --- | --- |
+| `UsageEvent` | `model`, input/uncached/cached/output token counts, `cost_usd`, and `calls`. Represents usage from a model call. |
+| `aggregate_usage(events) -> UsageEvent | None` | Sums a turn’s usage events; model becomes `"*"` when they differ and cost is `None` if no event reported one. |
+| `SessionEvent` | Frozen `{kind, data}` record. Kinds include assistant deltas/final output, tool start/end, usage, approvals, questions, compaction, errors, warnings, interruptions, and plan turns. |
+| `RunResult` | Frozen result from `run()`: `assistant_message`, `usage` (last call), `usage_total` (whole turn), `todos`, and `events`. |
+| `ContextPreview` | Frozen debug snapshot: stable `system_message`, raw overlay, named `overlay_sections`, wrapped reminder, and active `mode`. |
+| `ApprovalHandler` | Abstract async callable `(tool: str, args: dict) -> str`; return `yes`, `no`, `always`, `session`, or `never`. |
+| `QuestionHandler` | `Callable[[list[dict]], Awaitable[list[dict]]]` for model-originated choice questions. |
+| `PlanTurnHandler` | `Callable[[str], None]`, called after a successful plan-mode turn. |
+| `InterruptHandler` | `Callable[[str], str]`, may replace partial assistant text surfaced after interruption. |
+
+Source: `src/ness_agent/types.py`.
+
+## Runtime options and modes
+
+All are dataclasses, passed through `AgentSpec` or the `NessAgent` keyword construction path.
+
+| Export | Key fields and use |
+| --- | --- |
+| `NessAgentOptions` | `context_window`, compaction token budget and reserves, `enable_approval`, `yolo_mode`, `auto_save_threads`, reflection settings, `format_on_write`, `exa_api_key`, `project_root`, `ness_dir`, interruption marker, and `recursion_limit`. These are runtime knobs, not prompt text. |
+| `MemoryConfig` | `disabled`, plus optional paths for project, user, and session memory. Used when no custom `MemoryBackend` is injected. |
+| `ModeConfig` | `default` mode, optional `plans_dir`, custom plan/act instruction templates, and `plan_mode_readonly`. |
+| `SubagentConfig` | Optional subagent prompt template, `max_parallel`, default tool names, and timeout. It supports the `spawn_subagent` tool. |
+| `PermissionRules` | Lists of allowed, denied, and approval-required rule patterns; defaults to `ask=["*"]`. |
+
+Source: `src/ness_agent/options.py`. For the operator-level precedence and `.ness/` layout, see [Configuration](configuration.md).
+
+## Prompt layers and L3 overlays
+
+### L0–L2: `PromptLayersConfig`, `PromptLayers`, `AuxPrompts`
+
+```python
+PromptLayersConfig(*, l0=L0_HARNESS, persona="...",
+                   include_user_memory=True, include_project_memory=True,
+                   include_skill_catalog=True, l2_context=None,
+                   l2_header="PROJECT CONTEXT", include_git_line=True)
+PromptLayers(config)
+PromptLayers.from_dict(mapping) -> PromptLayers
+PromptLayersConfig.from_dict(mapping) -> PromptLayersConfig
+```
+
+An instruction source may be a string, a path, or a zero-argument callable returning text. `PromptLayers` provides `build_l0()`, `build_l1(...)`, `build_l2(...)`, and `build_stable_prefix(...)`. The last one assembles and caches the stable L0–L2 system prefix from active tools, user/project memory, skill catalog, Git availability, metadata, and deferred MCP summary. L3 is intentionally outside this cache.
+
+`AuxPrompts` is a dataclass of optional instruction sources for the compaction, reflection, subagent, thread-summary, and initial-memory auxiliary calls. Set a field to `None` to disable that auxiliary call’s template.
+
+Source: `src/ness_agent/context/layers.py`. See [Architecture → Prompt layers](architecture.md#prompt-layers) for the caching model.
+
+### L3: `OverlayContext`, `OverlayProvider`, `CodingOverlay`, `NoOverlay`
+
+```python
+class OverlayProvider:
+    def sections(self, state: AgentState, ctx: OverlayContext) -> dict[str, str]: ...
+
+CodingOverlay(*, plans_dir=".ness/plans/",
+              plan_mode_template: str | None = None,
+              act_mode_template: str | None = None)
+NoOverlay()
+render_overlay_delta(sections, previous, *, skip=frozenset()) -> str
+wrap_system_reminder(body: str) -> str
+```
+
+`OverlayContext` is the immutable per-turn input to a provider: thread id, mode, current messages/todos, session memory, compaction and mode-switch notes, metadata, Git snapshot, requested skills, and accumulated loaded skills. A custom provider must subclass `OverlayProvider`, return stable section names from `sections()`, and leave empty sections falsy. Stable names let the harness send only changed L3 sections during a tool loop.
+
+`CodingOverlay` is the default provider; it renders plan/act instructions, Git state, compaction status, todos, session memory, and skill information. `NoOverlay` always renders an empty mapping. `render_overlay_delta()` compares section dictionaries, and `wrap_system_reminder()` surrounds non-empty L3 content with the SDK’s system-reminder tags.
+
+`AgentState` is the checkpointed `TypedDict` used by the graph. Its public keys include `messages`, `todos`, `mode`, approval state, requested/loaded skills, reflection and compaction state, `force_compact`, input tokens, and `mode_switch`. Treat it as graph state, not a long-lived application schema.
+
+Sources: `src/ness_agent/context/overlay.py`, `context/coding_overlay.py`, and `graph/state.py`.
+
+## Tools, permissions, hooks, and skills
+
+### `ToolRegistry` and `coding_tools`
+
+```python
+ToolRegistry(tools: Iterable[BaseTool] | None = None, *, include: Iterable[str] | None = None)
+coding_tools(*, include: list[str] | None = None) -> ToolRegistry
+```
+
+The registry owns known tools and the currently bound active set. Core reads are `active_tools`, `tool_map()`, `tool_names()`, `all_tools()`, and `deferred_tool_names()`. Call `bind_model(model)` to return a tool-bound chat model, and `sync()` after a structural change. `register_dynamic(tools)` adds dynamic tools as known but inactive; `activate_mcp(names)` and `deactivate_mcp(names)` return `(changed, unknown)` lists and adjust the active MCP set.
+
+`set_mcp_catalog()` and `deferred_mcp_summary()` maintain the lightweight deferred-MCP prompt catalog. `is_destructive(name, args)` and `is_read_only(name, args)` expose the registry’s policy classification. `coding_tools()` is the small convenience factory for name-selected SDK tools.
+
+The default tool list includes file read/write/delete/edit/glob, search, web fetch/search, shell, todos, tool discovery, subagents, questions, and skill viewing. It is not an API guarantee for every named tool; configure an explicit tool sequence when a host application needs a narrower contract.
+
+### `PermissionStore`
+
+```python
+PermissionStore(*, ness_dir: Path = Path(".ness"), project_root: Path | None = None)
+```
+
+The file-backed policy store validates paths under the project root and resolves tool calls to `allow`, `deny`, or `ask` decisions. The main public operations are `check(tool, args)`, `check_with_rule(tool, args)`, `pattern_key(tool, args)`, `default_rule_for(tool, args)`, `persist_rule(...)`, `remove_rule(bucket, index)`, `list_rules()`, and `clear_session_rules()`. Use it when embedding an operator-approved policy rather than bypassing the tool executor.
+
+### `Hook` and `HookRunner`
+
+```python
+Hook(event: str, matcher: str = "*", command: str | None = None,
+     handler: Callable[[dict], tuple[bool, str]] | None = None,
+     blocking: bool = True, timeout: int = 30)
+HookRunner(hooks_file: Path | None = None, *, project_root: Path = Path.cwd(),
+           hooks: Sequence[Hook] | None = None)
+```
+
+Hooks run on `preToolUse` and `postToolUse`. A matcher selects a tool; a callable handler takes precedence over a shell command. `HookRunner.register()`, `clear_registered()`, and `load()` manage definitions. `run(event, payload) -> tuple[bool, str]` returns the combined output and fails a blocking pre-tool hook closed. File hooks are read from the configured JSON file.
+
+### `SkillLoader`
+
+```python
+SkillLoader(skills_dir: Path | None = None)
+loader.load() -> dict[str, dict[str, Any]]
+loader.render_catalog(skills) -> str
+```
+
+Loads project `SKILL.md` files and returns parsed metadata/body records. `render_catalog()` creates the compact stable-prefix catalog; full skill bodies remain on demand. Source: `src/ness_agent/skills.py`.
+
+## Memory and durable history
+
+### `MemoryBackend` and `MemoryStore`
+
+```python
+MemoryStore(config: MemoryConfig, ness_dir: Path | None = None, *,
+            project_root: Path | None = None)
+```
+
+`MemoryBackend` is the required abstract contract for a custom memory provider. Implement `disabled`, project/user load/append/write methods, session load/append/read/write methods, and `check_health()`. `MemoryStore` is the filesystem implementation: project memory defaults to `NESS.md`, user memory to `USER.md`, and episodic session memory to `runtime/sessions/` under its Ness root. Its project loader supports standalone `@path` includes constrained to the project root.
+
+### `ThreadStore`
+
+```python
+ThreadStore(threads_dir: Path | None = None, *, auto_save: bool = True,
+            default_model: str = "")
+```
+
+SQLite persistence for session-thread events, subagent records, and rollback checkpoints. Key operations are `append_event()`, `list_threads()`, `load_thread_events()` (or `load_thread_events_since()`), `copy_thread_prefix()`, `archive_thread()`, `register_subagent()`, `complete_subagent()`, `list_subagents()`, `save_checkpoint()`, `add_modified_path()`, `get_checkpoint()`, `list_user_turns()`, and `truncate_after()`. When `auto_save=False`, writes no-op. The SDK excludes ordinary event rows for subagent thread ids and rolls their usage into the parent.
+
+Sources: `src/ness_agent/memory.py` and `persistence.py`.
+
+## Usage, pricing, and tracing
+
+### `TokenUsage`, `CostTracker`, and `PricingDict`
+
+```python
+PricingDict = dict[str, tuple[float, float, float]]
+CostTracker(pricing: PricingDict | None = None,
+            estimate_cost: Callable[[str, int, int, int], float | None] | None = None)
+tracker.add(usage, model_name=None, response_metadata=None) -> TokenUsage | None
+```
+
+`TokenUsage` is a slots dataclass with model, input/uncached/cached/output/total tokens, `cost_usd`, `cost_source`, cache-hit rate, and calls. `as_dict()` serializes it. `CostTracker.add()` ingests provider usage and prefers provider-reported cost, then a supplied estimator, then a matching substring key in `pricing`. Pricing triples are USD per million tokens: `(input, output, cache_read_ratio)`.
+
+Use `for_model(model)`, `total()`, `models()`, or the scalar aggregate properties (`input_tokens`, `output_tokens`, `total_tokens`, `calls`, `cost_usd`, `cache_hit_rate`, `total_cost_usd`) to inspect accumulated data. `report()` returns a text report.
+
+### `TracingConfig`, `Tracer`, `Span`, and implementations
+
+```python
+TracingConfig(enabled=False, exporter="none", endpoint=None, headers=None,
+              service_name="ness-agent", resource_attrs={},
+              capture_tool_args=False, capture_messages=False,
+              max_message_length=10000, pricing=None)
+
+Tracer.start_span(name, attributes=None, kind=None) -> Span
+build_tracer(config: TracingConfig | None = None) -> Tracer
+```
+
+`TracingConfig` controls optional `otlp`, `console`, or `none` exporting, service metadata, sensitive-data capture, truncation length, and pricing. Keep `capture_tool_args` and `capture_messages` disabled unless the destination is appropriate for potentially sensitive tool arguments and conversation content.
+
+`Span` is the minimal context-manager protocol: set attributes, add events, record exceptions, set `OK`/`ERROR` status, and end. `Tracer` is the backend protocol. `NoopTracer`/`NoopSpan` are the zero-overhead defaults. `InMemorySpan(name, attrs=None)` records attributes, events, status, and duration for tests or console tracing. `MultiTracer(tracers)` and `MultiSpan(spans)` fan operations out to several backends while keeping one parent context. `build_tracer()` selects the configured tracer and returns a no-op tracer when tracing is disabled or exporter is `none`.
+
+Sources: `src/ness_agent/tracing/config.py`, `cost.py`, and `tracer.py`.
+
+## Small utilities and workspace context
+
+```python
+message_to_text(message: Any) -> str
+git_worktree_summary(cwd: Path = Path.cwd()) -> str
+get_project_context(max_files: int = 80) -> str
+setup_ness_structure(ness_dir: Path) -> list[str]
+```
+
+`message_to_text()` extracts usable text from LangChain-style message content, including content blocks. `git_worktree_summary()` returns a compact branch/dirty-path snapshot for an overlay (empty outside a usable Git repository). `get_project_context()` renders a bounded project tree plus manifest snippets. `setup_ness_structure()` creates the project-local Ness layout and default files, returning the paths it created. These helpers are useful when an embedding host wants the same project context primitives as the coding adapter, without importing CLI internals.
+
+Sources: `src/ness_agent/utils.py` and `workspace/`.

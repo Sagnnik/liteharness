@@ -4,7 +4,7 @@ The **Ness Agent SDK** (`ness-agent` on PyPI) is a LangGraph-based agent harness
 
 The **Ness CLI** is a reference coding adapter built on top of this SDK (`ness_cli`).
 
-See also: [Architecture](architecture.md) · [Configuration](configuration.md) · [CLI guide](cli.md)
+See also: [SDK API reference](sdk-api.md) · [Architecture](architecture.md) · [Configuration](configuration.md) · [CLI guide](cli.md)
 
 ---
 
@@ -159,6 +159,8 @@ finally:
 
 The embedding application decides where server configuration comes from and how users approve or authenticate connections. `HTTPAuthFactory` can provide an `httpx` authentication object for each resolved HTTP spec.
 
+For signatures and contracts for every public export in `ness_agent.__all__`, see the [SDK API reference](sdk-api.md).
+
 ---
 
 ## Prompt layers
@@ -188,16 +190,15 @@ Constructing a separate model, changing tools, or replacing the system prompt pr
 
 ## Tracing
 
-Install the tracing extra, then pass `TracingConfig` through `NessAgentOptions`:
+Install the tracing extra, then pass `TracingConfig` when constructing the agent:
 
 ```python
-from ness_agent import NessAgent, NessAgentOptions
-from ness_agent.tracing import TracingConfig
+from ness_agent import NessAgent, TracingConfig
 
 agent = NessAgent(
     model=model,
     prompt=prompt,
-    options=NessAgentOptions(tracing=TracingConfig(...)),
+    tracing=TracingConfig(enabled=True, exporter="console"),
 )
 ```
 

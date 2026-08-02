@@ -152,6 +152,7 @@ Full SDK guide: [docs/sdk.md](https://github.com/Sagnnik/ness-agent/blob/main/do
 |-------|-------------|
 | [docs/README.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/README.md) | Documentation index |
 | [docs/sdk.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/sdk.md) | SDK usage, public API, tracing |
+| [docs/sdk-api.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/sdk-api.md) | SDK API reference — signatures and contracts |
 | [docs/cli.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/cli.md) | Ness TUI, slash commands, MCP, permissions |
 | [docs/configuration.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/configuration.md) | Global config, `.ness/` layout, env vars |
 | [docs/architecture.md](https://github.com/Sagnnik/ness-agent/blob/main/docs/architecture.md) | Prompt layers, modes, memory, compaction |
