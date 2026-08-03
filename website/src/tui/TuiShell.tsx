@@ -11,6 +11,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react'
 import { Check, Clipboard, CornerDownLeft } from 'lucide-react'
 import { useNavigate } from 'react-router'
+import { Link } from 'react-router'
 import {
   blocksThroughGroup,
   INSTALL_COMMAND,
@@ -21,6 +22,7 @@ import {
   TUI_STEP_GROUPS,
   TUI_STEPS,
 } from './steps'
+import { DOCS_QUICK_LINKS, docsPath } from '@/content/docsRoutes'
 import { NessLogo } from './NessLogo'
 import type { CommandOutput, KnownCommand, TuiMode, Variant } from './types'
 import { useTheme } from './useTheme'
@@ -104,12 +106,10 @@ function StepLines({
   step,
   onCopy,
   copied,
-  onOpenDocs,
 }: {
   step: (typeof TUI_STEPS)[number]
   onCopy: () => void
   copied: boolean
-  onOpenDocs: () => void
 }) {
   return step.lines.map((line, lineIndex) => {
     if (step.kind === 'install' && line === INSTALL_COMMAND) {
@@ -133,15 +133,24 @@ function StepLines({
 
     if (step.kind === 'docs' && lineIndex === 0) {
       return (
-        <button
-          className="docs-command"
-          type="button"
-          onClick={onOpenDocs}
-          key={line}
-        >
-          <CornerDownLeft size={13} />
-          {line}
-        </button>
+        <div className="docs-command" key={line}>
+          <CornerDownLeft size={13} aria-hidden="true" />
+          <Link className="docs-command__prefix" to="/docs">
+            /docs
+          </Link>
+          <span className="docs-command__links" aria-label="Documentation sections">
+            {DOCS_QUICK_LINKS.map((link, index) => (
+              <span key={link.slug} className="docs-command__link-item">
+                {index > 0 ? (
+                  <span className="docs-command__sep" aria-hidden="true">
+                    ·
+                  </span>
+                ) : null}
+                <Link to={docsPath(link.slug)}>{link.label}</Link>
+              </span>
+            ))}
+          </span>
+        </div>
       )
     }
 
@@ -161,13 +170,11 @@ function MergedTranscriptStep({
   appearDelay = 0,
   onCopy,
   copied,
-  onOpenDocs,
 }: {
   group: MergedTranscriptGroup
   appearDelay?: number
   onCopy: () => void
   copied: boolean
-  onOpenDocs: () => void
 }) {
   const mergedSteps = group.blockIds.map((index) => TUI_STEPS[index])
 
@@ -196,12 +203,7 @@ function MergedTranscriptStep({
           >
             <span className="transcript-step__eyebrow">{step.eyebrow}</span>
             <h2>{step.heading}</h2>
-            <StepLines
-              step={step}
-              onCopy={onCopy}
-              copied={copied}
-              onOpenDocs={onOpenDocs}
-            />
+            <StepLines step={step} onCopy={onCopy} copied={copied} />
           </div>
         ))}
       </div>
@@ -214,13 +216,11 @@ function TranscriptStep({
   appearDelay = 0,
   onCopy,
   copied,
-  onOpenDocs,
 }: {
   index: number
   appearDelay?: number
   onCopy: () => void
   copied: boolean
-  onOpenDocs: () => void
 }) {
   const step = TUI_STEPS[index]
   const displayIndex = TRANSCRIPT_CONTAINER_LAST
@@ -242,12 +242,7 @@ function TranscriptStep({
       </div>
       <div className="transcript-step__content">
         <h2>{step.heading}</h2>
-        <StepLines
-          step={step}
-          onCopy={onCopy}
-          copied={copied}
-          onOpenDocs={onOpenDocs}
-        />
+        <StepLines step={step} onCopy={onCopy} copied={copied} />
       </div>
     </motion.section>
   )
@@ -632,7 +627,6 @@ export function TuiShell({ variant }: TuiShellProps) {
                       appearDelay={0}
                       onCopy={() => void copyInstall()}
                       copied={copied}
-                      onOpenDocs={() => navigate('/docs')}
                     />
                   )
                 }
@@ -646,7 +640,6 @@ export function TuiShell({ variant }: TuiShellProps) {
                     appearDelay={withinGroup >= 0 ? withinGroup * 0.05 : itemIndex * 0.05}
                     onCopy={() => void copyInstall()}
                     copied={copied}
-                    onOpenDocs={() => navigate('/docs')}
                   />
                 )
               })}
@@ -683,7 +676,7 @@ export function TuiShell({ variant }: TuiShellProps) {
           <span>↑ {stepIndex}</span>
           <span>↓ {Math.max(0, groupCount - 1 - stepIndex)}</span>
           <span>◉ ${((tokenCount / 1000) * 0.003).toFixed(5)}</span>
-          <span className="tui__cwd">~/projects/ness-agent (website)</span>
+          <span className="tui__cwd">~/projects/ness-agent (main)</span>
           <span className="tui__context-label">
             context {tokenCount.toLocaleString()}/1000k used
           </span>

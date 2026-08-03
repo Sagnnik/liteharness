@@ -8,6 +8,7 @@ import sdkApiReference from '@root/docs/sdk-api.md?raw'
 import sdkGuide from '@root/docs/sdk.md?raw'
 import { MarkdownDocument } from './shared/MarkdownDocument'
 import { SiteShell } from './shared/SiteShell'
+import { docsPath } from '@/content/docsRoutes'
 
 const CLI_REFERENCE = `# CLI reference
 
@@ -114,10 +115,6 @@ const DOCS = [
 
 const GITHUB_DOCS = 'https://github.com/Sagnnik/ness-agent/blob/main'
 const GITHUB_ROOT = 'https://github.com/Sagnnik/ness-agent/blob/main'
-
-function docsPath(slug: string) {
-  return slug === 'overview' ? '/docs' : `/docs/${slug}`
-}
 
 function resolveDocsLink(href: string) {
   if (href.startsWith('#') || /^(?:https?:|mailto:)/i.test(href)) return href
@@ -237,7 +234,7 @@ export function DocsPage() {
   }, [headings, active.content])
 
   return (
-    <SiteShell className="site-shell--docs">
+    <SiteShell className="site-shell--docs" footer={false}>
       <header className="docs-header">
         <div>
           <p className="site-kicker">[ OPERATOR MANUAL // 0.x ]</p>

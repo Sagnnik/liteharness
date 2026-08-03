@@ -7,9 +7,9 @@ export type StepKind =
   | 'manifesto'
   | 'install'
   | 'surfaces'
-  | 'modes'
+  | 'context'
   | 'extensions'
-  | 'worktrees'
+  | 'goal'
   | 'docs'
 
 export interface TuiStep {

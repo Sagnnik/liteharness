@@ -5,7 +5,7 @@ export const INSTALL_COMMAND = 'uv tool install ness-agent'
 /**
  * Navigation groups for wheel/arrow replay.
  * 0: ready + manifesto + install
- * 1: surfaces + modes + extensions + worktrees
+ * 1: surfaces + context + extensions + goal
  * 2: docs (standalone)
  */
 export const TUI_STEP_GROUPS: readonly (readonly number[])[] = [
@@ -130,20 +130,20 @@ export const TUI_STEPS: readonly TuiStep[] = [
     eyebrow: 'NESS // SURFACES',
     kind: 'surfaces',
     lines: [
-      'SDK  embed the LangGraph loop, tools, permissions, memory, and tracing.',
+      'SDK  embed the agent, tools, permissions, memory, and tracing.',
       'CLI  run the same system as an interactive terminal coding session.',
     ],
   },
   {
     id: 4,
-    session: 'mode/plan-act',
-    project: 'operator/intent',
-    heading: 'think, then touch',
-    eyebrow: 'NESS // MODES',
-    kind: 'modes',
+    session: 'context/layers',
+    project: 'harness/prompt-layers',
+    heading: 'context you can engineer',
+    eyebrow: 'NESS // CONTEXT',
+    kind: 'context',
     lines: [
-      'PLAN  explore, reason, and stage the change without mutation.',
-      'ACT   execute tools, edit files, and verify the result.',
+      'L0–L3  stable prefix, ephemeral overlay, delta injection per turn.',
+      'Compaction and mode switches preserve the cache.',
     ],
   },
   {
@@ -154,20 +154,20 @@ export const TUI_STEPS: readonly TuiStep[] = [
     eyebrow: 'NESS // EXTENSIONS',
     kind: 'extensions',
     lines: [
-      'skills/  hooks/  MCP servers  prompt layers  project memory',
-      'Keep behavior local, inspectable, diffable, and under version control.',
+      'skills/  hooks/  MCP/  agents/  commands/  permissions/',
+      'Project-local, git-diffable behavior. Global instructions/ for harness templates you can fork without forking the repo.',
     ],
   },
   {
     id: 6,
-    session: 'isolate/worktree',
-    project: 'git/worktrees',
-    heading: 'parallel without collision',
-    eyebrow: 'NESS // WORKTREES',
-    kind: 'worktrees',
+    session: 'verify/goal-judge',
+    project: 'operator/verification',
+    heading: 'dual-agent goal execution',
+    eyebrow: 'NESS // GOAL',
+    kind: 'goal',
     lines: [
-      'ness --worktree feature-x',
-      'Spin up isolated sessions for experiments, reviews, and parallel agents.',
+      '/goal pairs bounded worker attempts with an independent judge.',
+      'Failed verdicts immediately turn into repair patches, zero wasted replanning.',
     ],
   },
   {

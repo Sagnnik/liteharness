@@ -1,7 +1,7 @@
-import { Check, Clipboard, CornerDownRight } from 'lucide-react'
+import { CornerDownRight } from 'lucide-react'
 import { Link } from 'react-router'
-import { useState } from 'react'
-import { INSTALL_COMMAND, TUI_STEPS } from '../tui/steps'
+import { TUI_STEPS } from '../tui/steps'
+import { InstallCommand } from './shared/InstallCommand'
 import { SiteShell } from './shared/SiteShell'
 
 const HOME_STEPS = TUI_STEPS.filter(
@@ -11,32 +11,6 @@ const HOME_STEPS = TUI_STEPS.filter(
     step.kind !== 'install' &&
     step.kind !== 'manifesto',
 )
-
-function InstallCommand() {
-  const [copied, setCopied] = useState(false)
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(INSTALL_COMMAND)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1800)
-    } catch {
-      setCopied(false)
-    }
-  }
-
-  return (
-    <div className="site-install">
-      <code>
-        <span aria-hidden="true">$</span> {INSTALL_COMMAND}
-      </code>
-      <button type="button" onClick={copy} aria-label="Copy install command">
-        {copied ? <Check size={15} /> : <Clipboard size={15} />}
-        {copied ? 'copied' : 'copy'}
-      </button>
-    </div>
-  )
-}
 
 export function HomePage() {
   return (

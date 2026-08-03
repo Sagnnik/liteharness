@@ -2,6 +2,9 @@ import { ArrowLeft, ArrowUpRight, CornerDownRight } from 'lucide-react'
 import { Link, useParams } from 'react-router'
 import { SiteShell } from './shared/SiteShell'
 
+const CHANGELOG = 'https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md'
+const BLOG_SLUG = 'harness-engineering-a-ness-agent-intro'
+
 const RELEASE = {
   slug: 'initial-public-release',
   title: 'Initial public release',
@@ -12,11 +15,20 @@ const RELEASE = {
 }
 
 const HIGHLIGHTS = [
-  ['SDK + CLI', 'LangGraph loop and an interactive coding adapter in the same package.'],
+  ['SDK + CLI', 'LangGraph agent loop and an interactive coding adapter in the same package.'],
   ['Tools + policy', 'Built-in tools, permissions, memory, skills, hooks, and MCP support.'],
-  ['Context control', 'Compaction, reflection, and optional tracing for longer-running work.'],
-  ['Operator flow', 'TUI and print mode, plan/act modes, and isolated git worktrees.'],
-  ['Project-local', 'A versionable .ness/ surface for behavior and configuration.'],
+  [
+    'Context layers',
+    'L0–L3 prompt assembly, ephemeral overlays, cache-aware compaction, and reflection.',
+  ],
+  [
+    '/goal verification',
+    'Bounded worker attempts with an independent judge and repair instructions on failure.',
+  ],
+  [
+    'Project-local',
+    'A versionable .ness/ surface for behavior, plus editable global instructions/ templates.',
+  ],
 ] as const
 
 function ReleaseDetail() {
@@ -26,6 +38,11 @@ function ReleaseDetail() {
         <p className="site-kicker">[ RELEASE DISPATCH // {RELEASE.version} ]</p>
         <h1>{RELEASE.title}</h1>
         <p>{RELEASE.summary}</p>
+        <p className="dispatch-header__changelog">
+          <a href={CHANGELOG} target="_blank" rel="noopener noreferrer">
+            changelog
+          </a>
+        </p>
         <dl className="dispatch-meta">
           <div>
             <dt>DATE</dt>
@@ -41,6 +58,7 @@ function ReleaseDetail() {
           </div>
         </dl>
       </header>
+
       <section className="dispatch-body" aria-labelledby="release-highlights">
         <div className="dispatch-body__rail">00.1 // ADDED</div>
         <div>
@@ -58,8 +76,16 @@ function ReleaseDetail() {
               </li>
             ))}
           </ol>
+          <p className="dispatch-field-note">
+            For the longer framing, read{' '}
+            <Link to={`/blog/${BLOG_SLUG}`} className="site-inline-link">
+              Harness Engineering: A Ness Agent Intro
+            </Link>
+            .
+          </p>
         </div>
       </section>
+
       <footer className="dispatch-footer">
         <Link to="/docs" className="site-link-button">
           <CornerDownRight size={15} aria-hidden="true" />
@@ -101,7 +127,7 @@ export function NewsPage() {
               <h1>field updates</h1>
             </div>
             <p className="news-hero__right">
-              Short release records from the harness. No broadcast noise.
+              Short release records from the harness.
             </p>
           </header>
           <section className="release-index" aria-label="Release dispatches">
