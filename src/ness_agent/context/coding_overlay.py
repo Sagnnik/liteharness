@@ -86,7 +86,8 @@ class CodingOverlay(OverlayProvider):
 
         ``loaded_skills``
             Skills loaded via ``skill_view`` accumulated in
-            ``ctx.loaded_skills``.
+            ``ctx.loaded_skills``. After compaction on the same turn,
+            includes a reminder to call ``skill_view`` again for full bodies.
 
         Parameters
         ----------
@@ -141,6 +142,11 @@ class CodingOverlay(OverlayProvider):
                 d = s.get("description", "")
                 p = s.get("path", "")
                 lines.append(f"- {n}: {d}: {p}".rstrip(": "))
+            if bool((state.get("compaction_status") or {}).get("compacted")):
+                lines.append(
+                    "Skill bodies were compacted; call skill_view(name=<skill-name>) "
+                    "before following each loaded skill's procedure."
+                )
             sections["loaded_skills"] = "\n".join(lines)
 
         return sections

@@ -80,6 +80,18 @@ from ness_cli.tui.theme import build_console
 app = typer.Typer(add_completion=False, help="Ness Agent agent CLI")
 
 
+def _version_callback(value: bool | None) -> None:
+    if not value:
+        return
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        print(f"ness {version('ness-agent')}")
+    except PackageNotFoundError:
+        print("ness (version unknown — package not installed)")
+    raise typer.Exit()
+
+
 def _overrides(
     model: str | None,
     reflection_model: str | None,
@@ -145,6 +157,13 @@ def run(
         "--print",
         "-p",
         help="Run the query non-interactively, print the final response, and exit",
+    ),
+    version: bool | None = typer.Option(
+        None,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the installed Ness version and exit",
     ),
 ) -> None:
     """Start an interactive Ness Agent session (or a one-shot query with -p)."""

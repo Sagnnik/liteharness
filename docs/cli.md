@@ -10,6 +10,7 @@ See also: [Configuration](configuration.md) Â· [Architecture](architecture.md) Â
 
 ```bash
 pip install ness-agent
+ness --version               # verify the install
 export OPENAI_API_KEY=...    # or set via /config on first launch
 ness
 ```
@@ -63,10 +64,16 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 
 ## Skills
 
-Skills live under `.ness/skills/<name>/SKILL.md`:
+Primary project skills live under `.ness/skills/<name>/SKILL.md`. The loader also discovers skills from common agent directories when present:
+
+**Project-local:** `.agents/skills/`, `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`  
+**User-global:** `~/.agents/skills/`, `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`
+
+`.ness/skills` wins on name collisions; then other project roots; then global. Nested category layouts (`category/skill/SKILL.md`) are supported. A directory with `SKILL.md` is a skill (resources like `scripts/` are not scanned as skills).
 
 ```text
 .ness/skills/react_component/SKILL.md
+.agents/skills/product-a/skill-one/SKILL.md
 ```
 
 Each `SKILL.md` may include YAML frontmatter:

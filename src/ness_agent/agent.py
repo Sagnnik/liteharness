@@ -18,7 +18,7 @@ from ness_agent.memory import MemoryBackend, MemoryStore
 from ness_agent.persistence import ThreadStore
 from ness_agent.permissions import PermissionStore
 from ness_agent.hooks import Hook, HookRunner
-from ness_agent.skills import SkillLoader
+from ness_agent.skills import SkillLoader, merge_skill_dirs
 from ness_agent.tools import BUILTIN_TOOLS, ToolRegistry
 from ness_agent.utils import normalize_tool
 from ness_agent.tracing.cost import CostTracker
@@ -100,7 +100,11 @@ class AgentSpec:
     **Filesystem paths**
 
     ``skills_dir``
-        ``.ness/skills/`` directory (or ``None`` to disable skills).
+        Primary skills directory (CLI default ``.ness/skills/``), or
+        ``None`` to disable skills entirely. When set, the loader also
+        discovers skills under well-known project and user skill roots
+        (``.agents/skills``, ``.claude/skills``, etc.), including nested
+        category layouts.
     ``hooks_config``
         Path to ``hooks.json`` for pre/post tool-use hooks. When ``None``,
         defaults to ``{ness_dir}/hooks.json``.
@@ -320,7 +324,13 @@ class NessAgentConfig:
                 project_root=project_root,
                 hooks=spec.hooks,
             ),
-            skill_loader=SkillLoader(spec.skills_dir),
+            skill_loader=SkillLoader(
+                skills_dirs=(
+                    None
+                    if spec.skills_dir is None
+                    else merge_skill_dirs(project_root, spec.skills_dir)
+                ),
+            ),
             tool_registry=ToolRegistry(resolved_tools),
             cost_tracker=spec.cost_tracker or CostTracker(pricing=spec.tracing.pricing),
             tracer=spec.tracer or build_tracer(spec.tracing),

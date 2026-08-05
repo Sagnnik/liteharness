@@ -100,7 +100,7 @@ async def cmd_skill(app: "TuiApp", args: str) -> None:
     skills = loader.load()
     if not name:
         if not skills:
-            render.render_notice("No skills found under .ness/skills/.")
+            render.render_notice("No skills found.")
         else:
             rows = [
                 [s.get("name", ""), s.get("source", ""), s.get("description", "")]

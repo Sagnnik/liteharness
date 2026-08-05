@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from ness_agent.skills import SkillLoader
+from ness_agent.skills import SkillLoader, merge_skill_dirs
+
+
+def _write_skill(skill_dir: Path, name: str, description: str, body: str = "Body") -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n{body}\n"
+    )
 
 
 def test_skill_loader_skips_invalid_name(tmp_path: Path):
@@ -64,6 +71,106 @@ def test_skill_loader_loads_multiple_skills_skips_invalid(tmp_path: Path):
 def test_render_catalog_empty_when_no_skills():
     loader = SkillLoader()
     assert loader.render_catalog({}) == ""
+
+
+def test_skill_loader_disabled_when_no_dirs():
+    assert SkillLoader().load() == {}
+    assert SkillLoader(skills_dirs=None).load() == {}
+    assert SkillLoader(skills_dirs=[]).load() == {}
+
+
+def test_skill_loader_multi_root(tmp_path: Path):
+    ness = tmp_path / ".ness" / "skills"
+    agents = tmp_path / ".agents" / "skills"
+    _write_skill(ness / "alpha", "alpha", "From ness")
+    _write_skill(agents / "beta", "beta", "From agents")
+
+    loader = SkillLoader(skills_dirs=[ness, agents])
+    skills = loader.load()
+    assert set(skills) == {"alpha", "beta"}
+    assert "ness" in skills["alpha"]["source"]
+    assert "agents" in skills["beta"]["source"]
+
+
+def test_skill_loader_nested_category(tmp_path: Path):
+    root = tmp_path / ".agents" / "skills"
+    _write_skill(root / "product-a" / "skill-one", "skill_one", "Nested one")
+    _write_skill(root / "product-a" / "skill-two", "skill_two", "Nested two")
+    _write_skill(root / "flat-skill", "flat", "Flat skill")
+
+    skills = SkillLoader(root).load()
+    assert set(skills) == {"skill_one", "skill_two", "flat"}
+
+
+def test_skill_loader_shadowing_does_not_descend(tmp_path: Path):
+    root = tmp_path / ".agents" / "skills"
+    foo = root / "foo"
+    _write_skill(foo, "outer", "Outer skill", body="Outer body")
+    _write_skill(foo / "inner", "inner", "Inner skill", body="Inner body")
+    (foo / "scripts").mkdir()
+    (foo / "scripts" / "run.sh").write_text("echo hi")
+
+    skills = SkillLoader(root).load()
+    assert set(skills) == {"outer"}
+    assert "Outer body" in skills["outer"]["body"]
+
+
+def test_skill_loader_user_dir_wins_name_collision(tmp_path: Path):
+    ness = tmp_path / ".ness" / "skills"
+    agents = tmp_path / ".agents" / "skills"
+    _write_skill(ness / "shared", "shared", "Ness wins", body="from-ness")
+    _write_skill(agents / "shared", "shared", "Agents loses", body="from-agents")
+
+    skills = SkillLoader(skills_dirs=[ness, agents]).load()
+    assert skills["shared"]["body"] == "from-ness"
+    assert "ness" in skills["shared"]["source"]
+
+
+def test_skill_loader_project_wins_over_global(tmp_path: Path, monkeypatch):
+    project = tmp_path / "proj"
+    home = tmp_path / "home"
+    project.mkdir()
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    project_agents = project / ".agents" / "skills"
+    global_agents = home / ".agents" / "skills"
+    _write_skill(project_agents / "shared", "shared", "Project", body="project")
+    _write_skill(global_agents / "shared", "shared", "Global", body="global")
+    _write_skill(global_agents / "only_global", "only_global", "Global only")
+
+    dirs = merge_skill_dirs(project, project / ".ness" / "skills")
+    skills = SkillLoader(skills_dirs=dirs).load()
+    assert skills["shared"]["body"] == "project"
+    assert "only_global" in skills
+
+
+def test_skill_loader_symlink_dedupes_resolved_path(tmp_path: Path):
+    canonical = tmp_path / ".agents" / "skills"
+    linked_root = tmp_path / ".claude" / "skills"
+    _write_skill(canonical / "dup", "dup", "Canonical", body="once")
+    linked_root.parent.mkdir(parents=True, exist_ok=True)
+    linked_root.symlink_to(canonical)
+
+    skills = SkillLoader(skills_dirs=[canonical, linked_root]).load()
+    assert list(skills) == ["dup"]
+
+
+def test_merge_skill_dirs_order_and_dedupe(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    project = tmp_path / "proj"
+    project.mkdir()
+    user = project / ".ness" / "skills"
+
+    dirs = merge_skill_dirs(project, user)
+    assert dirs[0] == user
+    assert dirs[1] == (project / ".agents" / "skills")
+    assert (home / ".agents" / "skills") in dirs
+    # No duplicate resolved paths
+    resolved = [p.resolve() for p in dirs]
+    assert len(resolved) == len(set(resolved))
 
 
 def test_skill_view_returns_skill_content(tmp_path: Path):

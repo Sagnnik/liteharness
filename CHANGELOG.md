@@ -9,11 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Multi-directory skill discovery: when skills are enabled, load from `.ness/skills` plus well-known project/global agent skill roots (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, and `~/` equivalents), including nested category layouts.
 - Cache-safe `ness_agent.summarize()` API and durable summary checkpoints for resume/rollback.
 - Canonical model-facing history that preserves ordinary request prefixes while keeping L3 reminders out of durable transcripts.
+- `ness --version` flag to print the installed version and exit.
 
 ### Changed
 
+- TUI: the per-frame user-band width validation now rescans only newly appended transcript lines instead of the whole buffer, removing render-thread stalls (spinner stutter, laggy streaming echo) on very long transcripts; misfit detection and resize reflow behavior are unchanged.
+- Fixed Ctrl+T thinking toggles corrupting active streamed answers, causing duplicate responses or preventing final Markdown rendering.
 - Compaction now uses the main bound model, identical tools/session/system prefix, a human tail instruction, and a boundary-safe graph node.
 - `/compact` retains the active user/tool turn verbatim and summarizes completed history only.
 - Compaction checkpoints atomically retain the active semantic suffix, preventing SDK resume from dropping an unlogged user turn.

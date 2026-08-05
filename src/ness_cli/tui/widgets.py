@@ -22,6 +22,20 @@ class VisualPosition:
     col: int
 
 
+@dataclass(eq=False)
+class TranscriptBlock:
+    """Stable handle for a contiguous, store-owned transcript block.
+
+    ``start`` is maintained by :class:`TranscriptStore` whenever another
+    block is inserted, removed, or changes size.  Callers may retain the
+    handle across those mutations instead of caching a fragile line index.
+    """
+
+    start: int
+    count: int
+    attached: bool = True
+
+
 class TranscriptStore:
     """Transcript source lines plus cached visual row offsets."""
 
@@ -33,6 +47,7 @@ class TranscriptStore:
         self._plain_text: str | None = None
         self._row_counts: list[int] = []
         self._row_offsets: list[int] = [0]
+        self._blocks: list[TranscriptBlock] = []
         self._rebuild_rows()
 
     def set_width(self, width: int) -> bool:
@@ -54,14 +69,18 @@ class TranscriptStore:
         self._mark_changed(lines)
 
     def replace(self, start: int, count: int, lines: list[TranscriptLine]) -> None:
+        start, count = self._validate_untracked_mutation(start, count)
+        self._shift_blocks_for_range(start, count, len(lines))
         self.lines[start : start + count] = lines
         self._row_counts[start : start + count] = [self._row_count(line) for line in lines]
         self._rebuild_offsets_from(start)
-        self._mark_changed(lines)
+        self._mark_changed()
 
     def delete(self, start: int, count: int) -> None:
         if count <= 0:
             return
+        start, count = self._validate_untracked_mutation(start, count)
+        self._shift_blocks_for_range(start, count, 0)
         del self.lines[start : start + count]
         del self._row_counts[start : start + count]
         self._rebuild_offsets_from(start)
@@ -70,25 +89,127 @@ class TranscriptStore:
     def insert(self, start: int, lines: list[TranscriptLine]) -> None:
         """Insert ``lines`` before index ``start``.
 
-        Symmetric to ``delete``: lets a caller reserve a slot above an
-        already-tracked region (e.g. a reasoning block above a live
-        assistant stream) and have row offsets rebuilt from the touched
-        index onward. Callers tracking indices into ``self.lines`` must
-        shift anything at or above ``start + len(lines)`` themselves.
+        Symmetric to ``delete``: row offsets are rebuilt from the touched
+        index onward and stable block handles at or after the insertion are
+        shifted automatically.
         """
         if not lines:
             return
         start = max(0, min(start, len(self.lines)))
+        for block in self._blocks:
+            if block.start < start < block.start + block.count:
+                raise ValueError(
+                    "raw transcript insertion splits a tracked block; "
+                    "use the tracked-block operation"
+                )
+        self._shift_blocks_for_range(start, 0, len(lines))
         self.lines[start:start] = lines
         self._row_counts[start:start] = [self._row_count(line) for line in lines]
         self._rebuild_offsets_from(start)
         self._mark_changed(lines)
 
+    def append_tracked(self, lines: list[TranscriptLine]) -> TranscriptBlock:
+        """Append ``lines`` and return a stable handle for the new block."""
+        start = len(self.lines)
+        self.append(lines)
+        return self._register_block(start, len(lines))
+
+    def insert_tracked(
+        self, start: int, lines: list[TranscriptLine]
+    ) -> TranscriptBlock:
+        """Insert a tracked block before ``start`` and return its handle."""
+        start = max(0, min(start, len(self.lines)))
+        self.insert(start, lines)
+        return self._register_block(start, len(lines))
+
+    def replace_tracked(
+        self, block: TranscriptBlock, lines: list[TranscriptLine]
+    ) -> None:
+        """Replace a tracked block while preserving its stable identity."""
+        self._require_attached(block)
+        start = block.start
+        old_count = block.count
+        delta = len(lines) - old_count
+        old_end = start + old_count
+        for other in self._blocks:
+            if other is not block and other.start >= old_end:
+                other.start += delta
+        self.lines[start:old_end] = lines
+        self._row_counts[start:old_end] = [self._row_count(line) for line in lines]
+        block.count = len(lines)
+        self._rebuild_offsets_from(start)
+        self._mark_changed()
+
+    def delete_tracked(self, block: TranscriptBlock) -> None:
+        """Delete a tracked block and detach its handle."""
+        self._require_attached(block)
+        start = block.start
+        count = block.count
+        end = start + count
+        del self.lines[start:end]
+        del self._row_counts[start:end]
+        for other in self._blocks:
+            if other is not block and other.start >= end:
+                other.start -= count
+        self._detach_block(block)
+        self._rebuild_offsets_from(start)
+        self._mark_changed()
+
+    def release_tracked(self, block: TranscriptBlock) -> None:
+        """Stop tracking ``block`` without removing its transcript lines."""
+        self._require_attached(block)
+        self._detach_block(block)
+
     def reset(self, lines: list[TranscriptLine] | None = None) -> None:
+        for block in self._blocks:
+            block.attached = False
+        self._blocks.clear()
         if lines is not None:
             self.lines[:] = lines
         self._rebuild_rows()
         self._mark_changed()
+
+    def _register_block(self, start: int, count: int) -> TranscriptBlock:
+        end = start + count
+        for block in self._blocks:
+            block_end = block.start + block.count
+            if start < block_end and block.start < end:
+                raise ValueError("tracked transcript blocks cannot overlap")
+        block = TranscriptBlock(start=start, count=count)
+        self._blocks.append(block)
+        return block
+
+    def _require_attached(self, block: TranscriptBlock) -> None:
+        if not block.attached or block not in self._blocks:
+            raise ValueError("transcript block is detached")
+
+    def _detach_block(self, block: TranscriptBlock) -> None:
+        self._blocks.remove(block)
+        block.attached = False
+
+    def _validate_untracked_mutation(self, start: int, count: int) -> tuple[int, int]:
+        start = max(0, min(start, len(self.lines)))
+        count = max(0, min(count, len(self.lines) - start))
+        end = start + count
+        for block in self._blocks:
+            block_end = block.start + block.count
+            if count == 0:
+                continue
+            if start < block_end and block.start < end:
+                raise ValueError(
+                    "raw transcript mutation overlaps a tracked block; "
+                    "use the tracked-block operation"
+                )
+        return start, count
+
+    def _shift_blocks_for_range(
+        self, start: int, old_count: int, new_count: int
+    ) -> None:
+        old_end = start + old_count
+        delta = new_count - old_count
+        for block in self._blocks:
+            if block.start >= old_end:
+                block.start += delta
 
     @property
     def total_rows(self) -> int:

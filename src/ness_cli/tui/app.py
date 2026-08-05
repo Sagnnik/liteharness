@@ -34,7 +34,11 @@ from ness_cli.tui.prompts import PromptMixin
 from ness_cli.tui.transcript import TranscriptMixin
 from ness_cli.tui.turn_renderer import TurnRenderer, render_persisted_tool_result
 from ness_cli.tui.utils import display_cwd
-from ness_cli.tui.widgets import TranscriptStore, TranscriptViewportControl
+from ness_cli.tui.widgets import (
+    TranscriptBlock,
+    TranscriptStore,
+    TranscriptViewportControl,
+)
 
 if TYPE_CHECKING:
     from ness_agent.mcp import MCPManager
@@ -134,6 +138,10 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._transcript_render_width = 0
         self._transcript_viewport_height = 0
         self._layout_term_width = 0
+        # Index into ``_lines`` up to which user blocks are known to fit
+        # ``_layout_term_width``; lets ``_after_render`` re-validate only the
+        # appended tail instead of rescanning the whole transcript each frame.
+        self._user_fit_checked_upto = 0
         # Set on the first render once the transcript pane's real width is
         # known. The --resume startup path awaits this before replaying the
         # saved conversation so markdown/user lines are wrapped to the actual
@@ -144,18 +152,16 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._path_line_cache_key: tuple[Any, ...] | None = None
         self._path_line_cache: list[tuple[str, str]] = []
 
-        self._todos_block_start: int | None = None
-        self._todos_block_count = 0
+        self._todos_block: TranscriptBlock | None = None
         # Startup header block: tracked so /config refreshes it in place
         # (instead of re-appending a duplicate banner mid-conversation) and
         # so a terminal resize re-flows it at the new width. Shape:
-        # {"start": int, "count": int, "width": int, "source": dict}.
+        # {"block": TranscriptBlock, "width": int, "source": dict}.
         self._header_block: dict | None = None
         # Reasoning (CoT) blocks: one per LLM call that emitted reasoning_content.
-        # Each span: {"start": int, "count": int, "text": str, "elapsed": float}.
+        # Each span: {"block": TranscriptBlock, "text": str, "elapsed": float}.
         # Collapsed by default; Ctrl+T flips ``_show_reasoning`` and re-emits
-        # every span bottom-to-top so later spans' index shifts don't disturb
-        # the not-yet-processed earlier ones.
+        # every span while the store keeps all following block handles aligned.
         self._show_reasoning = False
         self._reasoning_spans: list[dict] = []
         self._transcript_store = TranscriptStore(self._lines)

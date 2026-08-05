@@ -30,16 +30,20 @@ cli_history              Prompt history for this project root
 ├── mcp.json             MCP stdio servers
 ├── agents/              Subagent definitions
 ├── commands/            User slash commands
-├── skills/              Project-local SKILL.md skills
+├── skills/              Project-local SKILL.md skills (highest precedence)
 ├── threads/             Saved session trajectories (SQLite)
 │   └── threads.db
 └── runtime/
     ├── sessions/        Per-thread episodic memory (L3)
     │   └── mem_<thread_id>.md
     └── shells/          Background shell job metadata and logs
+
+# Also discovered when present (after .ness/skills; project before global)
+.agents/skills/  .claude/skills/  .codex/skills/  .cursor/skills/
+~/.agents/skills/  ~/.claude/skills/  ~/.codex/skills/  ~/.cursor/skills/
 ```
 
-Override roots with `NESS_AGENT_CONFIG_DIR`, `NESS_AGENT_CACHE_DIR`, and `NESS_DIR`.
+Override roots with `NESS_AGENT_CONFIG_DIR`, `NESS_AGENT_CACHE_DIR`, and `NESS_DIR`. Skills may be nested under category folders (`category/skill/SKILL.md`); see [Skills in the CLI guide](cli.md#skills).
 
 ---
 
