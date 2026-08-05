@@ -54,7 +54,7 @@ agent = NessAgent(
     model=...,
     prompt=PromptLayersConfig(l0=my_l0, persona="..."),
     # or override only one task prompt:
-    # aux_prompts=AuxPrompts(compaction=my_compaction_template),
+    # aux_prompts=AuxPrompts(compaction=my_compaction_instruction),
 )
 ```
 
@@ -188,7 +188,6 @@ class ResearchOverlay(OverlayProvider):
 
 agent = NessAgent(
     model=ChatOpenAI(model="gpt-4o"),
-    compaction_model=ChatOpenAI(model="gpt-4o-mini"),
     reflection_model=ChatOpenAI(model="gpt-4o-mini"),
     tools=[web_search, fetch_url, save_note, spawn_subagent, build_report],
     prompt={
@@ -427,13 +426,12 @@ Compaction has several channels — do not conflate them:
 | Channel | Kind / signal | Who writes | When |
 |---|---|---|---|
 | Durable notice | `compact` | CodingSession (adapter) | `/compact`, pre-act notices, and live agent-turn `SessionEvent("compaction")` rows the adapter durable-logs |
-| Durable LLM I/O | `compaction_llm` | SDK `summarize_history` | Summary path only (not silent `tool_outputs`) |
-| Graph state | `compacted_messages` | agent node | Any successful compaction (`tool_outputs` or `summary`) |
-| Live stream | `SessionEvent("compaction")` | Session | Pre-act checkpoints, plus `reason=agent_turn` when a Session is active and the agent node actually compacted |
+| Durable summary checkpoint | `compaction_llm` | SDK compaction boundary | Successful summary with raw-event source boundary |
+| Graph state | `model_context_messages` | boundary/agent nodes | Exact model-facing history, including internal L3 tails |
+| Live stream | `SessionEvent("compaction")` | Session | Pre-act checkpoints plus summary success/failure notices |
 
-Silent `tool_outputs` compaction still updates graph state and emits a live
-`SessionEvent("compaction")` with `action=tool_outputs` (when a Session is
-bound), but never writes `compaction_llm`.
+Compaction never rewrites tool output. Completed history becomes one human
+`<compacted-history>` message; the active user/tool turn remains verbatim.
 
 ## Reflection defaults (SDK vs CLI)
 
@@ -461,14 +459,16 @@ Durable audit rows use ThreadStore `kind=reflection`. There is no live
 
 ## Context / graph invariants
 
-These contracts keep the L0–L2 prefix cache and compaction splice correct:
+These contracts keep ordinary calls and compaction forks cache-safe:
 
 - **No system messages in state.** `AgentState.messages` holds the conversation
   only. The L0–L2 system prefix is rebuilt each `agent_node` turn and never
   checkpointed.
-- **L3 is ephemeral.** Overlay text is injected via `_with_working_state_tail`
-  as a `<system-reminder>` (see `wrap_system_reminder`) for the model call only
-  — it is never written into `AgentState.messages`.
+- **Two histories.** `AgentState.messages` is the clean semantic transcript.
+  `model_context_messages` retains exact model-facing L3 reminder tails for
+  prefix continuity; those tails never enter durable CLI events or reflection.
+- **Boundary compaction.** Summary runs after completed tools and before the
+  next agent call with the same bound main model, tools, system, and session.
 - **`session.metadata` identity.** `make_nodes` snapshots the metadata dict at
   graph build. In-place mutation of `session.metadata` is visible on later
   turns; reassignment (`session.metadata = {...}`) needs `rebuild_graph()`.
@@ -510,7 +510,7 @@ coding path).
 | `user`, `compact` | App / `CodingSession` |
 | `assistant`, `tool`, `usage`, `approval` | Graph (`nodes.py`) |
 | `reflection` | `reflection.py` (durable only; not a `SessionEvent`) |
-| `compaction_llm` | `compaction.py` |
+| `compaction_llm` | SDK compaction boundary |
 
 **Important:**
 
@@ -730,7 +730,7 @@ print(cost.report())                        # multi-line string breakdown
 |                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
 | `tool.<name>`               | `tool.name`, `tool.duration_ms`, `tool.error`, `tool.exit_status`, `tool.args` (when ``capture_tool_args=True``)                                                                                                  |
 |                             | + `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (when ``capture_messages=True``; result truncated to ``max_message_length``)                                                                          |
-| `compaction.summarize`      | `compaction.action`, `compaction.kept_recent`, `session.thread_id`, `gen_ai.request.model`, `gen_ai.operation.name`                                                                                               |
+| `compaction.summarize`      | trigger, before/after tokens, active suffix count, `session.thread_id`, model, operation                                                                                               |
 |                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
 | `reflection.gate`           | `session.thread_id`, `gen_ai.operation.name`, `reflection.bullets`                                                                                                                                               |
 |                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |

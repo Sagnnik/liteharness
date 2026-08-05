@@ -31,7 +31,6 @@ from ness_agent.workspace import setup_ness_structure
 
 from ness_cli.chat_model import (
     active_model_name,
-    create_compaction_model,
     create_model,
     create_reflection_model,
 )
@@ -39,11 +38,8 @@ from ness_cli.coding_session import CodingSession
 from ness_cli.config import (
     context_window_for,
     make_sdk_cost_tracker,
-    reload_settings,
     settings,
-    settings_field_env_map,
 )
-from ness_cli.config_store import migrate_env_once
 from ness_cli.paths import (
     NessPaths,
     ensure_global_config,
@@ -58,24 +54,12 @@ from ness_cli.prompts import (
 
 
 def prepare_paths(*, project_root: Path | None = None) -> NessPaths:
-    """Resolve paths and ensure global config + project runtime dirs exist.
-
-    On first run, imports any known keys from a project ``.env`` into the
-    global ``configs.json`` / ``secrets.json`` (once; the ``.env`` file is
-    left untouched), then reloads settings so the migrated values apply.
-    """
+    """Resolve paths and ensure global config + project runtime dirs exist."""
     paths = resolve_paths(
         project_root=project_root or Path.cwd(),
         ness_dir=settings.ness_dir,
     )
     ensure_global_config(paths)
-    migrated = migrate_env_once(
-        Path.cwd() / ".env",
-        config_dir=paths.config_dir,
-        field_for_alias=settings_field_env_map(),
-    )
-    if migrated:
-        reload_settings()
     ensure_project_runtime(paths)
     return paths
 
@@ -102,7 +86,6 @@ def build_coding_agent(
         paths = prepare_paths()
     kwargs: dict[str, Any] = {
         "model": create_model(thread_id),
-        "compaction_model": create_compaction_model(thread_id),
         "reflection_model": create_reflection_model(thread_id),
         "prompt": default_prompt_layers(
             instructions_dir=paths.instructions_dir,
@@ -124,8 +107,8 @@ def build_coding_agent(
         "options": NessAgentOptions(
             context_window=context_window_for(active_model_name()),
             compaction_token_budget=settings.compaction_token_budget,
-            compaction_output_reserve=settings.compaction_output_reserve,
-            compaction_input_reserve=settings.compaction_input_reserve,
+            compaction_buffer_tokens=settings.compaction_buffer_tokens,
+            compaction_summary_max_tokens=settings.compaction_summary_max_tokens,
             enable_approval=settings.enable_approval and not yolo,
             yolo_mode=yolo,
             auto_save_threads=settings.auto_save_threads,

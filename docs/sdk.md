@@ -92,7 +92,8 @@ Core exports from `ness_agent`:
 | `PermissionStore`, `HookRunner`, `SkillLoader` | Policy and extension points |
 | `ThreadStore`, `MemoryStore` | Persistence backends |
 | `CostTracker`, `TracingConfig`, `Tracer` | Usage and observability |
-| `CodingOverlay`, `OverlayProvider` | Ephemeral L3 context (used by CLI) |
+| `CodingOverlay`, `OverlayProvider` | Internal, non-durable L3 context (used by CLI) |
+| `summarize` | Cache-safe summary fork using exact parent messages and bound model |
 
 Import smoke test: `tests/test_sdk_smoke.py`.
 
@@ -103,6 +104,23 @@ Import smoke test: `tests/test_sdk_smoke.py`.
 The SDK splits prompts into L0–L3 layers for stable prefix caching. See [Architecture → Prompt layers](architecture.md#prompt-layers) for the full model.
 
 When using the SDK directly, you supply L0–L2 via `PromptLayers` / `PromptLayersConfig`. L3 overlays are optional via `OverlayProvider` implementations such as `CodingOverlay`.
+
+## Cache-safe summarization
+
+Automatic compaction uses the main agent model and its bound tools. For custom flows, pass the exact parent request and the same bound runnable:
+
+```python
+from ness_agent import summarize
+
+summary = await summarize(
+    exact_parent_messages,
+    bound_parent_model,
+    instruction="Summarize completed work for continuation.",
+    max_output_tokens=4096,
+)
+```
+
+Constructing a separate model, changing tools, or replacing the system prompt prevents reuse of the parent's cached prefix.
 
 ---
 

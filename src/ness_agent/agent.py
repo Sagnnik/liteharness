@@ -68,9 +68,8 @@ class AgentSpec:
 
     **Optional auxiliary models**
 
-    ``compaction_model``, ``reflection_model``
-        Models for compaction summaries and background reflection.
-        Falls back to ``model`` when ``None``.
+    ``reflection_model``
+        Model for background reflection. Falls back to ``model`` when ``None``.
 
     **Behaviours**
 
@@ -138,7 +137,6 @@ class AgentSpec:
     tools: Sequence[BaseTool] | None = None
 
     # optional auxiliary models
-    compaction_model: BaseChatModel | None = None
     reflection_model: BaseChatModel | None = None
 
     # behaviours
@@ -177,7 +175,6 @@ class NessAgentConfig:
     prompts: PromptLayers
 
     # optional auxiliary models
-    compaction_model: BaseChatModel | None = None
     reflection_model: BaseChatModel | None = None
 
     # behaviors
@@ -288,7 +285,6 @@ class NessAgentConfig:
             tools=resolved_tools,
             prompts=prompts,
 
-            compaction_model=spec.compaction_model,
             reflection_model=spec.reflection_model,
 
             options=options,

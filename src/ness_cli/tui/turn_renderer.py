@@ -190,8 +190,7 @@ class TurnRenderer:
 
     def _on_compaction(self, data: dict[str, Any]) -> None:
         info = str(data.get("info") or "").strip()
-        reason = str(data.get("reason") or "")
-        if reason == "pre_act_hard_threshold":
+        if data.get("notice_reason") == "pre_act_hard_threshold":
             render.render_notice(
                 info + " Hard threshold reached; compacting before execution.",
                 title="compaction",

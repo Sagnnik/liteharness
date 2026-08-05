@@ -153,7 +153,6 @@ def test_reload_model_refreshes_vision_capability(coding):
     model = coding.cfg.model
     with (
         patch("ness_cli.chat_model.create_model", return_value=model),
-        patch("ness_cli.chat_model.create_compaction_model", return_value=model),
         patch("ness_cli.chat_model.create_reflection_model", return_value=model),
         patch("ness_cli.config.context_window_for", return_value=128_000),
         patch(

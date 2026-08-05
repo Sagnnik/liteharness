@@ -21,7 +21,7 @@ Ness Agent splits context into four layers to keep prompt caching stable:
 1. **L0 harness** (`PromptLayers` / `L0_HARNESS`): NESS identity, universal rules, output format, and tool-calling protocol.
 2. **L1 profile** (`build_l1`): persona, stable tool catalog, an always-on one-line skill catalog, `USER.md` preferences, and `.ness/NESS.md` project conventions.
 3. **L2 project context**: app-supplied domain/repo structure (`PromptLayersConfig.l2_context`); not auto-loaded by bare `Session`.
-4. **L3 working state** (`CodingOverlay` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and injected ephemerally each turn (never persisted to state). On a fresh user turn the **full overlay** is appended to the latest human message; during a tool loop only the **per-section delta** (sections that changed since the last model invocation) is sent as a separate tail `HumanMessage` — if nothing changed, no tail is appended at all. The static `<plan-mode>` block is injected once on the fresh user message and never re-injected mid-turn (it would re-prime planning). After compaction the full overlay is re-injected because the model's context was rewritten. Includes git branch/dirty snapshot (when in a repo), compaction status, todos, session memory, skill-request hints, and loaded-skill summaries. In **plan** mode only, instructions are wrapped in an additional ephemeral `<plan-mode>` block (path points at the global plans dir for the CLI) (also not cached). Act mode omits a mode block. L0 documents `<plan-mode>` and `<system-reminder>`.
+4. **L3 working state** (`CodingOverlay` / `render_overlay_delta`): wrapped in `<system-reminder>` tags and appended as an internally tagged tail `HumanMessage`. L3 is retained only in checkpointed model context so later requests preserve the exact wire prefix; it is excluded from the semantic transcript, reflection, and durable CLI events. Fresh user turns receive the full overlay and tool loops receive section deltas. After compaction all historical L3 messages are discarded and one current full overlay is injected. Includes git branch/dirty state, compaction status, todos, session memory, skill hints, and plan/act instructions.
 
 The L1 skill catalog lists every available skill with its path; full skill bodies enter the conversation when the model calls `skill_view` (or `read`s the path). `/skill <name>` stages a one-shot L3 hint for the next turn — it does not inject the body itself (see [Skills in the CLI guide](cli.md#skills)).
 
@@ -78,12 +78,16 @@ Includes resolve relative to the project root, reject paths that escape it, skip
 
 ## Compaction
 
-Compaction is model-relative by default. Ness Agent estimates the usable context budget from the model context window minus output and input reserves. If the model window is unknown, `COMPACTION_TOKEN_BUDGET` is used as the fallback (default `120000`). When reserves exceed the window, the full window size is used as the budget.
+Compaction is a cache-safe fork of the main conversation. At every boundary before a model call, Ness Agent measures the stable system prefix plus the exact canonical model context. When summary compaction is due it invokes the last successfully completed bound main-model request, with the same system message, provider session, tool definitions, and native message history, then appends one human summary instruction. Failed model/schema attempts never replace that parent binding. There is no tool-output rewriting and no tool-less auxiliary summarizer.
 
 | Pressure | Action |
 |----------|--------|
-| < 70% | No compaction |
-| 70-80% | Compact large tool outputs |
-| >= 80% | Summarize older history; keep `max(4, min(10, int(10 * (1 - ratio) / 0.20)))` recent messages |
+| < 70% | No warning |
+| 70-80% | Warn that summary compaction is approaching |
+| >= 80% | Summarize completed history |
 
-Summary compaction triggers at 80% (not at the context ceiling): past that point the summarizing model is already degraded by context rot, so Ness Agent compacts before the summary itself would degrade. Use `/compact` to force compaction on the next model turn. Manual compaction runs at least a summary that keeps the last 10 messages when there is older history to summarize. When leaving plan mode (Shift+Tab to act), Ness Agent shows a pre-execution context checkpoint at 75% pressure and forces compaction without prompting at 92% pressure.
+Compaction also runs earlier when necessary to preserve `COMPACTION_BUFFER_TOKENS` for the instruction and capped summary output. The latest unanswered user turn and its complete assistant/tool trajectory remain verbatim; only completed history is summarized. Old L3 reminders are visible to the cache-safe fork but explicitly excluded from summary semantics. The replacement branch contains one human `<compacted-history>` message, the active suffix, and one newly rendered current L3 reminder.
+
+Image-bearing user messages remain structured in live and replayed canonical history after they are answered. They are removed only when their completed turn is replaced by summary compaction (or when vision is explicitly disabled).
+
+Compaction is a separate graph node between `START`/`tools` and `agent`, so it never runs during tool execution and its state checkpoints before the next model request. Summary failures preserve the original history and may continue below the safety boundary; at the boundary the turn stops rather than using a lossy fallback. `/compact` forces this process at the next model boundary.

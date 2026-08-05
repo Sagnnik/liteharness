@@ -30,6 +30,7 @@ from ness_agent.tracing.cost import TokenUsage
 from ness_agent.workspace import (
     git_worktree_summary, get_project_context, setup_ness_structure,
 )
+from ness_agent.compaction import summarize
 
 __all__ = [
     "NessAgent", "NessAgentConfig", "AgentSpec", "Session",
@@ -46,4 +47,5 @@ __all__ = [
     "TracingConfig", "Tracer", "NoopTracer", "NoopSpan", "InMemorySpan",
     "MultiTracer", "MultiSpan", "build_tracer", "Span",
     "git_worktree_summary", "get_project_context", "setup_ness_structure",
+    "summarize",
 ]

@@ -3,12 +3,23 @@ from __future__ import annotations
 import asyncio, json, time, warnings
 from pathlib import Path
 from typing import Any, Literal, Mapping
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    BaseMessage,
+    message_to_dict,
+)
 from langgraph.graph import END
 from ness_agent.graph.state import AgentState
 from ness_agent.graph.helpers import (
     _effective_conversation,
     _with_working_state_tail,
+    _semantic_conversation,
+    _active_turn_split,
+    _incremental_input_tokens,
+    _is_internal_message,
     _needs_approval,
     _denial_tool_messages,
     _all_calls_denied,
@@ -16,10 +27,11 @@ from ness_agent.graph.helpers import (
     extract_tool_calls,
     _tool_event,
 )
-from ness_agent.compaction import (
-    progressive_compact,
-    compaction_label,
-    compaction_overlay_note,
+from ness_agent.compaction import _invoke_summary
+from ness_agent.context.budget import (
+    CompactionStatus,
+    calculate_context_pressure,
+    pressure_note,
     resolve_token_count,
     resolve_usable_context_budget,
 )
@@ -55,6 +67,8 @@ from ness_agent.tracing.semconv import (
     TOOL_EXEC,
     TOOL_EXIT_STATUS,
     TOOL_NAME,
+    COMPACTION_SUMMARIZE,
+    THREAD_ID,
 )
 from ness_agent.tracing.messages import (
     serialize_completion,
@@ -75,6 +89,7 @@ class NodesRuntime:
         self._last_sections: dict[str, str] = {}
         self.reflection_tasks: set[asyncio.Task] = set()
         self.metadata: Mapping[str, Any] = metadata if metadata is not None else {}
+        self.last_bound_model = None
 
 def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadata = None) -> NodesRuntime:
     rt = NodesRuntime(config, thread_id=thread_id, mode=mode, git_available=git_available, metadata=metadata)
@@ -92,10 +107,262 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
     options = config.options
     tracer = config.tracer
     main_model = config.model
-    compaction_model = config.compaction_model or config.model
+    model_name = getattr(config.model, "model", "") or getattr(config.model, "model_name", "")
+
+    def _build_system_message() -> SystemMessage:
+        all_skills = skills_loader.load()
+        user_mem = memory.load_user() if not memory.disabled else ""
+        proj_mem = memory.load_project() if not memory.disabled else ""
+        skill_catalog = skills_loader.render_catalog(all_skills)
+        return SystemMessage(content=prompts.build_stable_prefix(
+            tools_reg.active_tools,
+            user_memory=user_mem,
+            project_memory=proj_mem,
+            skill_catalog=skill_catalog,
+            git_available=rt.repo_has_git,
+            metadata=rt.metadata,
+            tool_catalog_groups=[(l, frozenset(g)) for l, g in tools_reg.tool_catalog_groups()],
+            deferred_mcp=tools_reg.deferred_mcp_summary(),
+        ))
+
+    def _summary_instruction(base: str, active_count: int) -> str:
+        if "{messages}" in base:
+            raise ValueError(
+                "compaction instructions no longer accept {messages}; remove the transcript placeholder"
+            )
+        # summarizer should see the active turn but not summarize it
+        # since it will be added verbatim in the raw messges again after compaction
+        return (
+            base.strip()
+            + "\n\nHARNESS COMPACTION RULES\n"
+            + "The conversation above is already the transcript; do not ask for it again. "
+            + "Do not call tools. Output only the continuation summary. "
+            + "Ignore every <system-reminder> and <plan-mode> block as historical semantic content. "
+            + f"The final {active_count} message(s) form the active turn and will be retained verbatim; "
+            + "do not repeat them in the summary."
+        )
+
+    def _resolve_instruction(source) -> str:
+        if callable(source):
+            source = source()
+        if isinstance(source, Path):
+            source = source.read_text(encoding="utf-8")
+        return str(source)
+
+    async def context_gate(state: AgentState) -> AgentState:
+        """Check context pressure and summarize completed history when needed."""
+        tools_reg.sync() # sync the tools registry
+        
+        # get the messages and build the conversation
+        messages = list(state.get("messages", []))
+        conversation = _effective_conversation(messages, state)
+        
+        # build the system message
+        current_system = _build_system_message()
+        stored_context = list(state.get("model_context_messages", []))
+        known_input = _incremental_input_tokens(
+            conversation=conversation,
+            stored_context=stored_context,
+            stored_system=state.get("model_system_message"),
+            current_system=current_system,
+            last_input=int(state.get("last_input_tokens", 0) or 0),
+        )
+        
+        # calculate the context pressure
+        pressure = calculate_context_pressure(
+            [current_system] + conversation,
+            known_input_tokens=known_input,
+            options=options,
+        )
+        forced = bool(state.get("force_compact")) # /compact or force compact
+        # check if the conversation includes a compacted-history summary
+        had_stored_compaction = any(
+            _is_internal_message(message, "compacted_history") for message in conversation
+        )
+        status: CompactionStatus = {
+            "compacted": False,
+            "token_count": pressure.token_count,
+            "ratio": pressure.ratio,
+            "context_limit": pressure.context_limit,
+            "overlay_note": pressure_note(
+                pressure,
+                had_stored_compaction=had_stored_compaction,
+            ),
+        }
+        updates: AgentState = {"force_compact": False, "compaction_status": status}
+        # Go to agent node if no compaction reasons are met
+        if not forced and not pressure.should_compact:
+            return updates
+        
+        # split the conversation into completed and active turns
+        completed, active = _active_turn_split(conversation)
+        # remove overlay messages
+        completed_semantic = _semantic_conversation(completed) 
+        active_semantic = _semantic_conversation(active)
+        # get the current turn (for failure retry suppression)
+        active_turn_id = str(getattr(active_semantic[0], "id", "") or "") if active_semantic else ""
+
+        # If compaction already failed once on this same active turn, dont call the LLM again on every tool loop.
+        if (
+            not forced
+            and not pressure.safety_threshold_reached
+            and active_turn_id
+            and state.get("compaction_failed_turn_id") == active_turn_id
+        ):
+            status["skip_reason"] = "retry_suppressed"
+            return updates
+        
+        # nothing in the history to summarize - one active turn only
+        if not completed_semantic:
+            status["skip_reason"] = "no_completed_history"
+            status["forced"] = forced
+            if pressure.safety_threshold_reached:
+                # if one active turn is too large - hard fail or skip for 80% pressure
+                raise RuntimeError(
+                    "The active turn is too large to fit safely and there is no completed history to summarize."
+                )
+            return updates
+
+        # same system message and model for prefix caching
+        fork_system = state.get("model_system_message") or current_system
+        parent_model = rt.last_bound_model or tools_reg.bind_model(main_model)
+        instruction_source = aux_prompts.compaction
+        
+        # compaction is disabled if AuxPrompts.compaction is None
+        if instruction_source is None:
+            error = RuntimeError("compaction is disabled because AuxPrompts.compaction is None")
+            if pressure.safety_threshold_reached:
+                raise error
+            status.update({"skip_reason": "disabled", "error": str(error), "forced": forced})
+            return updates
+
+        try:
+            attrs = {
+                MODEL_NAME: model_name,
+                THREAD_ID: thread_id,
+                GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+                GEN_AI_OPERATION_NAME: "chat",
+            }
+            with tracer.start_span(COMPACTION_SUMMARIZE, attributes=attrs, kind=KIND_CLIENT) as span:
+                summary, response, request = await _invoke_summary(
+                    [fork_system] + conversation,
+                    parent_model,
+                    instruction=_summary_instruction(
+                        _resolve_instruction(instruction_source), len(active)
+                    ),
+                    max_output_tokens=options.compaction_summary_max_tokens,
+                )
+                if config.tracing.capture_messages:
+                    span.set_attribute(GEN_AI_PROMPT, serialize_messages(request))
+                    span.set_attribute(GEN_AI_COMPLETION, serialize_completion(response))
+        except Exception as exc:
+            status.update({"skip_reason": "failed", "error": str(exc), "forced": forced})
+            if active_turn_id:
+                updates["compaction_failed_turn_id"] = active_turn_id  # record the failed turn id
+            bridge = getattr(config, "_compaction_bridge", None) # get the compaction bridge from session
+            if bridge is not None:
+                bridge({
+                    "skip_reason": "failed",
+                    "forced": forced,
+                    "info": str(exc),
+                    "status": "failed",
+                }) # bridge the failed compaction
+            if pressure.safety_threshold_reached:
+                raise RuntimeError(f"Compaction required but summarization failed: {exc}") from exc # raise an error if the safety threshold is reached
+            return updates
+
+        # build the compacted history message - useful when compaction is done between tool loops
+        compacted_history = HumanMessage(
+            content=(
+                "<compacted-history>\n"
+                "Harness-generated continuation context; this is not a new user request.\n"
+                + summary
+                + "\n</compacted-history>"
+            ),
+            additional_kwargs={"ness_internal": "compacted_history"},
+        )
+        # combine the summarized history and the active turn
+        compacted = [compacted_history, *active_semantic]
+        # even after compaction, is context or active turn still too big? - hard fail
+        after_tokens = resolve_token_count([current_system] + compacted, known_input_tokens=None)
+        if after_tokens >= pressure.context_limit - options.compaction_buffer_tokens:
+            raise RuntimeError(
+                "The active turn is too large to fit safely after compaction; start a new turn with a smaller payload."
+            )
+
+        # Persist usage, events, and update state after compaction
+        usage = None
+        if getattr(response, "usage_metadata", None):
+            usage = cost.add(response.usage_metadata, model_name, response.response_metadata or {})
+            usage_event: dict[str, Any] = {"kind": "usage", "model": model_name, "operation": "compaction"}
+            if usage is not None:
+                usage_event.update(usage.as_dict())
+            persist.append_event(thread_id, usage_event)
+            bridge = getattr(config, "_usage_bridge", None)
+            if usage is not None and bridge is not None:
+                bridge(UsageEvent(
+                    model=model_name,
+                    input_tokens=usage.input_tokens,
+                    uncached_input_tokens=usage.uncached_input_tokens,
+                    cached_input_tokens=usage.cached_input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cost_usd=usage.cost_usd,
+                ))
+
+        event = {
+            "kind": "compaction_llm",
+            "instruction": request[-1].content,
+            "response": summary,
+            "forced": forced,
+            "trigger": "manual" if forced else ("safety" if pressure.safety_threshold_reached else "automatic"),
+            "before_tokens": pressure.token_count,
+            "after_tokens": after_tokens,
+            "active_suffix_messages": len(active_semantic),
+            # The summary and unsummarized suffix form one durable checkpoint.
+            # This is required for SDK callers, which do not separately append
+            # user events before entering the graph.  ``default=str`` keeps
+            # provider-specific metadata from making the event non-JSON-safe.
+            "active_suffix": json.loads(json.dumps(
+                [message_to_dict(message) for message in active_semantic],
+                ensure_ascii=False,
+                default=str,
+            )),
+            "model": model_name,
+        }
+        persist.append_compaction_checkpoint(
+            thread_id, event, active_turn=bool(active_semantic)
+        )
+
+        status.update({
+            "compacted": True,
+            "trigger": event["trigger"],
+            "forced": forced,
+            "after_tokens": after_tokens,
+            "active_suffix_messages": len(active_semantic),
+            "overlay_note": pressure_note(pressure, compacted=True),
+        })
+        updates.update({
+            "model_context_messages": compacted,
+            "model_context_source_count": len(messages),
+            "model_system_message": current_system,
+            "last_input_tokens": 0,
+            "compaction_failed_turn_id": "",
+        })
+        bridge = getattr(config, "_compaction_bridge", None)
+        if bridge is not None:
+            bridge({
+                "trigger": event["trigger"],
+                "forced": forced,
+                "status": "success",
+                "before_tokens": pressure.token_count,
+                "after_tokens": after_tokens,
+                "active_suffix_messages": len(active_semantic),
+                "info": "Conversation summarized; active turn retained verbatim.",
+            })
+        return updates
 
     async def agent_node(state: AgentState) -> AgentState:
-        """The main agent node that handles the agent's logic."""
+        """The main agent node that invokes the LLM and handles the ephemeraloverlay logic."""
 
         # hot-rebind tools if new tools were loaded since the last turn
         tools_reg.sync()
@@ -104,60 +371,25 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         set_current_thread(thread_id)
         set_thread_todos(thread_id, list(state.get("todos", [])))
 
-        # Reload skill catalog each turn so disk adds appear without rebuild.
-        # (skill_view already uses SessionContext.all_skills, reloaded per turn.)
-        all_skills = skills_loader.load()
-
-        # load the components for the L1 prompt layer
-        user_mem = memory.load_user() if not memory.disabled else ""
-        proj_mem = memory.load_project() if not memory.disabled else ""
-        skill_catalog = skills_loader.render_catalog(all_skills)
-
-        # build the full system message with stable prefix
-        # the stable prefix is cached in the prompts object. It only builds if the key is different.
-        system = SystemMessage(content=prompts.build_stable_prefix(
-            tools_reg.active_tools,
-            user_memory=user_mem,
-            project_memory=proj_mem,
-            skill_catalog=skill_catalog,
-            git_available=rt.repo_has_git,
-            metadata=rt.metadata,
-            tool_catalog_groups=[(l, frozenset(g)) for l, g in tools_reg.tool_catalog_groups()],
-            deferred_mcp=tools_reg.deferred_mcp_summary()
-        ))
+        system = _build_system_message()
 
         conversation = _effective_conversation(messages, state)
-        model_name = getattr(config.model, "model", "") or getattr(config.model, "model_name", "")
-
-        # estimate the total input tokens (- L3 working state) for compaction requirements.
-        # run in a thread: tokenizer pass over the full conversation is sync CPU and would
-        # stall the event loop (and the TUI working spinner) before the first token lands.
-        token_estimate = await asyncio.to_thread(resolve_token_count, [system] + conversation, known_input_tokens=state.get("last_input_tokens") or None)
-
-        force_compact = bool(state.get("force_compact"))
-        compaction = await progressive_compact(
-            conversation,
-            known_input_tokens=token_estimate,
-            summary_model=compaction_model,
-            force=force_compact,
-            model_name=model_name,
-            thread_id=thread_id,
-            options=options,
-            cost_tracker=cost,
-            persistence=persist,
-            tracer=tracer,
-            tracing=config.tracing,
-            compaction_prompt=aux_prompts.compaction
-        )
-        if compaction.compacted: 
-            conversation = compaction.messages
-
-        compaction_note = compaction_overlay_note(
-            compaction,
-            options=options,
-            had_stored_compaction=bool(state.get("compacted_messages")),
-            model_name=model_name,
-        )
+        compaction_status = dict(state.get("compaction_status") or {})
+        overlay_note = compaction_status.get("overlay_note")
+        # only if the overlay note is not set by context_gate (edge case)
+        if overlay_note is None:
+            # ``agent_node`` remains usable on its own for internal callers.
+            pressure = calculate_context_pressure([system] + conversation, options=options)
+            compaction_note = pressure_note(
+                pressure,
+                compacted=bool(compaction_status.get("compacted")),
+                had_stored_compaction=any(
+                    _is_internal_message(message, "compacted_history")
+                    for message in conversation
+                ),
+            )
+        else:
+            compaction_note = str(overlay_note)
 
         cwd = options.project_root or Path.cwd()
         git_snapshot = (
@@ -170,7 +402,7 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             overlay_context = OverlayContext(
                 thread_id=thread_id,
                 mode=(state.get("mode") or rt.resolved_mode),
-                messages=conversation,
+                messages=_semantic_conversation(conversation),
                 todos=state.get("todos", []),
                 session_memory=memory.load_session(thread_id) if not memory.disabled else "",
                 compaction_note=compaction_note,
@@ -192,7 +424,7 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         # skipping the static plan_mode block (already on the user message).
         # Plain join only — _with_working_state_tail wraps <system-reminder>.
         is_fresh = bool(conversation) and conversation[-1].type == "human"
-        if is_fresh or compaction.compacted:
+        if is_fresh or compaction_status.get("compacted"):
             overlay = "\n\n".join(sections.values())
         else:
             overlay = render_overlay_delta(sections, rt._last_sections, skip=frozenset({"plan_mode"}))
@@ -208,8 +440,9 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             "force_compact": False,
             "activate_skills": [],
             "mode_switch": "",
+            "compaction_status": {},
         }
-        last_input_tokens = token_estimate
+        last_input_tokens: int | None = None
         llm_attrs = {
             MODEL_NAME: model_name,
             GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
@@ -224,9 +457,15 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
                 llm_span.set_attribute(GEN_AI_PROMPT, serialize_messages(invoke_messages))
             
             response: AIMessage = await bound_model.ainvoke(invoke_messages)
+            # Compaction must fork from the binding of the last model request
+            # that actually completed, not from a failed tool/schema attempt.
+            rt.last_bound_model = bound_model
             
             # update the AgentState
             updates["messages"] = [response]
+            updates["model_context_messages"] = invoke_messages[1:]
+            updates["model_context_source_count"] = len(messages)
+            updates["model_system_message"] = system
 
             if config.tracing.capture_messages:
                 llm_span.set_attribute(GEN_AI_COMPLETION, serialize_completion(response))
@@ -266,28 +505,13 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
                         cost_usd=usage.cost_usd,
                     ))
 
-        # track conversation for auto-compaction
-        if compaction.compacted:
-            updates["compacted_messages"] = conversation
-            updates["compaction_message_count"] = len(messages)
-            updates["last_input_tokens"] = 0  # next turn re-estimates if no usage_metadata
-            # since the agent node does not own a session - a compation_bridge callback is added to the config
-            # this callback is used to report the compaction action to the session which raises a compaction event.
-            compaction_bridge = getattr(config, "_compaction_bridge", None)
-            if compaction_bridge is not None:
-                info = compaction_note or compaction_label(
-                    compaction.action, compaction.kept_recent
-                )
-                compaction_bridge(
-                    {
-                        "reason": "agent_turn",
-                        "action": compaction.action,
-                        "forced": force_compact,
-                        "info": info,
-                    }
-                )
-        else:
-            updates["last_input_tokens"] = last_input_tokens
+        if last_input_tokens is None:
+            # Provider usage is unavailable, so retain a fallback count for the
+            # next gate.  Count the exact request, including the L3 tail.
+            last_input_tokens = await asyncio.to_thread(
+                resolve_token_count, invoke_messages, known_input_tokens=None
+            )
+        updates["last_input_tokens"] = last_input_tokens
 
         persist.append_event(
             thread_id, {
@@ -570,7 +794,7 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
         
         return "tools"
 
-    async def route_after_approval(state) -> Literal["agent", "tools"]:
+    async def route_after_approval(state) -> Literal["context_gate", "tools"]:
         denials = state.get("approval_declined") or {}
         if not isinstance(denials, dict):
             denials = {}
@@ -587,10 +811,11 @@ def make_nodes(config, *, thread_id, mode = "act", git_available = None, metadat
             return "tools"
         calls = extract_tool_calls(ai)
         if _all_calls_denied(calls, denials):
-            return "agent"
+            return "context_gate"
         return "tools"
 
     rt.agent_node = agent_node
+    rt.context_gate = context_gate
     rt.approval_gate = approval_gate
     rt.tools_node = tools_node
     rt.route_after_agent = route_after_agent

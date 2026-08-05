@@ -29,11 +29,13 @@ def build_graph(
     )
     graph = StateGraph(AgentState)
 
+    graph.add_node("context_gate", runtime.context_gate)
     graph.add_node("agent", runtime.agent_node)
     graph.add_node("approval_gate", runtime.approval_gate)
     graph.add_node("tools", runtime.tools_node)
 
-    graph.add_edge(START, "agent")
+    graph.add_edge(START, "context_gate")
+    graph.add_edge("context_gate", "agent")
     graph.add_conditional_edges(
         "agent",
         runtime.route_after_agent,
@@ -42,6 +44,6 @@ def build_graph(
         "approval_gate",
         runtime.route_after_approval,
     )
-    graph.add_edge("tools", "agent")
+    graph.add_edge("tools", "context_gate")
 
     return graph.compile(checkpointer=checkpointer or MemorySaver())

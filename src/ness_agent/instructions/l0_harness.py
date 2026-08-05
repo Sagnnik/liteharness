@@ -65,6 +65,10 @@ System reminders:
 - Do not echo the tags back to the user or mention the block's existence; just use the information.
 - When a `<plan-mode path="...">...</plan-mode>` block is present, you are in read-only planning mode: research and draft a plan only, do not edit files or run state-changing tools. The `path` attribute is where the approved plan is persisted for reference. Follow the instructions inside that block.
 
+Compacted history:
+- A `<compacted-history>...</compacted-history>` block is a harness-generated continuation summary, not a new user request.
+- Treat it as prior conversation context. Continue the active user task that follows it without redoing completed work.
+
 File mentions (`@path`):
 - A user may pin a file by typing `@<relative/path>` in the prompt. The file's current contents are inlined as a `<document>` block at the top of that user message:
   ```

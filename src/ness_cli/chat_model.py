@@ -180,10 +180,6 @@ def create_model(thread_id: str) -> BaseChatModel:
     return build_chat_model(thread_id)
 
 
-def create_compaction_model(thread_id: str) -> BaseChatModel:
-    return build_chat_model(thread_id, session_suffix="compaction")
-
-
 def create_reflection_model(thread_id: str) -> BaseChatModel:
     return build_chat_model(
         thread_id,

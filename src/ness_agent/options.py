@@ -6,12 +6,12 @@ from pathlib import Path
 
 @dataclass
 class NessAgentOptions:
-    """Runtime knobs including compaction budget (context window + reserves)."""
+    """Runtime knobs including context limit and cache-safe compaction buffer."""
 
     context_window: int | None = None
     compaction_token_budget: int = 120_000
-    compaction_output_reserve: int = 8_192
-    compaction_input_reserve: int = 4_096
+    compaction_buffer_tokens: int = 16_384
+    compaction_summary_max_tokens: int = 4_096
     enable_approval: bool = True
     yolo_mode: bool = False
     auto_save_threads: bool = True
@@ -27,6 +27,27 @@ class NessAgentOptions:
     interruption_marker: str = ("… [turn interrupted by user] ")
     # LangGraph recursion_limit for Session.run / Session.stream turns.
     recursion_limit: int = 75
+
+    def __post_init__(self) -> None:
+        if self.context_window is not None and self.context_window <= 0:
+            raise ValueError("context_window must be positive when set")
+        if self.compaction_token_budget <= 0:
+            raise ValueError("compaction_token_budget must be positive")
+        if self.compaction_buffer_tokens <= 0:
+            raise ValueError("compaction_buffer_tokens must be positive")
+        if self.compaction_summary_max_tokens <= 0:
+            raise ValueError("compaction_summary_max_tokens must be positive")
+        if self.compaction_summary_max_tokens >= self.compaction_buffer_tokens:
+            raise ValueError(
+                "compaction_summary_max_tokens must be smaller than compaction_buffer_tokens"
+            )
+        if not 0.0 <= self.reflection_token_ratio <= 1.0:
+            raise ValueError("reflection_token_ratio must be between 0 and 1")
+        if self.recursion_limit < 1:
+            raise ValueError("recursion_limit must be at least 1")
+        limit = self.context_window or self.compaction_token_budget
+        if limit <= self.compaction_buffer_tokens:
+            raise ValueError("context limit must be larger than compaction_buffer_tokens")
 
 
 @dataclass

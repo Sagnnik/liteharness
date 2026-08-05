@@ -12,7 +12,6 @@ from ness_cli.config_store import (
     ensure_secrets_file,
     load_configs,
     load_secrets,
-    migrate_env_once,
     write_config,
     write_secret,
 )
@@ -70,51 +69,6 @@ def test_ensure_secrets_file_creates_once(config_dir: Path):
     assert json.loads(created.read_text()) == {}
     assert _mode(created) == 0o600
     assert ensure_secrets_file() is None
-
-
-def test_migrate_env_once_imports_and_marks(config_dir: Path, tmp_path: Path):
-    env = tmp_path / ".env"
-    env.write_text(
-        "OPENAI_API_KEY=sk-from-env\n"
-        "EXA_API_KEY=exa-from-env\n"
-        "MODEL_NAME=openai/gpt-4o\n"
-        "ENABLE_APPROVAL=false\n"
-        "API_MAX_RETRIES=5\n"
-        "UNRELATED_VAR=ignored\n"
-        "EMPTY_VALUE=\n",
-        encoding="utf-8",
-    )
-    from ness_cli.config import settings_field_env_map
-
-    imported = migrate_env_once(env, field_for_alias=settings_field_env_map())
-    assert set(imported) == {
-        "openai_api_key",
-        "exa_api_key",
-        "model_name",
-        "enable_approval",
-        "api_max_retries",
-    }
-    assert load_secrets() == {"openai_api_key": "sk-from-env", "exa_api_key": "exa-from-env"}
-    assert load_configs() == {
-        "model_name": "openai/gpt-4o",
-        "enable_approval": False,
-        "api_max_retries": 5,
-    }
-    assert _mode(config_dir / "secrets.json") == 0o600
-    # .env left untouched; marker prevents a second run.
-    assert "sk-from-env" in env.read_text(encoding="utf-8")
-    assert migrate_env_once(env, field_for_alias=settings_field_env_map()) == []
-
-
-def test_migrate_env_existing_json_wins(config_dir: Path, tmp_path: Path):
-    write_config("model_name", "deepseek/deepseek-chat", config_dir)
-    env = tmp_path / ".env"
-    env.write_text("MODEL_NAME=openai/gpt-4o\n", encoding="utf-8")
-    from ness_cli.config import settings_field_env_map
-
-    imported = migrate_env_once(env, field_for_alias=settings_field_env_map())
-    assert imported == []
-    assert load_configs() == {"model_name": "deepseek/deepseek-chat"}
 
 
 def test_settings_reads_global_json(config_dir: Path, monkeypatch):

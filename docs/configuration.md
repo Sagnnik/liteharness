@@ -71,9 +71,9 @@ All except `NESS_DIR` are also editable via `/config` in the Ness TUI.
 | `SESSION_END_REFLECTION` | Run a final reflection pass when a session ends (default off) |
 | `REFLECTION_TOKEN_RATIO` | Fraction of usable context that must accumulate before reflection (default `0.4`; set `0` to disable) |
 | `API_MAX_RETRIES` | Retries for chat API calls (default `3`) |
-| `COMPACTION_OUTPUT_RESERVE` | Output reserve subtracted from model context window (default `8192`) |
-| `COMPACTION_INPUT_RESERVE` | Input/system/tool reserve subtracted from model context window (default `4096`) |
-| `COMPACTION_TOKEN_BUDGET` | Fallback compaction budget when model context window is unknown (default `120000`) |
+| `COMPACTION_BUFFER_TOKENS` | Context held back for cache-safe compaction input/output (default `16384`) |
+| `COMPACTION_SUMMARY_MAX_TOKENS` | Maximum compaction summary output (default `4096`) |
+| `COMPACTION_TOKEN_BUDGET` | Context-limit fallback when the model window is unknown (default `120000`) |
 | `OPENROUTER_SESSION_ID` | Optional stable prompt-cache session id (defaults to active thread id) |
 | `OPENROUTER_CACHE_TTL` | Anthropic prompt-cache lifetime (`5m` by default; `1h` supported) |
 | `OPENROUTER_ANTHROPIC_MESSAGES` | Use OpenRouter Messages API for Anthropic models (default `true`) |

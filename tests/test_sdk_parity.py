@@ -605,12 +605,12 @@ def test_interruption_marker_on_empty_cancel():
     assert session._cfg.options.interruption_marker in str(markers[-1].content)
 
 
-def test_strip_prior_image_blocks_rewrites_answered_image_message():
+def test_answered_image_blocks_remain_until_compaction():
     agent = _agent()
     session = agent.session(thread_id="t-imgstrip", vision=True)
 
-    # Prior checkpoint: a list-content HumanMessage (image) followed by an
-    # AIMessage → should be rewritten to text-only with the same id.
+    # Canonical history retains the exact image-bearing message after an
+    # answer. Summary compaction is the only operation allowed to replace it.
     prior_human = HumanMessage(
         content=[
             {"type": "text", "text": "look at this"},
@@ -653,15 +653,9 @@ def test_strip_prior_image_blocks_rewrites_answered_image_message():
 
     _stream_session(session, "next turn")
 
-    # The replacement must target id=img-1 and be text-only.
-    assert fake.updates, "strip did not call aupdate_state"
-    flat = []
-    for upd in fake.updates:
-        flat.extend(upd.get("messages", []))
-    replaced = [m for m in flat if getattr(m, "id", None) == "img-1"]
-    assert replaced, "no replacement HumanMessage targeting id=img-1"
-    assert isinstance(replaced[0].content, str)
-    assert "look at this" in replaced[0].content
+    assert fake.updates == []
+    assert isinstance(fake._messages[0].content, list)
+    assert fake._messages[0].content == prior_human.content
 
 
 def test_vision_disabled_emits_warning_and_drops_images():

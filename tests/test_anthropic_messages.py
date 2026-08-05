@@ -42,13 +42,14 @@ def test_messages_payload_uses_stable_deferred_tools_and_addition_blocks() -> No
         api_key="test",
         session_id="session-1",
     )
-    model.bind_tool_registry(registry)
+    first_binding = model.bind_tool_registry(registry)
 
-    first = model._payload(
+    first = first_binding._payload(
         [SystemMessage(content="stable"), HumanMessage(content="hello")]
     )
     registry.active_mcp_tools.add("deferred_tool")
-    second = model._payload(
+    second_binding = model.bind_tool_registry(registry)
+    second = second_binding._payload(
         [SystemMessage(content="stable"), HumanMessage(content="hello")]
     )
 
@@ -59,6 +60,9 @@ def test_messages_payload_uses_stable_deferred_tools_and_addition_blocks() -> No
         "deferred_tool",
     ]
     assert first["tools"][1]["defer_loading"] is True
+    assert first_binding._payload(
+        [SystemMessage(content="stable"), HumanMessage(content="hello")]
+    )["tools"][1]["defer_loading"] is True
     assert [tool["name"] for tool in second["tools"]] == [
         "local_tool",
         "deferred_tool",

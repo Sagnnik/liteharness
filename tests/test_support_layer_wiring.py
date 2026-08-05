@@ -29,9 +29,6 @@ def test_factory_wires_hooks_and_skills(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(fac, "create_model", lambda *_a, **_k: FakeListChatModel(responses=["ok"]))
     monkeypatch.setattr(
-        fac, "create_compaction_model", lambda *_a, **_k: FakeListChatModel(responses=["ok"])
-    )
-    monkeypatch.setattr(
         fac, "create_reflection_model", lambda *_a, **_k: FakeListChatModel(responses=["ok"])
     )
     monkeypatch.setattr(fac, "make_sdk_cost_tracker", lambda: None)

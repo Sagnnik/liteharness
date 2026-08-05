@@ -375,8 +375,8 @@ class AuxPrompts:
     .. highlight:: python
 
     ``compaction``
-        Template for LLM-backed conversation compaction summaries.
-        Receives ``{messages}``.
+        Cache-safe tail instruction for conversation summaries. The complete
+        conversation is supplied as native messages; no placeholders are used.
     ``reflection``
         Template for background reflection (structured output).
         Receives ``{thread_id}``, ``{messages}``, ``{todos}``,
@@ -397,4 +397,3 @@ class AuxPrompts:
     subagent: InstructionSource | None = SUBAGENT
     thread_summary: InstructionSource | None = THREAD_SUMMARY
     init_memory: InstructionSource | None = INIT_MEMORY
-

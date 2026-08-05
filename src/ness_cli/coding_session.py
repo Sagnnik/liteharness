@@ -214,7 +214,6 @@ class CodingSession:
         """
         from ness_cli.chat_model import (
             active_model_name,
-            create_compaction_model,
             create_model,
             create_reflection_model,
         )
@@ -222,7 +221,6 @@ class CodingSession:
         from ness_cli.model_catalog import model_record
 
         self.cfg.model = create_model(self.thread_id)
-        self.cfg.compaction_model = create_compaction_model(self.thread_id)
         self.cfg.reflection_model = create_reflection_model(self.thread_id)
         self._vision = settings.supports_vision
         self._session._vision = self._vision
@@ -480,7 +478,13 @@ class CodingSession:
         it only emits a ``compaction`` SessionEvent. The adapter is the single
         owner of the durable log.
         """
-        reason = ev.data.get("reason") or "unknown"
+        reason = (
+            ev.data.get("notice_reason")
+            or ev.data.get("trigger")
+            or ev.data.get("skip_reason")
+            or ev.data.get("reason")
+            or "unknown"
+        )
         info = ev.data.get("info") or ""
         forced = bool(ev.data.get("forced"))
         content = f"compaction ({reason}){' [forced]' if forced else ''}: {info}".strip()

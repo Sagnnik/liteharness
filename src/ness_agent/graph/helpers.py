@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from langchain_core.messages import HumanMessage, BaseMessage
 from langchain_core.messages import ToolMessage, AIMessage
-from ness_agent.compaction import resolve_token_count
+from ness_agent.context.budget import resolve_token_count
 from ness_agent.context.overlay import wrap_system_reminder
 from ness_agent.tools import ToolRegistry
 
@@ -12,40 +12,80 @@ def _effective_conversation(messages, state) -> list[BaseMessage]:
     Build the effective message list at every turn
     if compaction exists then we need compacted + raw[source_count:] else just raw system message
     """
-    compacted = list(state.get("compacted_messages", []))
-    source_count = int(state.get("compaction_message_count", 0) or 0)
+    compacted = list(state.get("model_context_messages", []))
+    source_count = int(state.get("model_context_source_count", 0) or 0)
     raw = [m for m in messages if m.type != "system"]
     if compacted and 0 <= source_count <= len(raw): 
         return compacted + raw[source_count:]
     return raw
 
 def _with_working_state_tail(messages, overlay) -> list[BaseMessage]:
-    """Inject L3 working state ephemerally for the model API call (never persisted to state).
+    """Append an immutable, internally tagged L3 reminder tail.
 
-    Invariant: the ``<system-reminder>`` tail is call-ephemeral only — it must
-    never be written into ``AgentState.messages``. Fresh user turn (last message
-    is human): append the reminder onto that message. Tool loop (last message is
-    AI or tool): append a separate tail HumanMessage so the user's text stays
-    byte-stable for prefix caching.
+    It is retained in ``model_context_messages`` for wire-prefix continuity,
+    but never written to the clean semantic transcript or durable CLI events.
     """
     if not overlay.strip():
         return list(messages)
     reminder = wrap_system_reminder(overlay)
     if not reminder:
         return list(messages)
-    block = f"\n\n{reminder}"
-    result = list(messages)
-    if result and result[-1].type == "human":
-        last = result[-1]
-        if isinstance(last.content, str):
-            result[-1] = HumanMessage(content=last.content + block)
-            return result
-        if isinstance(last.content, list):
-            result[-1] = HumanMessage(
-                content=[*last.content, {"type": "text", "text": block.lstrip()}]
-            )
-            return result
-    return result + [HumanMessage(content=reminder)]
+    return list(messages) + [
+        HumanMessage(
+            content=reminder,
+            additional_kwargs={"ness_internal": "overlay"},
+        )
+    ]
+
+
+def _is_internal_message(message: BaseMessage, kind: str | None = None) -> bool:
+    marker = (getattr(message, "additional_kwargs", None) or {}).get("ness_internal")
+    return bool(marker) if kind is None else marker == kind
+
+
+def _semantic_conversation(messages) -> list[BaseMessage]:
+    return [m for m in messages if not _is_internal_message(m, "overlay")]
+
+
+def _incremental_input_tokens(
+    *,
+    conversation: list[BaseMessage],
+    stored_context: list[BaseMessage],
+    stored_system: BaseMessage | None,
+    current_system: BaseMessage,
+    last_input: int,
+) -> int | None:
+    """Reuse the previous provider input count for an append-only conversation."""
+    if last_input <= 0 or not stored_context:
+        return None
+
+    if getattr(stored_system, "content", None) != current_system.content:
+        return None
+
+    stored_semantic = _semantic_conversation(stored_context)
+    current_semantic = _semantic_conversation(conversation)
+
+    if len(current_semantic) < len(stored_semantic):
+        return None
+
+    if current_semantic[: len(stored_semantic)] != stored_semantic:
+        return None
+
+    tail = current_semantic[len(stored_semantic):]
+    return last_input + (
+        resolve_token_count(tail, known_input_tokens=None)
+        if tail else 0
+    )
+
+
+def _active_turn_split(messages) -> tuple[list[BaseMessage], list[BaseMessage]]:
+    """Split completed history from the latest real user turn."""
+    items = list(messages)
+    for index in range(len(items) - 1, -1, -1):
+        message = items[index]
+        if message.type == "human" and not _is_internal_message(message):
+            return items[:index], items[index:]
+    return items, []
 
 def _needs_approval(name, args, options, permission_store, tools_reg: ToolRegistry) -> bool:
     """Decide whether to ask the user for approval before running a tool."""

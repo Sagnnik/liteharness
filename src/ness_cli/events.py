@@ -22,7 +22,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+    messages_from_dict,
+)
 
 from ness_agent.permissions import PermissionStore
 from ness_cli.mentions import expand_documents
@@ -87,10 +93,9 @@ def events_to_messages(
     """Rebuild the LangGraph transcript from saved events.
 
     Image-bearing user events carry an ``images`` field (list of data URLs).
-    On replay, images are re-attached ONLY for user events that have no
-    following ``assistant`` event — i.e. a turn that crashed or was cancelled
-    before the model replied. Answered image turns are replayed as text-only
-    so the large base64 payloads are not re-sent.
+    Replay retains those blocks for the live canonical history until summary
+    compaction replaces the completed turn. ``vision=False`` remains the one
+    explicit text-only gate.
 
     ``@file`` mentions are re-expanded against current disk on replay
     (resume/rollback) so attached file content always reflects the latest
@@ -98,19 +103,40 @@ def events_to_messages(
     """
     subagents = subagents or []
     messages: list[BaseMessage] = []
+    # A successful new-format summary is a durable context checkpoint. Seed
+    # it, then replay only the raw suffix after the boundary it replaced.
+    latest_summary: tuple[int, dict] | None = None
+    for seq, event in enumerate(events):
+        if (
+            event.get("kind") == "compaction_llm"
+            and isinstance(event.get("source_event_seq"), int)
+            and str(event.get("response") or "").strip()
+        ):
+            latest_summary = (seq, event)
+    if latest_summary is not None:
+        _summary_seq, checkpoint = latest_summary
+        summary = str(checkpoint["response"]).strip()
+        messages.append(HumanMessage(
+            content=(
+                "<compacted-history>\n"
+                "Harness-generated continuation context; this is not a new user request.\n"
+                f"{summary}\n</compacted-history>"
+            ),
+            additional_kwargs={"ness_internal": "compacted_history"},
+        ))
+        active_suffix = checkpoint.get("active_suffix")
+        if isinstance(active_suffix, list) and active_suffix:
+            try:
+                messages.extend(messages_from_dict(active_suffix))
+            except (KeyError, TypeError, ValueError):
+                # A malformed optional suffix must not make an otherwise
+                # usable legacy transcript impossible to resume.
+                pass
+        boundary = int(checkpoint["source_event_seq"])
+        events = [event for seq, event in enumerate(events) if seq > boundary]
     pending_calls: list[dict[str, Any]] = []
 
-    # Pre-pass: find user event seqs that are followed by an assistant event.
-    answered_user_indices: set[int] = set()
-    for idx, event in enumerate(events):
-        if event.get("kind") == "user":
-            if any(
-                events[j].get("kind") == "assistant"
-                for j in range(idx + 1, len(events))
-            ):
-                answered_user_indices.add(idx)
-
-    for idx, event in enumerate(events):
+    for event in events:
         kind = event.get("kind")
         if kind == "user":
             content = event.get("content", "")
@@ -119,7 +145,7 @@ def events_to_messages(
             if permission_store is not None:
                 text = expand_documents(text, permission_store)
             images = event.get("images") or []
-            if images and idx not in answered_user_indices and vision is not False:
+            if images and vision is not False:
                 blocks: list[dict[str, Any]] = [
                     {"type": "text", "text": text or "Please inspect this image."}
                 ]

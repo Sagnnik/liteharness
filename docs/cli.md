@@ -204,7 +204,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 - `/goal <objective>`: run up to three worker attempts, each followed by an isolated read-only judge. Failed verdicts become repair instructions for the next attempt.
 - `/save`: archive the current thread with a headline summary.
 - `/new`: archive and start a fresh thread.
-- `/compact`: mark/manual compaction request.
+- `/compact`: request a cache-safe summary at the next model boundary; the active user/tool turn remains verbatim.
 
 **Context & memory**
 
@@ -247,12 +247,14 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "approval", "tool": "edit", "decision": "yes", "t": "..."}
 {"kind": "usage", "model": "deepseek/deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
-{"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}
+{"kind": "compaction_llm", "instruction": "...", "response": "...", "source_event_seq": 12, "active_user_seq": 13, "trigger": "automatic", "before_tokens": 101000, "after_tokens": 9000, "active_suffix_messages": 1, "t": "..."}
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}
 ```
 
 `/threads` lists user `session-*` threads only. The original conversation shows `×N` when it has forks; each fork shows `fork #k` in creation order. Fork lineage is stored explicitly on the thread row; inherited usage remains in the copied event history but is excluded from the child thread's cost totals. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
 
 Selecting a thread rebuilds user messages, assistant tool-call turns, and tool results from saved events. The startup `--resume <thread_id>` flag remains available for automation. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
+
+When a thread contains a successful new-format `compaction_llm` checkpoint, resume starts from its summary and replays only raw events after `source_event_seq`. Raw conversation events remain available for audit, rollback, and forks; L3 reminder messages are never written to the event log.
 
 Threads are archived on `/save`, `/new`, thread switching/forking, and session exit. Archived threads get a headline summary from the first user message.

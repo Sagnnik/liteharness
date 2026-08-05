@@ -59,7 +59,7 @@ _bootstrap_worktree()
 
 import typer
 
-from ness_agent.compaction import resolve_token_count
+from ness_agent.context.budget import resolve_token_count
 from ness_agent.mcp import MCPManager
 from ness_agent.session_context import SessionContext, set_session_context
 from ness_agent.tools import is_git_repo

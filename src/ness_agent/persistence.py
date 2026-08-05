@@ -148,6 +148,63 @@ class ThreadStore:
                 conn.commit()
                 return seq
 
+    def append_compaction_checkpoint(
+        self,
+        thread_id: str,
+        event: dict[str, Any],
+        *,
+        active_turn: bool,
+    ) -> int | None:
+        """Atomically persist a summary, active suffix, and source boundary."""
+        if not self.auto_save or thread_id.startswith(SUBAGENT_THREAD_PREFIX):
+            return None
+        payload = dict(event)
+        payload["kind"] = "compaction_llm"
+        payload.setdefault("t", self._now())
+        with self._write_lock:
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+                now = self._now()
+                conn.execute(
+                    """
+                    INSERT INTO threads (thread_id, started_at, updated_at, model, fork_root_id)
+                    VALUES (?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING
+                    """,
+                    (thread_id, now, now, self.default_model, thread_id),
+                )
+                seq = int(conn.execute(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM events WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()[0])
+                if active_turn:
+                    row = conn.execute(
+                        """
+                        SELECT MAX(seq) FROM events
+                        WHERE thread_id = ? AND json_extract(payload, '$.kind') = 'user'
+                        """,
+                        (thread_id,),
+                    ).fetchone()
+                    active_user_seq = int(row[0]) if row and row[0] is not None else None
+                    # The checkpoint carries the complete active semantic
+                    # suffix.  Its boundary can therefore consume every raw
+                    # event written before this atomic snapshot.  This also
+                    # makes SDK replay safe when no separate user event was
+                    # persisted (or the latest user row belongs to an older
+                    # CLI-driven turn).
+                    source_seq = seq - 1
+                else:
+                    active_user_seq = None
+                    source_seq = seq - 1
+                payload["source_event_seq"] = source_seq
+                payload["active_user_seq"] = active_user_seq
+                conn.execute(
+                    "INSERT INTO events (thread_id, seq, payload) VALUES (?, ?, ?)",
+                    (thread_id, seq, json.dumps(payload, ensure_ascii=False)),
+                )
+                self._apply_event_to_thread(conn, thread_id, payload, now)
+                conn.commit()
+                return seq
+
     def list_threads(self, n: int = 10) -> list[dict[str, Any]]:
         """Return the *n* most recently updated session threads."""
         with self._connect() as conn:

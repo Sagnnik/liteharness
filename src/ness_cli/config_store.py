@@ -19,8 +19,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values
-
 from ness_cli.paths import config_dir_from_env
 
 # Settings field names routed to ``secrets.json`` instead of ``configs.json``.
@@ -28,7 +26,6 @@ SECRET_KEYS: frozenset[str] = frozenset({"openai_api_key", "exa_api_key"})
 
 _CONFIGS_NAME = "configs.json"
 _SECRETS_NAME = "secrets.json"
-_MIGRATION_MARKER = ".env.migrated"
 
 
 def configs_path(config_dir: Path | None = None) -> Path:
@@ -103,66 +100,3 @@ def ensure_secrets_file(config_dir: Path | None = None) -> Path | None:
         return None
     _atomic_write(path, {}, secret=True)
     return path
-
-
-def _coerce_scalar(raw: str) -> Any:
-    """Best-effort typed value for a migrated ``.env`` string."""
-    text = raw.strip()
-    lowered = text.lower()
-    if lowered in {"true", "false"}:
-        return lowered == "true"
-    try:
-        return int(text)
-    except ValueError:
-        pass
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    return raw
-
-
-def migrate_env_once(
-    env_path: Path,
-    *,
-    config_dir: Path | None = None,
-    field_for_alias: dict[str, str],
-    secret_keys: frozenset[str] = SECRET_KEYS,
-) -> list[str]:
-    """One-time import of known keys from a project ``.env`` into global JSON.
-
-    Runs at most once per global config dir (tracked via a marker file).
-    Existing JSON values win; the ``.env`` file is left untouched. Returns
-    the list of imported Settings field names.
-    """
-    cfg_dir = config_dir or config_dir_from_env()
-    marker = cfg_dir / _MIGRATION_MARKER
-    if marker.exists():
-        return []
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    imported: list[str] = []
-    configs = load_configs(cfg_dir)
-    secrets = load_secrets(cfg_dir)
-    configs_changed = False
-    secrets_changed = False
-    if env_path.is_file():
-        for alias, raw in dotenv_values(env_path).items():
-            field = field_for_alias.get(alias)
-            if field is None or raw is None or raw.strip() == "":
-                continue
-            value = _coerce_scalar(raw)
-            if field in secret_keys:
-                if field not in secrets:
-                    secrets[field] = value
-                    secrets_changed = True
-                    imported.append(field)
-            elif field not in configs:
-                configs[field] = value
-                configs_changed = True
-                imported.append(field)
-    if configs_changed:
-        _atomic_write(configs_path(cfg_dir), configs, secret=False)
-    if secrets_changed:
-        _atomic_write(secrets_path(cfg_dir), secrets, secret=True)
-    marker.write_text(f"migrated from {env_path}\n", encoding="utf-8")
-    return imported
