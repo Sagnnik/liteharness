@@ -1,101 +1,164 @@
+"""Adapter-neutral MCP runtime for SDK consumers.
+
+The runtime accepts fully resolved server specifications. Project config
+formats, trust policy, OAuth persistence, and terminal presentation belong to
+the embedding application (the Ness CLI provides one such adapter).
+"""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from langchain_core.tools import StructuredTool
 from pydantic import Field, create_model
 
-DEFAULT_STARTUP_TIMEOUT = 20
-DEFAULT_CALL_TIMEOUT = 60
+DEFAULT_STARTUP_TIMEOUT = 20.0
+DEFAULT_CALL_TIMEOUT = 60.0
+
+MCPTransport = Literal["stdio", "http"]
+MCPStatus = Literal["connecting", "connected", "auth_required", "error"]
 
 
-class MCPManager:
-    """Manage stdio MCP servers and expose their tools as LangChain tools.
-    Step 1: main entry point is start() -> start the mcp servers and register the tools
-    Step 2: spawn MCP server(s) via stdio -> start_server(name, spec)
-    Step 3: initialize + list tools -> _connect_stdio(name, spec, stack)
-    Step 4: return StructuredTool wraps over mcp functions (convert to langchain tool) -> _wrap_tool(server_name, mcp_tool)
-    Step 5: ToolRegistry.register_dynamic(..) -> create langchain tools from mcp tools
-    Step 6: mcp returns structured content -> convert to string and return -> _serialize_mcp_result(result)
+@dataclass(frozen=True)
+class MCPServerSpec:
+    """A fully resolved MCP connection specification.
+
+    ``env`` is the complete child environment when provided. Passing an empty
+    tuple delegates safe default-environment construction to the MCP SDK.
+    ``redactions`` contains resolved secret values that must not appear in
+    runtime errors.
     """
 
-    def __init__(self, mcp_file: Path | None = None, *, project_root: Path = Path.cwd()) -> None:
-        self.mcp_file = mcp_file
-        self.project_root = project_root
-        # {"server_name": {"status": "connected", "tools": ["tool1", "tool2"]}}
-        self.servers: dict[str, dict[str, Any]] = {} 
+    name: str
+    transport: MCPTransport
+    description: str = ""
+    startup_timeout: float = DEFAULT_STARTUP_TIMEOUT
+    command: str | None = None
+    args: tuple[str, ...] = ()
+    cwd: Path | None = None
+    env: tuple[tuple[str, str], ...] = ()
+    url: str | None = None
+    headers: tuple[tuple[str, str], ...] = ()
+    redactions: tuple[str, ...] = ()
 
-        # {"server_name": ClientSession}
-        self.sessions: dict[str, Any] = {} 
 
-        # {"mcp__{server_name}__{tool_name}": StructuredTool}
-        self.tools: dict[str, StructuredTool] = {} 
+@dataclass(frozen=True)
+class MCPServerState:
+    """Structured connection state for one runtime server."""
 
-        # catalog metadata for deferred-tool search/rendering
-        # {"mcp__{server}__{tool}": {"server", "tool", "description", "arg_names"}}
+    name: str
+    status: MCPStatus
+    description: str
+    transport: MCPTransport
+    tools: tuple[str, ...] = ()
+    error: str | None = None
+
+
+class MCPAuthenticationRequired(RuntimeError):
+    """An HTTP server needs authentication supplied by its embedding app."""
+
+
+HTTPAuthFactory = Callable[[MCPServerSpec], Awaitable[Any | None]]
+
+
+class MCPRuntime:
+    """Connect resolved MCP servers and expose their tools as LangChain tools."""
+
+    def __init__(self, *, http_auth_factory: HTTPAuthFactory | None = None) -> None:
+        self.http_auth_factory = http_auth_factory
+        self.states: dict[str, MCPServerState] = {}
+        self.sessions: dict[str, Any] = {}
+        self.tools: dict[str, StructuredTool] = {}
         self.tool_meta: dict[str, dict[str, Any]] = {}
+        self._stacks: dict[str, AsyncExitStack] = {}
+        self._server_tasks: dict[str, asyncio.Task[None]] = {}
+        self._stop_events: dict[str, asyncio.Event] = {}
+        self._specs: dict[str, MCPServerSpec] = {}
 
-        # AsyncExitStack: dynamic container for managing multiple async context managers.
-        # easier to maintain and cleanup of mcp servers.
-        # {"server_name": AsyncExitStack}
-        self._stacks: dict[str, AsyncExitStack] = {} 
+    async def start(self, specs: Iterable[MCPServerSpec]) -> None:
+        """Start all provided servers concurrently, isolating failures."""
+        resolved = list(specs)
+        names: set[str] = set()
+        for spec in resolved:
+            _validate_server_spec(spec)
+            if spec.name in names:
+                raise ValueError(f"duplicate MCP server name: {spec.name}")
+            names.add(spec.name)
+        pending: list[MCPServerSpec] = []
+        for spec in resolved:
+            if spec.name in self._server_tasks:
+                continue
+            self._specs[spec.name] = spec
+            self.states[spec.name] = MCPServerState(
+                name=spec.name,
+                status="connecting",
+                description=spec.description,
+                transport=spec.transport,
+            )
+            pending.append(spec)
+        if pending:
+            await asyncio.gather(
+                *(self.start_server(spec) for spec in pending),
+                return_exceptions=True,
+            )
 
-        self._started = False # flag to check if the mcp servers are started
-
-    async def start(self) -> None:
-        # if the mcp servers are already started, return
-        if self._started:
+    async def start_server(self, spec: MCPServerSpec) -> None:
+        """Start one resolved server and raise if initial connection fails."""
+        _validate_server_spec(spec)
+        if spec.name in self._server_tasks:
             return
-        self._started = True
-        if self.mcp_file is None or not self.mcp_file.exists():
-            return
-
-        try:
-            config = json.loads(self.mcp_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return
-
-        servers = config.get("mcpServers", config.get("servers", {}))
-        
-        # start the mcp servers in parallel. return exceptions without crashing everything.
-        results = await asyncio.gather(*(self.start_server(name, spec) for name, spec in servers.items()), return_exceptions=True)
-
-        # add the results to the servers dictionary.
-        for name, result in zip(servers, results):
-            if isinstance(result, Exception):
-                self.servers[name] = {"status": "error", "error": str(result)}
+        self._specs[spec.name] = spec
+        self.states[spec.name] = MCPServerState(
+            name=spec.name,
+            status="connecting",
+            description=spec.description,
+            transport=spec.transport,
+        )
+        ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        stop_event = asyncio.Event()
+        self._stop_events[spec.name] = stop_event
+        self._server_tasks[spec.name] = asyncio.create_task(
+            self._run_server(spec, ready, stop_event),
+            name=f"mcp-server-{spec.name}",
+        )
+        await ready
 
     async def stop(self) -> None:
-        for _, stack in list(self._stacks.items()):
-            try:
-                await stack.aclose()
-            except Exception:
-                pass
-
+        """Stop every server and reset runtime state."""
+        for event in self._stop_events.values():
+            event.set()
+        if self._server_tasks:
+            await asyncio.gather(*self._server_tasks.values(), return_exceptions=True)
         self._stacks.clear()
+        self._server_tasks.clear()
+        self._stop_events.clear()
         self.sessions.clear()
         self.tools.clear()
         self.tool_meta.clear()
-        self.servers.clear()
-        self._started = False
+        self.states.clear()
+        self._specs.clear()
 
     def list_tools(self) -> list[str]:
         return sorted(self.tools)
 
     def catalog(self) -> dict[str, dict[str, Any]]:
-        """Per-server catalog of tool names + descriptions for deferred-tool search."""
+        """Return discovered tools grouped by server."""
         catalog: dict[str, dict[str, Any]] = {}
         for full_name, meta in self.tool_meta.items():
-            server = meta.get("server", "")
+            server = str(meta.get("server") or "")
+            state = self.states.get(server)
             entry = catalog.setdefault(
                 server,
                 {
-                    "description": str(self.servers.get(server, {}).get("description") or ""),
+                    "description": state.description if state else "",
                     "tools": [],
                 },
             )
@@ -109,49 +172,6 @@ class MCPManager:
             )
         return catalog
 
-    def startup_summary(self) -> tuple[str, str]:
-        """Return a one-line boot summary: ok, warn, or none."""
-        
-        # if no servers
-        if not self.servers:
-            return "MCP: none configured", "none"
-
-        # get the connected and failed servers
-        connected = [name for name, info in self.servers.items() if info.get("status") == "connected"]
-        failed = [name for name, info in self.servers.items() if info.get("status") != "connected"]
-        tool_count = len(self.tools) # total number of tools
-
-        # if no failed servers, return the connected servers and tools
-        if not failed:
-            names = ", ".join(connected)
-            return f"MCP: {len(connected)} server(s), {tool_count} tool(s) ({names})", "ok"
-
-        # if some servers are connected and some are failed, return the connected servers and tools and the failed servers
-        if connected:
-            names = ", ".join(connected)
-            fail_detail = "; ".join(f"{name}: {self.servers[name].get('error', 'failed')}" for name in failed)
-            return (
-                f"MCP: {len(connected)}/{len(self.servers)} connected, {tool_count} tool(s) ({names}) — {fail_detail}",
-                "warn",
-            )
-
-        # if no connected servers, return the failed servers
-        fail_detail = "; ".join(f"{name}: {self.servers[name].get('error', 'failed')}" for name in failed)
-        return f"MCP: 0/{len(self.servers)} connected — {fail_detail}", "warn"
-
-    def status(self) -> str:
-        if not self.servers:
-            return "No MCP servers configured or started"
-        lines: list[str] = []
-        for name, info in self.servers.items():
-            if info.get("status") == "connected":
-                lines.append(f"- {name}: connected ({len(info.get('tools', []))} tools)")
-                for tool in info.get("tools", []):
-                    lines.append(f"  - mcp__{name}__{tool}")
-            else:
-                lines.append(f"- {name}: error: {info.get('error')}")
-        return "\n".join(lines)
-
     async def call(
         self,
         server_name: str,
@@ -160,164 +180,280 @@ class MCPManager:
         *,
         timeout: float = DEFAULT_CALL_TIMEOUT,
     ) -> str:
-        # get the session for the server
+        """Invoke one connected MCP tool and serialize its result."""
         session = self.sessions.get(server_name)
         if session is None:
             return f"Error: MCP server not connected: {server_name}"
+        payload = _sanitize_tool_args(args)
         try:
-            # set tool call timeout with asyncio.wait_for
             result = await asyncio.wait_for(
-                session.call_tool(tool_name, args),
-                timeout=timeout,
+                session.call_tool(tool_name, payload), timeout=timeout
             )
         except asyncio.TimeoutError:
             return f"Error: MCP tool call timed out ({timeout}s): {server_name}/{tool_name}"
         except Exception as exc:
-            return f"Error: MCP call failed: {exc}"
-
+            spec = self._specs.get(server_name)
+            detail = _redact_error(exc, spec) if spec else type(exc).__name__
+            return f"Error: MCP call failed: {detail}"
         if result.isError:
             return "Error: " + _serialize_mcp_result(result)
         return _serialize_mcp_result(result)
 
-    async def start_server(self, name: str, spec: dict[str, Any]) -> None:
-        # get the timeout 
-        startup_timeout = int(spec.get("startup_timeout", DEFAULT_STARTUP_TIMEOUT))
-        
-        # create a new stack for each server.
-        stack = AsyncExitStack()
-        await stack.__aenter__() # init
-
-        # connect to the stdio server.
-        try:
-            await asyncio.wait_for(
-                self._connect_stdio(name, spec, stack),
-                timeout=startup_timeout,
-            )
-        except Exception:
-            await stack.aclose()
-            raise
-        # add the stack to the stacks dictionary.
-        self._stacks[name] = stack
-
-    async def _connect_stdio(
+    async def _run_server(
         self,
-        name: str,
-        spec: dict[str, Any],
-        stack: AsyncExitStack,
+        spec: MCPServerSpec,
+        ready: asyncio.Future[None],
+        stop_event: asyncio.Event,
     ) -> None:
-        from mcp.client.session import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        name = spec.name
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        try:
+            connect = self._connect_stdio if spec.transport == "stdio" else self._connect_http
+            await asyncio.wait_for(connect(spec, stack), timeout=spec.startup_timeout)
+            self._stacks[name] = stack
+            if not ready.done():
+                ready.set_result(None)
+            await stop_event.wait()
+        except BaseException as exc:
+            self._remove_server_tools(name)
+            if not stop_event.is_set():
+                self._set_failure(spec, exc)
+            if not ready.done():
+                ready.set_exception(exc)
+        finally:
+            self._stacks.pop(name, None)
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
+            current_task = asyncio.current_task()
+            if self._server_tasks.get(name) is current_task:
+                self._server_tasks.pop(name, None)
+                self._stop_events.pop(name, None)
 
-        #parse the command and args from the spec.
-        command, args = _command_and_args(spec)
-
-        # create the stdio server parameters. 
-        # requires command, args (could be []). env and cwd are dependent on the spec.
-        params = StdioServerParameters(
-            command=command,
-            args=args,
-            env=spec.get("env"),
-            cwd=spec.get("cwd") or str(self.project_root),
+    def _set_failure(self, spec: MCPServerSpec, exc: BaseException) -> None:
+        auth_required = _is_auth_required(exc)
+        self.states[spec.name] = MCPServerState(
+            name=spec.name,
+            status="auth_required" if auth_required else "error",
+            description=spec.description,
+            transport=spec.transport,
+            error="authentication required" if auth_required else _redact_error(exc, spec),
         )
 
-        # stdio_client forwards the child server's stderr straight to the
-        # parent process stderr by default. That leaks startup/shutdown log
-        # lines (e.g. "Secure MCP Filesystem Server running on stdio") onto
-        # the user's terminal and visually clobbers the session summary panel
-        # on exit. Route child stderr to /dev/null so the noise never reaches
-        # the TUI; the per-server status surfaced by startup_summary() and
-        # /mcp still reports real connection failures.
+    def _remove_server_tools(self, name: str) -> None:
+        self.sessions.pop(name, None)
+        for full_name in [
+            key for key, meta in self.tool_meta.items() if meta.get("server") == name
+        ]:
+            self.tools.pop(full_name, None)
+            self.tool_meta.pop(full_name, None)
+
+    async def _connect_stdio(
+        self, spec: MCPServerSpec, stack: AsyncExitStack
+    ) -> None:
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        params = StdioServerParameters(
+            command=spec.command or "",
+            args=list(spec.args),
+            env=dict(spec.env) if spec.env else None,
+            cwd=str(spec.cwd) if spec.cwd else None,
+        )
         errlog = open(os.devnull, "w", encoding="utf-8")
         stack.callback(errlog.close)
-
-        # stdio_client yields two streams: read_stream (from server) and write_stream (to server).
-        # put them inside async context manager or context stack 
         read_stream, write_stream = await stack.enter_async_context(
             stdio_client(params, errlog=errlog)
         )
-        
-        # ClientSession consumes those raw streams and provides session object with async methods like call_tool, list_tools, etc.
-        # put this inside async context manager or context stack as well
-        session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-        
-        # do the mcp handshake
-        await session.initialize()
-        
-        self.sessions[name] = session
-        result = await session.list_tools() # list tools in a server
-        self.servers[name] = {
-            "status": "connected",
-            "description": str(spec.get("description") or ""),
-            "tools": [tool.name for tool in result.tools],
-        }
+        await self._initialize_session(spec, read_stream, write_stream, stack)
 
-        # wrap the tools for langchain tool
+    async def _connect_http(
+        self, spec: MCPServerSpec, stack: AsyncExitStack
+    ) -> None:
+        import httpx
+        from mcp.client.streamable_http import streamable_http_client
+
+        auth = await self.http_auth_factory(spec) if self.http_auth_factory else None
+        client = await stack.enter_async_context(
+            httpx.AsyncClient(
+                headers=dict(spec.headers),
+                auth=auth,
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, read=300.0),
+            )
+        )
+        read_stream, write_stream, _ = await stack.enter_async_context(
+            streamable_http_client(spec.url or "", http_client=client)
+        )
+        await self._initialize_session(spec, read_stream, write_stream, stack)
+
+    async def _initialize_session(
+        self,
+        spec: MCPServerSpec,
+        read_stream: Any,
+        write_stream: Any,
+        stack: AsyncExitStack,
+    ) -> None:
+        from mcp.client.session import ClientSession
+
+        session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+        await session.initialize()
+        result = await session.list_tools()
+        self.sessions[spec.name] = session
+        tool_names = tuple(tool.name for tool in result.tools)
+        self.states[spec.name] = MCPServerState(
+            name=spec.name,
+            status="connected",
+            description=spec.description,
+            transport=spec.transport,
+            tools=tool_names,
+        )
         for mcp_tool in result.tools:
-            full_name = f"mcp__{name}__{mcp_tool.name}"
-            self.tools[full_name] = self._wrap_tool(name, mcp_tool)
+            full_name = f"mcp__{spec.name}__{mcp_tool.name}"
+            self.tools[full_name] = self._wrap_tool(spec.name, mcp_tool)
             self.tool_meta[full_name] = {
-                "server": name,
+                "server": spec.name,
                 "tool": mcp_tool.name,
                 "description": getattr(mcp_tool, "description", "") or "",
                 "arg_names": _input_arg_names(getattr(mcp_tool, "inputSchema", None)),
             }
 
     def _wrap_tool(self, server_name: str, mcp_tool: Any) -> StructuredTool:
-        """Translate MCP tool to LangChain tool (StructuredTool)"""
-        
         full_name = f"mcp__{server_name}__{mcp_tool.name}"
         raw_schema = getattr(mcp_tool, "inputSchema", None)
         args_schema = _args_schema(full_name, raw_schema)
-        description = getattr(mcp_tool, "description", "") or f"MCP tool {mcp_tool.name} from {server_name}"
+        description = (
+            getattr(mcp_tool, "description", "")
+            or f"MCP tool {mcp_tool.name} from {server_name}"
+        )
         if isinstance(raw_schema, dict):
             description += f"\n\nInput schema: {json.dumps(raw_schema)}"
 
-        # define the _call function that will be executed when the tool is invoked (await tool.ainvoke()).
         async def _call(**kwargs: Any) -> str:
-            # whatever LLM generates is sent as kwargs
-            return await self.call(server_name, mcp_tool.name, kwargs) 
-
+            return await self.call(server_name, mcp_tool.name, kwargs)
 
         return StructuredTool.from_function(
             name=full_name,
             description=description,
-            coroutine=_call, # marks the tool as a coroutine to be executed asynchronously
+            coroutine=_call,
             args_schema=args_schema,
         )
+
+
+def validate_mcp_http_url(value: str) -> str | None:
+    """Return an error when a resolved MCP HTTP URL is unsafe or malformed."""
+    try:
+        parts = urlsplit(value)
+        _ = parts.port
+    except ValueError:
+        return "url is malformed"
+    if parts.username is not None or parts.password is not None:
+        return "url must not contain embedded credentials"
+    if parts.fragment:
+        return "url must not contain a fragment"
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return "url must be an http(s) URL with a hostname"
+    return None
+
+
+def _validate_server_spec(spec: MCPServerSpec) -> None:
+    if not spec.name.strip():
+        raise ValueError("MCP server name must not be empty")
+    if spec.transport not in {"stdio", "http"}:
+        raise ValueError("MCP transport must be stdio or http")
+    if isinstance(spec.startup_timeout, bool) or spec.startup_timeout <= 0:
+        raise ValueError("MCP startup timeout must be positive")
+    if spec.transport == "stdio":
+        if not spec.command:
+            raise ValueError("stdio MCP server requires a command")
+        if spec.url is not None:
+            raise ValueError("stdio MCP server cannot contain a URL")
+        return
+    if spec.command is not None:
+        raise ValueError("HTTP MCP server cannot contain a command")
+    if not spec.url:
+        raise ValueError("HTTP MCP server requires a URL")
+    error = validate_mcp_http_url(spec.url)
+    if error:
+        raise ValueError(error)
+
+
+def _safe_url(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return urlunsplit((parts.scheme, host, parts.path, "", ""))
+    except ValueError:
+        return "[invalid URL]"
+
+
+def _redact_text(
+    value: str, secrets: tuple[str, ...], *, fallback: str = "[redacted]"
+) -> str:
+    result = value
+    for secret in sorted(set(secrets), key=len, reverse=True):
+        if not secret or secret not in result:
+            continue
+        if len(secret) < 4:
+            return fallback
+        result = result.replace(secret, "[redacted]")
+    return result
+
+
+def _redact_error(exc: BaseException, spec: MCPServerSpec) -> str:
+    message = str(exc) or type(exc).__name__
+    if spec.url:
+        message = message.replace(spec.url, _safe_url(spec.url))
+    return _redact_text(message, spec.redactions, fallback=type(exc).__name__)
+
+
+def _is_auth_required(exc: BaseException) -> bool:
+    if isinstance(exc, MCPAuthenticationRequired):
+        return True
+    if getattr(exc, "status_code", None) in {401, 403}:
+        return True
+    nested = getattr(exc, "exceptions", None)
+    if nested and any(_is_auth_required(item) for item in nested):
+        return True
+    message = str(exc).lower()
+    return "401 unauthorized" in message or "authentication required" in message
+
+
+def _sanitize_tool_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Drop null optional padding before forwarding arguments to MCP."""
+    if not isinstance(args, dict):
+        return {}
+
+    def clean(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if item is None:
+                continue
+            normalized = clean(item)
+            if normalized == {}:
+                continue
+            cleaned[key] = normalized
+        return cleaned
+
+    cleaned = clean(args)
+    return cleaned if isinstance(cleaned, dict) else {}
 
 
 def _input_arg_names(schema: dict[str, Any] | None) -> list[str]:
     if not isinstance(schema, dict):
         return []
     properties = schema.get("properties")
-    if not isinstance(properties, dict):
-        return []
-    return list(properties.keys())
-
-
-def _command_and_args(spec: dict[str, Any]) -> tuple[str, list[str]]:
-    """
-    Example:
-    {
-        "command": "uv",
-        "args": ["run", "python", "tests/mcp_echo_server.py"],
-    }
-    or,
-    {
-        "command" : ["uv", "run", "python", "tests/mcp_echo_server.py"]
-    }
-    """
-    command = spec.get("command")
-    args = spec.get("args", [])
-    if isinstance(command, list):
-        return str(command[0]), [str(item) for item in command[1:]]
-    return str(command), [str(item) for item in args]
+    return list(properties.keys()) if isinstance(properties, dict) else []
 
 
 def _args_schema(name: str, schema: dict[str, Any] | None) -> type:
     if not isinstance(schema, dict):
         return create_model(f"{name}_Args")
-
     properties = schema.get("properties", {})
     required = set(schema.get("required", []))
     fields: dict[str, Any] = {}
@@ -326,34 +462,32 @@ def _args_schema(name: str, schema: dict[str, Any] | None) -> type:
             fields[prop] = (Any, None)
             continue
         typ = _resolve_type(info)
-        desc = info.get("description", "")
-        if prop in required:
-            fields[prop] = (typ, Field(..., description=desc))
-        else:
-            default = info.get("default", None)
-            fields[prop] = (typ, Field(default=default, description=desc))
+        fields[prop] = (
+            typ,
+            Field(
+                ... if prop in required else info.get("default", None),
+                description=info.get("description", ""),
+            ),
+        )
     return create_model(f"{name}_Args", **fields)
 
 
 def _resolve_type(info: dict[str, Any]) -> type:
     if "enum" in info:
         try:
-            from typing import Literal
+            from typing import Literal as TypingLiteral
 
-            return Literal[tuple(info["enum"])]
+            return TypingLiteral[tuple(info["enum"])]
         except (TypeError, ValueError):
             return str
-    json_type = info.get("type")
-    if json_type == "object":
-        return dict
-    if json_type == "array":
-        return list
     return {
+        "object": dict,
+        "array": list,
         "string": str,
         "integer": int,
         "number": float,
         "boolean": bool,
-    }.get(json_type, Any)
+    }.get(info.get("type"), Any)
 
 
 def _serialize_mcp_result(result: Any) -> str:
@@ -364,10 +498,7 @@ def _serialize_mcp_result(result: Any) -> str:
             parts.append("[image]")
         elif content_type == "resource":
             resource = getattr(item, "resource", None)
-            if resource and hasattr(resource, "text"):
-                parts.append(resource.text)
-            else:
-                parts.append(str(item))
+            parts.append(resource.text if resource and hasattr(resource, "text") else str(item))
         else:
             text = getattr(item, "text", None)
             if text is not None:
@@ -380,6 +511,3 @@ def _serialize_mcp_result(result: Any) -> str:
     if structured:
         parts.append(json.dumps(structured, ensure_ascii=False))
     return "\n".join(parts) if parts else str(result)
-
-
-mcp_manager = MCPManager()

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ness_agent.persistence import ThreadStore
 from ness_cli.events import _enrich_spawn_subagent_result, events_to_messages
+from langchain_core.messages import HumanMessage, message_to_dict
 
 
 class SessionStorageTests(unittest.TestCase):
@@ -200,8 +201,64 @@ class SessionStorageTests(unittest.TestCase):
         store.append_event("session-off", {"kind": "user", "content": "nope"})
         self.assertFalse(store.threads_db.exists())
 
+    def test_compaction_checkpoint_records_active_turn_boundary(self) -> None:
+        self.store.append_event("session-compact", {"kind": "user", "content": "old"})
+        self.store.append_event("session-compact", {"kind": "assistant", "content": "done"})
+        active_seq = self.store.append_event(
+            "session-compact", {"kind": "user", "content": "active"}
+        )
+        self.store.append_compaction_checkpoint(
+            "session-compact",
+            {
+                "response": "summary",
+                "before_tokens": 100,
+                "after_tokens": 10,
+                "active_suffix": [message_to_dict(HumanMessage(content="active"))],
+            },
+            active_turn=True,
+        )
+        event = self.store.load_thread_events("session-compact")[-1]
+        self.assertEqual(event["active_user_seq"], active_seq)
+        self.assertEqual(event["source_event_seq"], active_seq)
+
+    def test_compaction_checkpoint_without_sdk_user_event_retains_active_suffix(self) -> None:
+        self.store.append_event(
+            "session-sdk-compact", {"kind": "assistant", "content": "old answer"}
+        )
+        self.store.append_compaction_checkpoint(
+            "session-sdk-compact",
+            {
+                "response": "completed work summarized",
+                "active_suffix": [
+                    message_to_dict(HumanMessage(content="active SDK request"))
+                ],
+            },
+            active_turn=True,
+        )
+        events = self.store.load_thread_events("session-sdk-compact")
+        checkpoint = events[-1]
+        self.assertIsNone(checkpoint["active_user_seq"])
+        self.assertEqual(checkpoint["source_event_seq"], 0)
+
+        messages = events_to_messages(events)
+        contents = [str(message.content) for message in messages]
+        self.assertTrue(contents[0].startswith("<compacted-history>"))
+        self.assertIn("active SDK request", contents)
+
 
 class ResumeReplayTests(unittest.TestCase):
+    def test_answered_image_event_remains_structured_until_compaction(self) -> None:
+        messages = events_to_messages([
+            {
+                "kind": "user",
+                "content": "inspect this",
+                "images": ["data:image/png;base64,abc"],
+            },
+            {"kind": "assistant", "content": "done"},
+        ], vision=True)
+        self.assertIsInstance(messages[0].content, list)
+        self.assertEqual(messages[0].content[1]["type"], "image_url")
+
     def test_events_to_messages_replays_tool_chain(self) -> None:
         events = [
             {"kind": "user", "content": "read file"},
@@ -226,6 +283,25 @@ class ResumeReplayTests(unittest.TestCase):
         self.assertEqual(messages[1].tool_calls[0]["id"], "call-1")
         self.assertEqual(messages[2].tool_call_id, "call-1")
         self.assertEqual(messages[2].content, "contents")
+
+    def test_events_to_messages_uses_latest_compaction_checkpoint(self) -> None:
+        events = [
+            {"kind": "user", "content": "old task"},
+            {"kind": "assistant", "content": "old answer"},
+            {
+                "kind": "compaction_llm",
+                "response": "old work summarized",
+                "source_event_seq": 1,
+                "active_user_seq": None,
+            },
+            {"kind": "user", "content": "active task"},
+            {"kind": "assistant", "content": "active answer"},
+        ]
+        messages = events_to_messages(events)
+        contents = [str(message.content) for message in messages]
+        self.assertTrue(contents[0].startswith("<compacted-history>"))
+        self.assertNotIn("old task", contents)
+        self.assertIn("active task", contents)
 
     def test_spawn_subagent_result_enrichment(self) -> None:
         short = "status=ok"

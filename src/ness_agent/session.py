@@ -6,20 +6,17 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from ness_agent.compaction import (
-    CompactionResult,
+from ness_agent.context.budget import (
     ContextPressure,
-    apply_force_floor,
     calculate_context_pressure,
-    compaction_label,
-    compaction_overlay_note,
+    pressure_note,
     resolve_usable_context_budget,
 )
 from ness_agent.graph.builder import build_graph
-from ness_agent.graph.helpers import _effective_conversation
+from ness_agent.graph.helpers import _effective_conversation, _incremental_input_tokens
 from ness_agent.session_context import SessionContext, set_session_context, reset_session_context
 from ness_agent.tracing.semconv import (
     AGENT_MODE,
@@ -79,23 +76,6 @@ def _messages_from_event(event: dict) -> list[Any]:
     return []
 
 
-def _extract_text_from_blocks(content: Any) -> str:
-    """Join all ``text`` blocks from a list-content message into a string.
-
-    Used by ``_strip_prior_image_blocks`` to rewrite list-content (text +
-    image_url) HumanMessages back to text-only once the attached images are
-    no longer needed for the running turn.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-        return "\n".join(p for p in parts if p)
-    return str(content)
-
 def _ensure_config_event_bridges(cfg: Any) -> None:
     """
     It installs one-time wrapper callbacks on the config object that bridge async events
@@ -132,9 +112,10 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
 
     # Internal usage channel: the agent node reports per-call token/cost
     # usage here; the bridge stores ``_last_usage`` / accumulates
-    # ``_turn_usages`` on the active session (feeding ``RunResult.usage`` /
-    # ``RunResult.usage_total`` / tracing spans) and queues a ``usage``
-    # SessionEvent for the caller. Not a user-facing hook — the same data
+    # ``_turn_usages`` on the active session (feeding ``RunResult.usage_total``
+    # / tracing spans) and queues a ``usage`` SessionEvent for the caller.
+    # Not a user-facing hook — the same data already reaches consumers via
+    # the SessionEvent stream, the durable ``usage`` log, and the cost tracker. Not a user-facing hook — the same data
     # already reaches consumers via the SessionEvent stream, the durable
     # ``usage`` log, and the cost tracker.
     def _usage(event: UsageEvent) -> None:
@@ -155,8 +136,7 @@ def _ensure_config_event_bridges(cfg: Any) -> None:
                 },
             )
 
-    # Compaction channel: the agent node reports when it actually compacted
-    # the conversation this turn (tool_outputs or summary).
+    # Compaction channel: the boundary node reports summary outcomes.
     def _compaction(data: dict[str, Any]) -> None:
         sess = _active_session.get()
         if sess is not None:
@@ -463,15 +443,7 @@ class Session:
         """
         cfg = self._cfg
         options = cfg.options
-        tools_reg = cfg.tool_registry
-        tools_reg.sync()
-
         memory = cfg.memory_store
-        skills_loader = cfg.skill_loader
-        all_skills = skills_loader.load()
-        user_mem = memory.load_user() if not memory.disabled else ""
-        proj_mem = memory.load_project() if not memory.disabled else ""
-        skill_catalog = skills_loader.render_catalog(all_skills)
 
         git_flag = self.git_available
         if git_flag is None:
@@ -480,18 +452,8 @@ class Session:
             root = options.project_root or Path.cwd()
             git_flag = is_git_repo(str(root))
 
-        system_message = cfg.prompts.build_stable_prefix(
-            tools_reg.active_tools,
-            user_memory=user_mem,
-            project_memory=proj_mem,
-            skill_catalog=skill_catalog,
-            git_available=bool(git_flag),
-            metadata=self.metadata,
-            tool_catalog_groups=[
-                (label, frozenset(group))
-                for label, group in tools_reg.tool_catalog_groups()
-            ],
-            deferred_mcp=tools_reg.deferred_mcp_summary(),
+        system_message = str(
+            self.build_system_message(git_available=bool(git_flag)).content
         )
 
         state, pressure, conversation = await self._context_pressure_snapshot()
@@ -501,19 +463,9 @@ class Session:
         model_name = getattr(cfg.model, "model", "") or getattr(cfg.model, "model_name", "")
         compaction_note = ""
         if pressure is not None:
-            compaction_note = compaction_overlay_note(
-                CompactionResult(
-                    messages=conversation,
-                    compacted=False,
-                    token_count=pressure.token_count,
-                    action=pressure.action,
-                    kept_recent=pressure.keep_recent,
-                    pressure_ratio=pressure.ratio,
-                    usable_budget=pressure.usable_budget,
-                ),
-                options=options,
-                had_stored_compaction=bool(state.get("compacted_messages")),
-                model_name=model_name,
+            compaction_note = pressure_note(
+                pressure,
+                had_stored_compaction=bool(state.get("model_context_messages")),
             )
 
         preview_mode = (mode or self.mode or "act").lower()
@@ -587,15 +539,53 @@ class Session:
             return state, None, []
 
         conversation = list(_effective_conversation(messages, state))
+        system = self.build_system_message()
+        known_input = _incremental_input_tokens(
+            conversation=conversation,
+            stored_context=list(state.get("model_context_messages", [])),
+            stored_system=state.get("model_system_message"),
+            current_system=system,
+            last_input=int(state.get("last_input_tokens", 0) or 0),
+        )
         pressure = calculate_context_pressure(
-            conversation,
-            known_input_tokens=state.get("last_input_tokens") or None,
+            [system] + conversation,
+            known_input_tokens=known_input,
             model_name=model_name,
             options=self._cfg.options,
         )
         self.context_used = pressure.token_count
         self.context_total = pressure.usable_budget
         return state, pressure, conversation
+
+    def build_system_message(
+        self, *, git_available: bool | None = None
+    ) -> SystemMessage:
+        """Build the stable L0–L2 system prefix used by the graph.
+
+        Includes tool catalog, memory, skills, git context, and session
+        metadata. Useful for context previews, token budgeting, or custom
+        tooling outside a turn.
+        """
+        cfg = self._cfg
+        tools_reg = cfg.tool_registry
+        tools_reg.sync()
+        memory = cfg.memory_store
+        skills_loader = cfg.skill_loader
+        all_skills = skills_loader.load()
+        available = self.git_available is True if git_available is None else git_available
+        return SystemMessage(content=cfg.prompts.build_stable_prefix(
+            tools_reg.active_tools,
+            user_memory=memory.load_user() if not memory.disabled else "",
+            project_memory=memory.load_project() if not memory.disabled else "",
+            skill_catalog=skills_loader.render_catalog(all_skills),
+            git_available=available,
+            metadata=self.metadata,
+            tool_catalog_groups=[
+                (label, frozenset(group))
+                for label, group in tools_reg.tool_catalog_groups()
+            ],
+            deferred_mcp=tools_reg.deferred_mcp_summary(),
+        ))
 
     async def refresh_context_snapshot(self) -> dict[str, Any]:
         """Refresh token-usage metrics from the current graph state."""
@@ -646,13 +636,9 @@ class Session:
         if pressure is None or pressure.ratio < PLAN_COMPACTION_CHECKPOINT_RATIO:
             return
 
-        rest_count = sum(1 for message in conversation if message.type != "system")
-        action, keep_recent = apply_force_floor(
-            pressure.action, pressure.keep_recent, rest_count
-        )
         info = (
             f"Context ~{pressure.token_count:,} tokens of {pressure.usable_budget:,} budget "
-            f"({pressure.ratio:.0%}). Compaction if run: {compaction_label(action, keep_recent)}."
+            f"({pressure.ratio:.0%}). Compaction if run: cache-safe summary."
         )
 
         if pressure.hard_threshold_reached:
@@ -660,7 +646,7 @@ class Session:
             self._add_queue(
                 "compaction",
                 {
-                    "reason": "pre_act_hard_threshold",
+                    "notice_reason": "pre_act_hard_threshold",
                     "info": info,
                     "forced": True,
                 },
@@ -670,7 +656,7 @@ class Session:
         self._add_queue(
             "compaction",
             {
-                "reason": "pre_act_checkpoint",
+                "notice_reason": "pre_act_checkpoint",
                 "info": info,
                 "forced": False,
                 "advisory": True,
@@ -793,53 +779,6 @@ class Session:
             return out
 
         return out
-
-    async def _strip_prior_image_blocks(self, cfg: dict) -> None:
-        """Rewrite prior list-content HumanMessages to text-only (by id).
-
-        Walks the checkpointer state; for each ``HumanMessage`` whose
-        ``.content`` is a list (i.e. carries image_url blocks) AND that is
-        followed by an ``AIMessage`` (i.e. the turn was answered), replaces it
-        with a text-only :class:`HumanMessage` carrying the same id so the
-        ``add_messages`` reducer swaps it in-place. The trailing image message
-        from a resumed crashed turn (no following AIMessage) is left intact so
-        the model can still see the image.
-
-        Called once per turn at the top of :meth:`_iter_events`, before the
-        payload is built — so large base64 payloads are not re-sent on every
-        turn after the image was first answered.
-        """
-        try:
-            snapshot = await self.app.aget_state(cfg)
-        except Exception:
-            return
-        messages = (snapshot.values or {}).get("messages") or []
-        if not messages:
-            return
-        answered_image_ids: list[tuple[str, str]] = []
-        for i, msg in enumerate(messages):
-            if (
-                getattr(msg, "type", None) == "human"
-                and isinstance(getattr(msg, "content", None), list)
-            ):
-                followed_by_ai = any(
-                    getattr(messages[j], "type", None) in ("ai", "assistant")
-                    for j in range(i + 1, len(messages))
-                )
-                if followed_by_ai and msg.id:
-                    text_block = _extract_text_from_blocks(msg.content)
-                    answered_image_ids.append((msg.id, text_block))
-        if not answered_image_ids:
-            return
-        replacements = [
-            HumanMessage(content=text, id=mid) for mid, text in answered_image_ids
-        ]
-        try:
-            await self.app.aupdate_state(cfg, {"messages": replacements})
-        except Exception:
-            # The image blocks only cost extra tokens if
-            # the swap silently fails — the turn still proceeds.
-            pass
 
     async def _finalize_cancelled_turn(self, assistant_text: str, cfg: dict) -> None:
         """Flush partial state after a cooperative or hard cancel.
@@ -984,12 +923,7 @@ class Session:
                     yield SessionEvent("error", {"message": str(exc)}), ""
                     return
 
-                # Strip answered image blocks from prior turns so the large
-                # base64 payloads aren't re-sent. The new turn's user_message
-                # (carrying this turn's images, unstripped) is built above and
-                # not touched here.
                 cfg = {"configurable": {"thread_id": self.thread_id}, "recursion_limit": self._cfg.options.recursion_limit}
-                await self._strip_prior_image_blocks(cfg)
 
                 try:
                     payload, cfg_payload = await self._build_run_payload(
@@ -1128,7 +1062,6 @@ class Session:
         todos = await self.get_todos()
         return RunResult(
             assistant_message=assistant_text,
-            usage=self._last_usage,
             todos=todos,
             events=events,
             usage_total=aggregate_usage(self._turn_usages),

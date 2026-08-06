@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ness_cli.tui.app import TuiApp
+    from ness_cli.tui.widgets import TranscriptBlock
 
 STREAM_FLUSH_INTERVAL_S = 0.05
 STREAM_FLUSH_CHARS = 256
@@ -14,23 +15,15 @@ class TuiAssistantStream:
     def __init__(self, ui: TuiApp) -> None:
         self.ui = ui
         self._buffer: list[str] = []
-        self._line_start: int | None = None
-        self._line_count = 0
+        self._block: TranscriptBlock | None = None
         self._last_flush = 0.0
         self._total_chars = 0
         self._flushed_chars = 0
         self.flush_count = 0
 
-    def shift_start(self, delta: int) -> None:
-        """Shift the reserved transcript slot by ``delta`` lines.
-
-        Called when a reasoning block is inserted above this stream's slot
-        (the "thinking block above assistant" UX convention). Bumps
-        ``_line_start`` so the final ``finalize_assistant_stream`` writes
-        the assistant markdown into the right place.
-        """
-        if self._line_start is not None:
-            self._line_start += delta
+    @property
+    def block(self) -> TranscriptBlock | None:
+        return self._block
 
     def feed(self, chunk: str) -> None:
         if not chunk:
@@ -41,7 +34,7 @@ class TuiAssistantStream:
             self._flush()
 
     def _should_flush(self, chunk: str) -> bool:
-        if self._line_start is None:
+        if self._block is None:
             return True
         if "\n" in chunk:
             return True
@@ -51,11 +44,7 @@ class TuiAssistantStream:
 
     def _flush(self) -> None:
         text = "".join(self._buffer)
-        self._line_start, self._line_count = self.ui.set_assistant_stream(
-            text,
-            self._line_start,
-            self._line_count,
-        )
+        self._block = self.ui.set_assistant_stream(text, self._block)
         self._last_flush = time.monotonic()
         self._flushed_chars = len(text)
         self.flush_count += 1
@@ -63,9 +52,9 @@ class TuiAssistantStream:
     def stop(self) -> None:
         text = "".join(self._buffer)
         if not text.strip():
-            self.ui.clear_assistant_stream(self._line_start, self._line_count)
+            self.ui.clear_assistant_stream(self._block)
             return
-        self.ui.finalize_assistant_stream(text, self._line_start, self._line_count)
+        self.ui.finalize_assistant_stream(text, self._block)
 
 
 class Thinking:
@@ -124,7 +113,7 @@ class AssistantStream:
         # an empty content string. The slot is reserved lazily on the first
         # fragment so the reasoning block sits above the assistant stream's
         # reserved markdown slot (Anthropic/OpenCode convention). The inner
-        # TuiAssistantStream's ``_line_start`` is shifted by the insert so the
+        # The TuiAssistantStream block handle is shifted by the store so the
         # finalised assistant text writes into the correct transcript slice.
         if not chunk:
             return
@@ -133,11 +122,11 @@ class AssistantStream:
         if self._reasoning_started_at is None:
             self._reasoning_started_at = _time.monotonic()
         if self._reasoning_slot is None:
-            # The active sink's stream (TuiAssistantStream) exposes
-            # ``_line_start`` for live-transcript shifting; duck-type via
+            # The active sink's stream (TuiAssistantStream) exposes a stable
+            # block handle for live-transcript shifting; duck-type via
             # hasattr so render.py does not import the concrete type and
             # stays free of circular dependencies.
-            inner = self._stream if hasattr(self._stream, "_line_start") else None
+            inner = self._stream if hasattr(self._stream, "block") else None
             self._reasoning_slot = _active_sink().reserve_reasoning_slot(inner)
         self._reasoning.append(chunk)
 

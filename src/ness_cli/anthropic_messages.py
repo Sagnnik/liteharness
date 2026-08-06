@@ -39,6 +39,8 @@ class OpenRouterAnthropicMessages(BaseChatModel):
     max_retries: int = 3
     reasoning: dict[str, Any] | None = None
     _tool_registry: Any = PrivateAttr(default=None)
+    _tool_snapshot: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _tool_additions: tuple[str, ...] = PrivateAttr(default=())
 
     @property
     def model(self) -> str:
@@ -53,8 +55,14 @@ class OpenRouterAnthropicMessages(BaseChatModel):
         return {"model": self.model_name, "session_id": self.session_id}
 
     def bind_tool_registry(self, registry: Any) -> BaseChatModel:
-        self._tool_registry = registry
-        return self
+        # Return an immutable request binding. A live mutable registry makes
+        # historical tool definitions change underneath cached parent calls.
+        clone = self.model_copy()
+        clone._tool_registry = registry
+        clone._tool_snapshot = clone._tools()
+        clone._tool_additions = tuple(sorted(registry.active_mcp_tools))
+        clone._tool_registry = None
+        return clone
 
     def bind_tools(
         self,
@@ -77,6 +85,8 @@ class OpenRouterAnthropicMessages(BaseChatModel):
         }
 
     def _tools(self, supplied: Sequence[Any] | None = None) -> list[dict[str, Any]]:
+        if self._tool_snapshot is not None:
+            return [dict(tool) for tool in self._tool_snapshot]
         if self._tool_registry is None:
             return [
                 dict(tool) if isinstance(tool, dict) and "input_schema" in tool else self._format_tool(tool)
@@ -160,8 +170,12 @@ class OpenRouterAnthropicMessages(BaseChatModel):
                 converted.append(
                     {"role": "system", "content": self._content_blocks(message.content)}
                 )
-        if self._tool_registry is not None:
-            additions = sorted(self._tool_registry.active_mcp_tools)
+        if self._tool_registry is not None or self._tool_additions:
+            additions = (
+                sorted(self._tool_registry.active_mcp_tools)
+                if self._tool_registry is not None
+                else list(self._tool_additions)
+            )
             if additions:
                 converted.append(
                     {

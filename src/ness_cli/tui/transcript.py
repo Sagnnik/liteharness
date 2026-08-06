@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from typing import Any
 
 from ness_cli.tui.tool_display import (
@@ -23,6 +24,7 @@ from ness_cli.tui.markdown import (
 from ness_cli.tui.models import TranscriptLine
 from ness_cli.tui.stream import Thinking, TuiAssistantStream
 from ness_cli.tui.utils import term_height, term_width
+from ness_cli.tui.widgets import TranscriptBlock
 
 
 # Module-level TranscriptLine row builders (``_diff_transcript_lines``,
@@ -43,7 +45,7 @@ def _header_project() -> str:
 def _header_addons_summary(mcp, skill_loader) -> str:
     """Summarize active MCP servers + skills for the header's Add-ons cell.
 
-    Reads the TuiApp-held MCPManager and the coding session's SkillLoader;
+    Reads the TuiApp-held ProjectMCPManager and the coding session's SkillLoader;
     both are optional so headless/test paths (no MCP, no skills dir) render
     an empty summary instead of failing.
     """
@@ -81,8 +83,58 @@ def _header_version() -> str:
             return "dev"
     except Exception:
         return "dev"
-    except Exception:
-        return "dev"
+
+
+def _table_column_widths(
+    headers: list[str], rows: list[list[str]], available: int
+) -> list[int]:
+    """Fit natural column widths into *available* cells.
+
+    Columns shrink from the widest value first, preserving enough room for
+    their heading. Cell content is wrapped by :func:`_table_cell_lines`.
+    """
+    if not headers:
+        return []
+    minimums = [max(4, min(len(str(header)), 12)) for header in headers]
+    widths = minimums.copy()
+    for index, header in enumerate(headers):
+        values = [
+            str(header),
+            *(str(row[index]) if index < len(row) else "" for row in rows),
+        ]
+        widths[index] = max(
+            minimums[index],
+            *(len(line) for value in values for line in value.splitlines() or [""]),
+        )
+
+    target = max(sum(minimums), available)
+    while sum(widths) > target:
+        candidates = [
+            index for index, width in enumerate(widths) if width > minimums[index]
+        ]
+        if not candidates:
+            break
+        widest = max(candidates, key=lambda index: (widths[index], index))
+        widths[widest] -= 1
+    return widths
+
+
+def _table_cell_lines(value: Any, width: int) -> list[str]:
+    """Wrap one table cell without allowing prompt_toolkit to break the row."""
+    output: list[str] = []
+    for raw_line in str(value).splitlines() or [""]:
+        output.extend(
+            textwrap.wrap(
+                raw_line,
+                width=max(1, width),
+                break_long_words=True,
+                break_on_hyphens=False,
+                replace_whitespace=True,
+                drop_whitespace=True,
+            )
+            or [""]
+        )
+    return output
 
 
 class TranscriptMixin:
@@ -158,10 +210,9 @@ class TranscriptMixin:
         if self._header_block is None:
             # First render: always pin to the top. Startup notices may already
             # be in the transcript (appended before run_async); insert above them.
-            self._transcript_store.insert(0, block_lines)
+            block = self._transcript_store.insert_tracked(0, block_lines)
             self._header_block = {
-                "start": 0,
-                "count": len(block_lines),
+                "block": block,
                 "width": width,
                 "source": source,
             }
@@ -169,10 +220,9 @@ class TranscriptMixin:
             # Subsequent renders (e.g. /config changed the model/mode): replace
             # the existing top-of-transcript block in place instead of appending
             # a duplicate banner mid-conversation.
-            start = self._header_block["start"]
-            old_count = self._header_block["count"]
-            self._transcript_store.replace(start, old_count, block_lines)
-            self._header_block["count"] = len(block_lines)
+            self._transcript_store.replace_tracked(
+                self._header_block["block"], block_lines
+            )
             self._header_block["width"] = width
             self._header_block["source"] = source
         self._transcript_revision = self._transcript_store.revision
@@ -236,8 +286,7 @@ class TranscriptMixin:
                 ),
                 TranscriptLine("class:transcript.muted", ""),
             ]
-        self._transcript_store.replace(block["start"], block["count"], new_lines)
-        block["count"] = len(new_lines)
+        self._transcript_store.replace_tracked(block["block"], new_lines)
         block["width"] = width
         self._transcript_revision = self._transcript_store.revision
 
@@ -247,8 +296,19 @@ class TranscriptMixin:
             return
         if not self._transcript_store.has_user_blocks:
             self._layout_term_width = width
+            self._user_fit_checked_upto = 0
             return
-        if width == self._layout_term_width and self._user_blocks_fit_width(width):
+        if width != self._layout_term_width:
+            self._reflow_user_blocks_for_width(width)
+            return
+        # Width unchanged: lines before ``_user_fit_checked_upto`` were already
+        # validated at this width and user rows are never mutated in place
+        # (only append_user creates them, reflow rebuilds them), so only the
+        # appended tail can be unvalidated. Scanning just the tail keeps this
+        # per-frame check O(new lines) instead of O(transcript).
+        start = min(self._user_fit_checked_upto, len(self._lines))
+        if self._user_blocks_fit_width(width, start=start):
+            self._user_fit_checked_upto = len(self._lines)
             return
         self._reflow_user_blocks_for_width(width)
 
@@ -257,9 +317,17 @@ class TranscriptMixin:
 
         return user_band_width(width=width if width is not None else term_width())
 
-    def _user_blocks_fit_width(self, width: int) -> bool:
+    def _user_blocks_fit_width(self, width: int, *, start: int = 0) -> bool:
         expected = self._expected_user_band_width(width)
-        index = 0
+        index = max(0, min(start, len(self._lines)))
+        # Back up to the containing block's first row (the one carrying
+        # ``user_source``) so a mid-block ``start`` doesn't skip band rows.
+        while (
+            0 < index < len(self._lines)
+            and self._lines[index].style == USER_STYLE
+            and self._lines[index].user_source is None
+        ):
+            index -= 1
         while index < len(self._lines):
             line = self._lines[index]
             if line.user_source is None:
@@ -276,6 +344,7 @@ class TranscriptMixin:
 
     def _reflow_user_blocks_for_width(self, width: int) -> None:
         if width == self._layout_term_width and self._user_blocks_fit_width(width):
+            self._user_fit_checked_upto = len(self._lines)
             return
 
         follow = self._follow_transcript
@@ -283,12 +352,11 @@ class TranscriptMixin:
             self._transcript_pane.vertical_scroll if self._transcript_pane else 0
         )
 
-        new_lines: list[TranscriptLine] = []
+        replacements: list[tuple[int, int, list[TranscriptLine]]] = []
         index = 0
         while index < len(self._lines):
             line = self._lines[index]
             if line.user_source is None:
-                new_lines.append(line)
                 index += 1
                 continue
 
@@ -296,13 +364,20 @@ class TranscriptMixin:
             while end < len(self._lines) and self._lines[end].style == USER_STYLE:
                 end += 1
 
-            block = user_message_lines(line.user_source, width=width)
-            new_lines.extend(block)
+            replacements.append(
+                (index, end - index, user_message_lines(line.user_source, width=width))
+            )
             index = end
 
-        self._transcript_store.reset(new_lines)
+        # Work backwards so each source range remains valid while the store
+        # shifts every tracked block that follows the replaced user band.
+        for start, count, new_lines in reversed(replacements):
+            self._transcript_store.replace(start, count, new_lines)
         self._transcript_revision = self._transcript_store.revision
         self._layout_term_width = width
+        # Every user row was just rebuilt at ``width``: the whole buffer is
+        # validated, so the per-frame tail scan resumes from the end.
+        self._user_fit_checked_upto = len(self._lines)
 
         self.invalidate()
         if follow:
@@ -345,23 +420,45 @@ class TranscriptMixin:
     def append_table(
         self, title: str, headers: list[str], rows: list[list[str]]
     ) -> None:
-        col_widths = [len(h) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                col_widths[i] = max(col_widths[i], len(str(cell)))
-        header_line = "  ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
+        if not headers:
+            return
+        render_width = self._transcript_render_width or term_width()
+        leading = 2
+        separator = "  "
+        available = max(
+            len(headers) * 4,
+            render_width - leading - len(separator) * (len(headers) - 1),
+        )
+        col_widths = _table_column_widths(headers, rows, available)
+        header_line = separator.join(
+            str(header).upper().ljust(col_widths[index])
+            for index, header in enumerate(headers)
+        )
         lines_out = [
             TranscriptLine("class:transcript.notice", title),
             TranscriptLine("class:transcript.panel", f"  {header_line}"),
             TranscriptLine(
-                "class:transcript.muted", "  " + "  ".join("-" * w for w in col_widths)
+                "class:transcript.muted",
+                "  " + separator.join("─" * width for width in col_widths),
             ),
         ]
         for row in rows:
-            line = "  ".join(
-                str(row[i]).ljust(col_widths[i]) for i in range(len(headers))
-            )
-            lines_out.append(TranscriptLine("class:transcript.panel", f"  {line}"))
+            cells = [
+                _table_cell_lines(
+                    row[index] if index < len(row) else "", col_widths[index]
+                )
+                for index in range(len(headers))
+            ]
+            for line_index in range(max(len(cell) for cell in cells)):
+                line = separator.join(
+                    (cell[line_index] if line_index < len(cell) else "").ljust(
+                        col_widths[index]
+                    )
+                    for index, cell in enumerate(cells)
+                ).rstrip()
+                lines_out.append(
+                    TranscriptLine("class:transcript.panel", " " * leading + line)
+                )
         lines_out.append(TranscriptLine("class:transcript.muted", ""))
         self._append_transcript(*lines_out)
 
@@ -371,7 +468,55 @@ class TranscriptMixin:
             return
         width = self._transcript_render_width or term_width()
         lines = markdown_transcript_lines(text, width=width)
-        self._append_transcript(*lines, TranscriptLine("class:transcript.muted", ""))
+        rendered = [*lines, TranscriptLine("class:transcript.muted", "")]
+        if not self._turn_render_active:
+            self._append_transcript(*rendered)
+            return
+        self._release_last_assistant_block()
+        self._last_assistant_block = self._transcript_store.append_tracked(rendered)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
+
+    def _release_last_assistant_block(self) -> None:
+        block = self._last_assistant_block
+        if block is not None and block.attached:
+            self._transcript_store.release_tracked(block)
+        self._last_assistant_block = None
+
+    def _finalize_turn_assistant_order(self) -> None:
+        """Keep the turn's final non-empty response below late tool rows."""
+        block = self._last_assistant_block
+        if block is None or not block.attached:
+            self._last_assistant_block = None
+            return
+        following = self._lines[block.start + block.count :]
+        has_later_tool = any(
+            line.style.startswith("class:transcript.tool")
+            or any(
+                style.startswith("class:transcript.tool")
+                for style, _text in (line.fragments or [])
+            )
+            for line in following
+        )
+        if has_later_tool:
+            self._transcript_store.move_tracked_to_end(block)
+            self._transcript_revision = self._transcript_store.revision
+            self._scroll_transcript_to_bottom()
+            self.invalidate()
+        self._release_last_assistant_block()
+
+    def begin_turn(self) -> None:
+        self._release_last_assistant_block()
+        self._turn_render_active = True
+        super().begin_turn()
+
+    def finish_turn(self) -> None:
+        try:
+            self._finalize_turn_assistant_order()
+        finally:
+            self._turn_render_active = False
+            super().finish_turn()
 
     def _reasoning_block_for_span(
         self, span: dict, *, expanded: bool | None = None
@@ -392,24 +537,20 @@ class TranscriptMixin:
     ) -> dict:
         """Insert a ``Thinking…`` placeholder above the live assistant stream.
 
-        Called from the turn renderer on the first reasoning chunk of
-        an LLM call. The placeholder sits before ``before_stream._line_start``
-        (if the assistant stream already reserved its slot) or at the current
-        end of the transcript otherwise; ``before_stream._line_start`` is
-        shifted so the assistant finalize later targets the same lines.
+        Called from the turn renderer on the first reasoning chunk of an LLM
+        call. The placeholder sits before the assistant stream's tracked block
+        (if it already reserved one) or at the current transcript end.
         """
         anchor = len(self._transcript_store.lines)
-        if before_stream is not None and before_stream._line_start is not None:
-            anchor = before_stream._line_start
+        if before_stream is not None and before_stream.block is not None:
+            anchor = before_stream.block.start
         placeholder = TranscriptLine(
             _REASONING_COLLAPSED_STYLE,
             " Thinking…",
             fragments=[(_REASONING_COLLAPSED_STYLE, " Thinking…")],
         )
-        self._transcript_store.insert(anchor, [placeholder])
-        if before_stream is not None and before_stream._line_start is not None:
-            before_stream.shift_start(1)
-        span = {"start": anchor, "count": 1, "text": "", "elapsed": 0.0}
+        block = self._transcript_store.insert_tracked(anchor, [placeholder])
+        span = {"block": block, "text": "", "elapsed": 0.0}
         self._reasoning_spans.append(span)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
@@ -420,8 +561,7 @@ class TranscriptMixin:
         span["text"] = text
         span["elapsed"] = float(elapsed)
         new_lines = self._reasoning_block_for_span(span)
-        self._transcript_store.replace(span["start"], span["count"], new_lines)
-        span["count"] = len(new_lines)
+        self._transcript_store.replace_tracked(span["block"], new_lines)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
@@ -429,29 +569,17 @@ class TranscriptMixin:
     def toggle_reasoning(self) -> None:
         """Flip ``_show_reasoning`` and re-emit every reasoning span.
 
-        Walks spans in ascending ``start`` order so the in-place ``replace``
-        on an earlier span can shift every later span's lines. A running
-        ``delta`` adjusts the later spans' ``start`` by the cumulative line
-        count change of all already-processed earlier spans; ``replace``
-        itself reassigns only the current span's ``self.lines`` slice, so the
-        line objects of un-processed later spans keep their identities but
-        move to higher indices when an earlier span grows. Without the delta
-        accumulator those later spans would read stale ``start`` indices and
-        either replace the wrong region or leave gaps.
+        Stable block handles are shifted by ``TranscriptStore`` whenever an
+        earlier span changes size, including any active assistant stream.
         """
         self._show_reasoning = not self._show_reasoning
-        spans = sorted(self._reasoning_spans, key=lambda s: s["start"])
+        spans = sorted(self._reasoning_spans, key=lambda s: s["block"].start)
         if not spans:
             self.invalidate()
             return
-        delta = 0
         for span in spans:
-            start = span["start"] + delta
             new_lines = self._reasoning_block_for_span(span)
-            self._transcript_store.replace(start, span["count"], new_lines)
-            delta += len(new_lines) - span["count"]
-            span["start"] = start
-            span["count"] = len(new_lines)
+            self._transcript_store.replace_tracked(span["block"], new_lines)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
@@ -464,16 +592,9 @@ class TranscriptMixin:
         """
         if not text.strip():
             return
-        span = {
-            "start": len(self._transcript_store.lines),
-            "count": 0,
-            "text": text,
-            "elapsed": float(elapsed),
-        }
+        span = {"text": text, "elapsed": float(elapsed)}
         new_lines = self._reasoning_block_for_span(span)
-        self._transcript_store.append(new_lines)
-        span["start"] = len(self._transcript_store.lines) - len(new_lines)
-        span["count"] = len(new_lines)
+        span["block"] = self._transcript_store.append_tracked(new_lines)
         self._reasoning_spans.append(span)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
@@ -494,43 +615,46 @@ class TranscriptMixin:
     def set_assistant_stream(
         self,
         text: str,
-        start: int | None,
-        count: int,
-    ) -> tuple[int, int]:
+        block: TranscriptBlock | None,
+    ) -> TranscriptBlock:
         lines = self._assistant_stream_lines(text)
-        if start is None:
-            start = len(self._lines)
-            self._transcript_store.append(lines)
+        if block is None:
+            block = self._transcript_store.append_tracked(lines)
         else:
-            self._transcript_store.replace(start, count, lines)
+            self._transcript_store.replace_tracked(block, lines)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
-        return start, len(lines)
+        return block
 
     def finalize_assistant_stream(
-        self, text: str, start: int | None, count: int
+        self, text: str, block: TranscriptBlock | None
     ) -> None:
-        if start is None:
+        if block is None:
             self.append_assistant(text)
             return
         stripped = text.strip()
         if not stripped:
-            self.clear_assistant_stream(start, count)
+            self.clear_assistant_stream(block)
             return
         width = self._transcript_render_width or term_width()
         final_lines = markdown_transcript_lines(stripped, width=width)
-        self._transcript_store.replace(
-            start, count, [*final_lines, TranscriptLine("class:transcript.muted", "")]
+        self._transcript_store.replace_tracked(
+            block, [*final_lines, TranscriptLine("class:transcript.muted", "")]
         )
+        if self._turn_render_active:
+            self._release_last_assistant_block()
+            self._last_assistant_block = block
+        else:
+            self._transcript_store.release_tracked(block)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
 
-    def clear_assistant_stream(self, start: int | None, count: int) -> None:
-        if start is None or count <= 0:
+    def clear_assistant_stream(self, block: TranscriptBlock | None) -> None:
+        if block is None:
             return
-        self._transcript_store.delete(start, count)
+        self._transcript_store.delete_tracked(block)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
@@ -551,9 +675,10 @@ class TranscriptMixin:
         # store revision changes. Session switches, rollback, and /new all
         # share this path.
         self._header_block = None
-        self._todos_block_start = None
-        self._todos_block_count = 0
+        self._todos_block = None
         self._reasoning_spans = []
+        self._last_assistant_block = None
+        self._user_fit_checked_upto = 0
         self._sync_transcript_buffer()
 
     # Tool calls & results -------------------------------------------------
@@ -669,12 +794,9 @@ class TranscriptMixin:
     # Todos / diff / shell output ------------------------------------------
     def append_todos(self, todos: list[dict]) -> None:
         if not todos:
-            if self._todos_block_start is not None:
-                self._transcript_store.delete(
-                    self._todos_block_start, self._todos_block_count
-                )
-                self._todos_block_start = None
-                self._todos_block_count = 0
+            if self._todos_block is not None:
+                self._transcript_store.delete_tracked(self._todos_block)
+                self._todos_block = None
                 self._transcript_revision = self._transcript_store.revision
                 self.invalidate()
             return
@@ -685,13 +807,9 @@ class TranscriptMixin:
             TranscriptLine("class:transcript.muted", ""),
         ]
         # Active list: always sit at the end of the transcript, not pinned mid-history.
-        if self._todos_block_start is not None:
-            self._transcript_store.delete(
-                self._todos_block_start, self._todos_block_count
-            )
-        self._todos_block_start = len(self._transcript_store.lines)
-        self._transcript_store.append(lines)
-        self._todos_block_count = len(lines)
+        if self._todos_block is not None:
+            self._transcript_store.delete_tracked(self._todos_block)
+        self._todos_block = self._transcript_store.append_tracked(lines)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()

@@ -61,12 +61,13 @@ class OverlayContext:
     loaded_skills: list[dict[str, str]] = field(default_factory=list)
 
 class OverlayProvider(ABC):
-    """Abstract base for building ephemeral L3 sections injected each turn.
+    """Abstract base for building internal L3 sections injected each turn.
 
     Subclass and implement :meth:`sections`. Custom overlays must inherit
     this class — duck-typed objects are rejected at agent construction.
 
-    Implementations receive the current graph ``AgentState`` and an
+    L3 tails are retained in canonical model context for cache continuity,
+    but excluded from semantic messages and durable events. Implementations receive the current graph ``AgentState`` and an
     :class:`OverlayContext` snapshot and return a dict of
     ``section_name → rendered_text``.
 

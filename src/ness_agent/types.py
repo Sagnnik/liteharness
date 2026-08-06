@@ -57,8 +57,6 @@ class SessionEvent:
 @dataclass(frozen=True)
 class RunResult:
     assistant_message: str
-    usage: UsageEvent | None
-    """Last LLM call of the turn (back-compat). Prefer :attr:`usage_total` for cost."""
     todos: list[dict[str, Any]]
     events: list[SessionEvent]
     usage_total: UsageEvent | None = None

@@ -18,13 +18,15 @@ import sys
 import uuid
 from typing import TYPE_CHECKING
 
-from ness_agent.mcp import MCPManager
 from ness_agent.session_context import SessionContext, set_session_context
 from ness_agent.tools import is_git_repo
 
 from ness_cli.chat_model import provider_key_missing
 from ness_cli.config import settings
 from ness_cli.factory import build_coding_session, prepare_paths
+from ness_cli.mcp_trust import is_mcp_trusted
+from ness_cli.mcp_oauth import MCPOAuthService
+from ness_cli.mcp_manager import ProjectMCPManager
 
 if TYPE_CHECKING:
     from ness_cli.coding_session import CodingSession
@@ -118,8 +120,24 @@ async def run_headless(
         )
         return 1
 
-    mcp = MCPManager(project_root=paths.project_root)
-    await mcp.start()
+    mcp_oauth = MCPOAuthService(
+        project_root=paths.project_root,
+        config_dir=paths.config_dir,
+    )
+    mcp = ProjectMCPManager(
+        mcp_file=paths.ness_dir / "mcp.json",
+        project_root=paths.project_root,
+        http_auth_factory=mcp_oauth.startup_auth,
+    )
+    if is_mcp_trusted(mcp, config_dir=paths.config_dir):
+        await mcp.start()
+    else:
+        mcp.mark_untrusted()
+        print(
+            "warning: MCP configuration is not trusted; run interactive Ness once "
+            "to review and approve it",
+            file=sys.stderr,
+        )
 
     thread_id = f"session-{uuid.uuid4().hex[:8]}"
     coding = build_coding_session(
@@ -153,6 +171,8 @@ async def run_headless(
     message, level = mcp.startup_summary()
     if level == "warn":
         print(f"warning: {message}", file=sys.stderr)
+    for oauth_warning in mcp_oauth.warnings:
+        print(f"warning: {oauth_warning}", file=sys.stderr)
 
     try:
         if resume_thread_id:

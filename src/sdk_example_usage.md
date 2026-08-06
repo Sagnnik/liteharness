@@ -9,6 +9,7 @@ Construct agents with `NessAgent(...)` kwargs (builds an `AgentSpec` internally)
 - Supply `l2_context` in the prompt when the model needs project/domain structure (SDK does not auto-load repo context).
 - Append user events / call `thread_store.save_checkpoint` if you want resumable threads (the coding CLI does this around the graph).
 - Pass `cost_tracker=make_sdk_cost_tracker()` from `ness_cli.config` when you want estimated USD for non-provider-cost models.
+- Supply resolved MCP server settings and own connection approval, trust, and authentication policy when adding MCP (the bare SDK does not read Ness CLI project files).
 
 ---
 
@@ -54,7 +55,7 @@ agent = NessAgent(
     model=...,
     prompt=PromptLayersConfig(l0=my_l0, persona="..."),
     # or override only one task prompt:
-    # aux_prompts=AuxPrompts(compaction=my_compaction_template),
+    # aux_prompts=AuxPrompts(compaction=my_compaction_instruction),
 )
 ```
 
@@ -71,6 +72,52 @@ agent = NessAgent(
     tools=["read", "grep", "glob", my_custom_fn],   # mixed list
 )
 ```
+
+---
+
+## MCP-enabled application
+
+`MCPRuntime` is the domain-agnostic connection layer. It accepts resolved
+server specifications and exposes discovered MCP tools as ordinary LangChain
+tools. It does not read `.ness/mcp.json`, display trust prompts, or persist
+OAuth credentials; those policies belong to the embedding application.
+
+```python
+from ness_agent import MCPRuntime, MCPServerSpec, NessAgent, PromptLayersConfig
+
+
+async def answer_with_mcp(model, question: str):
+    runtime = MCPRuntime(http_auth_factory=my_optional_auth_factory)
+    try:
+        await runtime.start(
+            [
+                MCPServerSpec(
+                    name="knowledge",
+                    transport="http",
+                    url="https://example.com/mcp",
+                    headers=(("X-Application", "my-app"),),
+                )
+            ]
+        )
+
+        agent = NessAgent(
+            model=model,
+            prompt=PromptLayersConfig(
+                l0="Use the connected knowledge source when it can help."
+            ),
+            tools=list(runtime.tools.values()),
+        )
+        result = await agent.session(thread_id="knowledge-1").run(question)
+        return result.assistant_message
+    finally:
+        await runtime.stop()
+```
+
+An application can build `MCPServerSpec` objects from a database, its own
+configuration format, user input, or another service. Provide an
+`HTTPAuthFactory` when HTTP connections require app-managed authentication.
+The Ness CLI's project config, trust fingerprints, OAuth storage, and terminal
+status rendering are adapter features rather than requirements of the SDK.
 
 ---
 
@@ -131,7 +178,7 @@ agent = NessAgent(
         "include_git_line": False,
         "include_skill_catalog": False,
     },
-    skills_dir=None,
+    skills_dir=None,                            # skills fully disabled (SDK default)
     memory=MemoryConfig(
         project_memory=Path("./kb/POLICIES.md"),
         user_memory=Path("./users/u-42.md"),
@@ -188,7 +235,6 @@ class ResearchOverlay(OverlayProvider):
 
 agent = NessAgent(
     model=ChatOpenAI(model="gpt-4o"),
-    compaction_model=ChatOpenAI(model="gpt-4o-mini"),
     reflection_model=ChatOpenAI(model="gpt-4o-mini"),
     tools=[web_search, fetch_url, save_note, spawn_subagent, build_report],
     prompt={
@@ -202,6 +248,9 @@ agent = NessAgent(
         "l2_header": "RESEARCH BRIEF",
         "include_git_line": False,
     },
+    # The SDK scans exactly this directory — nothing is added implicitly.
+    # To also load well-known roots (.agents/.claude/.codex/.cursor skills,
+    # project + ~/), pass skills_dirs=merge_skill_dirs(project_root, ...) instead.
     skills_dir=Path("./skills/research"),
     subagents=SubagentConfig(
         prompt_template=RESEARCH_SUBAGENT_PROMPT,
@@ -383,7 +432,7 @@ agent = NessAgent.from_spec(AgentSpec(
         "include_git_line": False,
         "include_skill_catalog": True,
     },
-    skills_dir=Path("./skills/support"),
+    skills_dir=Path("./skills/support"),        # exact: only this dir is scanned
     memory=MemoryConfig(
         project_memory=Path("./support/POLICIES.md"),
         user_memory=Path(f"./customers/{customer_id}.md"),
@@ -427,13 +476,12 @@ Compaction has several channels — do not conflate them:
 | Channel | Kind / signal | Who writes | When |
 |---|---|---|---|
 | Durable notice | `compact` | CodingSession (adapter) | `/compact`, pre-act notices, and live agent-turn `SessionEvent("compaction")` rows the adapter durable-logs |
-| Durable LLM I/O | `compaction_llm` | SDK `summarize_history` | Summary path only (not silent `tool_outputs`) |
-| Graph state | `compacted_messages` | agent node | Any successful compaction (`tool_outputs` or `summary`) |
-| Live stream | `SessionEvent("compaction")` | Session | Pre-act checkpoints, plus `reason=agent_turn` when a Session is active and the agent node actually compacted |
+| Durable summary checkpoint | `compaction_llm` | SDK compaction boundary | Successful summary with raw-event source boundary |
+| Graph state | `model_context_messages` | boundary/agent nodes | Exact model-facing history, including internal L3 tails |
+| Live stream | `SessionEvent("compaction")` | Session | Pre-act checkpoints plus summary success/failure notices |
 
-Silent `tool_outputs` compaction still updates graph state and emits a live
-`SessionEvent("compaction")` with `action=tool_outputs` (when a Session is
-bound), but never writes `compaction_llm`.
+Compaction never rewrites tool output. Completed history becomes one human
+`<compacted-history>` message; the active user/tool turn remains verbatim.
 
 ## Reflection defaults (SDK vs CLI)
 
@@ -461,14 +509,16 @@ Durable audit rows use ThreadStore `kind=reflection`. There is no live
 
 ## Context / graph invariants
 
-These contracts keep the L0–L2 prefix cache and compaction splice correct:
+These contracts keep ordinary calls and compaction forks cache-safe:
 
 - **No system messages in state.** `AgentState.messages` holds the conversation
   only. The L0–L2 system prefix is rebuilt each `agent_node` turn and never
   checkpointed.
-- **L3 is ephemeral.** Overlay text is injected via `_with_working_state_tail`
-  as a `<system-reminder>` (see `wrap_system_reminder`) for the model call only
-  — it is never written into `AgentState.messages`.
+- **Two histories.** `AgentState.messages` is the clean semantic transcript.
+  `model_context_messages` retains exact model-facing L3 reminder tails for
+  prefix continuity; those tails never enter durable CLI events or reflection.
+- **Boundary compaction.** Summary runs after completed tools and before the
+  next agent call with the same bound main model, tools, system, and session.
 - **`session.metadata` identity.** `make_nodes` snapshots the metadata dict at
   graph build. In-place mutation of `session.metadata` is visible on later
   turns; reassignment (`session.metadata = {...}`) needs `rebuild_graph()`.
@@ -510,7 +560,7 @@ coding path).
 | `user`, `compact` | App / `CodingSession` |
 | `assistant`, `tool`, `usage`, `approval` | Graph (`nodes.py`) |
 | `reflection` | `reflection.py` (durable only; not a `SessionEvent`) |
-| `compaction_llm` | `compaction.py` |
+| `compaction_llm` | SDK compaction boundary |
 
 **Important:**
 
@@ -730,7 +780,7 @@ print(cost.report())                        # multi-line string breakdown
 |                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
 | `tool.<name>`               | `tool.name`, `tool.duration_ms`, `tool.error`, `tool.exit_status`, `tool.args` (when ``capture_tool_args=True``)                                                                                                  |
 |                             | + `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` (when ``capture_messages=True``; result truncated to ``max_message_length``)                                                                          |
-| `compaction.summarize`      | `compaction.action`, `compaction.kept_recent`, `session.thread_id`, `gen_ai.request.model`, `gen_ai.operation.name`                                                                                               |
+| `compaction.summarize`      | trigger, before/after tokens, active suffix count, `session.thread_id`, model, operation                                                                                               |
 |                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |
 | `reflection.gate`           | `session.thread_id`, `gen_ai.operation.name`, `reflection.bullets`                                                                                                                                               |
 |                             | + `gen_ai.prompt`, `gen_ai.completion` (when ``capture_messages=True``)                                                                                                                                         |

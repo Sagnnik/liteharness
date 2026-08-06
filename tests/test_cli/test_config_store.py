@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from ness_cli.config_store import (
     ensure_secrets_file,
     load_configs,
     load_secrets,
-    migrate_env_once,
+    locked_path,
     write_config,
     write_secret,
 )
@@ -72,49 +73,18 @@ def test_ensure_secrets_file_creates_once(config_dir: Path):
     assert ensure_secrets_file() is None
 
 
-def test_migrate_env_once_imports_and_marks(config_dir: Path, tmp_path: Path):
-    env = tmp_path / ".env"
-    env.write_text(
-        "OPENAI_API_KEY=sk-from-env\n"
-        "EXA_API_KEY=exa-from-env\n"
-        "MODEL_NAME=openai/gpt-4o\n"
-        "ENABLE_APPROVAL=false\n"
-        "API_MAX_RETRIES=5\n"
-        "UNRELATED_VAR=ignored\n"
-        "EMPTY_VALUE=\n",
-        encoding="utf-8",
-    )
-    from ness_cli.config import settings_field_env_map
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW is unavailable")
+def test_locked_path_refuses_a_sidecar_symlink(tmp_path: Path):
+    destination = tmp_path / "credentials.json"
+    target = tmp_path / "unrelated"
+    target.write_text("keep", encoding="utf-8")
+    destination.with_name("credentials.json.lock").symlink_to(target)
 
-    imported = migrate_env_once(env, field_for_alias=settings_field_env_map())
-    assert set(imported) == {
-        "openai_api_key",
-        "exa_api_key",
-        "model_name",
-        "enable_approval",
-        "api_max_retries",
-    }
-    assert load_secrets() == {"openai_api_key": "sk-from-env", "exa_api_key": "exa-from-env"}
-    assert load_configs() == {
-        "model_name": "openai/gpt-4o",
-        "enable_approval": False,
-        "api_max_retries": 5,
-    }
-    assert _mode(config_dir / "secrets.json") == 0o600
-    # .env left untouched; marker prevents a second run.
-    assert "sk-from-env" in env.read_text(encoding="utf-8")
-    assert migrate_env_once(env, field_for_alias=settings_field_env_map()) == []
+    with pytest.raises(OSError):
+        with locked_path(destination, secret=True):
+            pass
 
-
-def test_migrate_env_existing_json_wins(config_dir: Path, tmp_path: Path):
-    write_config("model_name", "deepseek/deepseek-chat", config_dir)
-    env = tmp_path / ".env"
-    env.write_text("MODEL_NAME=openai/gpt-4o\n", encoding="utf-8")
-    from ness_cli.config import settings_field_env_map
-
-    imported = migrate_env_once(env, field_for_alias=settings_field_env_map())
-    assert imported == []
-    assert load_configs() == {"model_name": "deepseek/deepseek-chat"}
+    assert target.read_text(encoding="utf-8") == "keep"
 
 
 def test_settings_reads_global_json(config_dir: Path, monkeypatch):
@@ -145,3 +115,27 @@ def test_settings_defaults_without_json(config_dir: Path, monkeypatch):
     fresh = Settings()
     assert fresh.model_name == "deepseek/deepseek-v4-flash"
     assert fresh.openai_api_key is None
+
+
+def test_project_dotenv_is_not_loaded_or_migrated(
+    config_dir: Path, tmp_path: Path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "MODEL_NAME=dotenv/model\nOPENAI_API_KEY=dotenv-secret\n",
+        encoding="utf-8",
+    )
+    from ness_cli.config import Settings
+    from ness_cli.factory import prepare_paths
+
+    fresh = Settings()
+    prepare_paths(project_root=tmp_path)
+
+    assert fresh.model_name == "deepseek/deepseek-v4-flash"
+    assert fresh.openai_api_key is None
+    assert load_configs() == {}
+    assert load_secrets() == {}
+    assert "dotenv-secret" in dotenv.read_text(encoding="utf-8")

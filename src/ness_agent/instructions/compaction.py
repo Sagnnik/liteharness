@@ -1,14 +1,14 @@
-COMPACTION = """You are summarizing a session for an AI agent to continue its work. 
-Be extremely concise. Focus on actionable state and facts. Discard conversational filler and raw tool outputs unless they contain errors.
+COMPACTION = """Create a concise continuation summary of the completed conversation above.
 
-Format your summary using these exact sections:
+Preserve actionable state and facts: the user's goal and constraints, decisions and their reasons, work completed, files changed or inspected, failures that must not be repeated, unresolved blockers, and the exact next steps. Discard conversational filler and raw tool output unless it contains an important result or error.
 
-**Goal:** [The user's core objective and any strict constraints]
-**Progress & Decisions:** [What was implemented/changed and the architectural reasoning why]
-**Key Files:** [List of files read, modified, or created with a 5-word status e.g., `src/api.ts - added auth middleware`]
-**Blockers & Failed Attempts:** [Unresolved errors and approaches that failed so the agent doesn't repeat them]
-**Status:** [State explicitly whether the task's definition-of-done is met or still open, so the agent does not redundantly repeat finished work or stop early]
-**Next Steps:** [The immediate actions the agent was about to take before compaction]
+Use these exact sections:
 
-Transcript to summarize:
-{messages}"""
+**Goal:** [Core objective and strict constraints]
+**Progress & Decisions:** [Completed work and architectural decisions]
+**Key Files:** [Relevant files and their current status]
+**Blockers & Failed Attempts:** [Unresolved errors and failed approaches]
+**Status:** [Whether the definition of done is met or still open]
+**Next Steps:** [Immediate continuation actions]
+
+Do not call tools. Output only the summary."""

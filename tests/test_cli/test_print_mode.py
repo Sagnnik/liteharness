@@ -94,12 +94,20 @@ class _FakeMCP:
         self.tools: dict = {}
         self.started = False
         self.stopped = False
+        self.untrusted = False
+        self.kwargs: dict = {}
+
+    def load(self):
+        return SimpleNamespace(has_runnable_servers=False)
 
     async def start(self) -> None:
         self.started = True
 
     async def stop(self) -> None:
         self.stopped = True
+
+    def mark_untrusted(self) -> None:
+        self.untrusted = True
 
     def catalog(self) -> dict:
         return {}
@@ -225,9 +233,19 @@ def _patch_headless_infra(monkeypatch, tmp_path: Path, coding: CodingSession) ->
     fake_mcp = _FakeMCP()
     monkeypatch.setattr(headless, "is_git_repo", lambda: False)
     monkeypatch.setattr(
-        headless, "prepare_paths", lambda: SimpleNamespace(project_root=tmp_path)
+        headless,
+        "prepare_paths",
+        lambda: SimpleNamespace(
+            project_root=tmp_path,
+            ness_dir=tmp_path / ".ness",
+            config_dir=tmp_path / "config",
+        ),
     )
-    monkeypatch.setattr(headless, "MCPManager", lambda **kw: fake_mcp)
+    def make_mcp(**kwargs):
+        fake_mcp.kwargs = kwargs
+        return fake_mcp
+
+    monkeypatch.setattr(headless, "ProjectMCPManager", make_mcp)
     monkeypatch.setattr(headless, "build_coding_session", lambda **kw: coding)
     monkeypatch.setattr(headless, "provider_key_missing", lambda: False)
     monkeypatch.setattr(headless.settings, "auto_save_threads", True)
@@ -260,6 +278,7 @@ def test_run_headless_end_to_end(tmp_path: Path, monkeypatch, capsys):
     assert captured.out == "world\n"
     assert "Resume: ness --resume t-print" in captured.err
     assert fake_mcp.started and fake_mcp.stopped
+    assert fake_mcp.kwargs["mcp_file"] == tmp_path / ".ness" / "mcp.json"
     durable = coding.thread_store.load_thread_events("t-print")
     assert any(e.get("kind") == "user" for e in durable)
 
@@ -274,6 +293,25 @@ def test_run_headless_resume_missing_thread(tmp_path: Path, monkeypatch, capsys)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "no saved thread" in captured.err
+
+
+def test_run_headless_untrusted_mcp_never_starts_even_with_yolo(
+    tmp_path: Path, monkeypatch, capsys
+):
+    coding = _make_coding(
+        tmp_path,
+        _BindableFakeModel([AIMessage(content="safe")]),
+        yolo=True,
+    )
+    fake_mcp = _patch_headless_infra(monkeypatch, tmp_path, coding)
+    monkeypatch.setattr(headless, "is_mcp_trusted", lambda *args, **kwargs: False)
+
+    code = _run(headless.run_headless("hello", yolo=True))
+
+    assert code == 0
+    assert not fake_mcp.started
+    assert fake_mcp.untrusted
+    assert "not trusted" in capsys.readouterr().err
 
 
 # ----------------------------------------------------------------------

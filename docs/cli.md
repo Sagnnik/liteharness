@@ -10,6 +10,7 @@ See also: [Configuration](configuration.md) · [Architecture](architecture.md) �
 
 ```bash
 pip install ness-agent
+ness --version               # verify the install
 export OPENAI_API_KEY=...    # or set via /config on first launch
 ness
 ```
@@ -63,10 +64,18 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 
 ## Skills
 
-Skills live under `.ness/skills/<name>/SKILL.md`:
+Primary project skills live under `.ness/skills/<name>/SKILL.md`. Ness also discovers skills from common agent directories when present:
+
+**Project-local:** `.agents/skills/`, `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`  
+**User-global:** `~/.agents/skills/` only
+
+This discovery is a Ness CLI policy — the CLI passes these roots to the SDK explicitly. The SDK itself scans only the directories it is given; embedders opt into the well-known roots via `merge_skill_dirs()` (see [SDK guide → Skills](sdk.md#skills)).
+
+`.ness/skills` wins on name collisions; then other project roots; then global. Nested category layouts (`category/skill/SKILL.md`) are supported. A directory with `SKILL.md` is a skill (resources like `scripts/` are not scanned as skills).
 
 ```text
 .ness/skills/react_component/SKILL.md
+.agents/skills/product-a/skill-one/SKILL.md
 ```
 
 Each `SKILL.md` may include YAML frontmatter:
@@ -118,21 +127,32 @@ The fallback requires no API key but is less capable: no neural search, weaker s
 
 ## MCP
 
-Ness Agent connects to local **stdio** MCP servers at CLI startup. Each server is a child process; Ness Agent discovers its tools and exposes them to the agent.
+Ness Agent connects to local **stdio** and remote **Streamable HTTP** MCP servers at CLI startup, discovers their tools, and exposes them to the agent.
 
-**Security:** MCP servers run arbitrary commands with your user permissions. Only add servers you trust, same as running `npx @some/mcp-server` directly.
+**Security:** stdio servers run arbitrary commands with your user permissions, and remote servers receive the configured headers. Before starting a changed non-empty configuration, interactive Ness shows a redacted server summary and asks you to trust that exact configuration. The approval is stored by project and config fingerprint in global `configs.json`; changing a command, endpoint, credential template, or server set requires approval again. Headless mode never prompts and skips untrusted MCP servers, even with `--yolo`; run interactive Ness once to approve them.
 
-Configure servers in `.ness/mcp.json`. Either `servers` or `mcpServers` works (the latter matches Cursor's config shape):
+Configure MCP servers in `.ness/mcp.json` with the `mcpServers` key (same shape as Cursor):
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "filesystem": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-      "env": {},
-      "cwd": ".",
+      "envFile": ".env",
+      "env": {"API_KEY": "${env:FILES_API_KEY}"},
+      "cwd": "${workspaceFolder}",
       "startup_timeout": 20
+    },
+    "hosted": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "oauth": {
+        "clientId": "${MCP_CLIENT_ID}",
+        "callbackPort": 8787,
+        "scopes": "read write"
+      }
     }
   }
 }
@@ -140,10 +160,33 @@ Configure servers in `.ness/mcp.json`. Either `servers` or `mcpServers` works (t
 
 Per-server fields:
 
-- `command` / `args`: process to spawn. `command` may also be a one-element array like `["npx", "-y", "..."]`.
-- `env`: optional environment overrides.
+- `type`: optional `stdio`, `http`, or `streamable-http`. When omitted, `command` implies stdio and `url` implies HTTP.
+- `command` / `args`: stdio process to spawn. `command` may also be an array like `["npx", "-y", "..."]`; its remaining elements are prepended to `args`.
+- `env`: optional stdio environment overrides. Ness inherits only the MCP SDK's safe environment allowlist, then applies `envFile`, then `env`.
+- `envFile`: optional dotenv file for stdio servers, resolved from the project root.
 - `cwd`: working directory for the server process (defaults to the project root).
+- `url` / `headers`: Streamable HTTP endpoint and optional request headers.
+- `auth`: Cursor static OAuth shape (`CLIENT_ID`, optional `CLIENT_SECRET`, and optional scope list).
+- `oauth`: Claude OAuth shape (`clientId`, optional `clientSecret`, `callbackPort`, scopes, and token endpoint authentication method). Omit the client ID to use dynamic registration.
 - `startup_timeout`: seconds to wait for connect + tool discovery (default `20`).
+
+String fields support Cursor interpolation (`${env:NAME}`, `${userHome}`, `${workspaceFolder}`, `${workspaceFolderBasename}`, `${pathSeparator}`, `${/}`) and Claude interpolation (`${NAME}`, `${NAME:-default}`). Expansion uses the Ness process environment; `envFile` values are only passed to the stdio child. Missing required variables invalidate that server without blocking others.
+
+OAuth never launches a browser during normal interactive or headless startup. Authenticate explicitly with `ness mcp login <server>`; use `--no-open` to open the printed URL yourself or `--manual-callback` to paste a callback URL over SSH. Stored tokens refresh automatically. `ness mcp logout <server>` removes local credentials but does not revoke the provider-side token; it exits with an error instead of claiming success when keyring deletion cannot be verified.
+
+Management commands:
+
+```text
+ness mcp status [server]
+ness mcp login <server> [--callback-port PORT] [--no-open] [--manual-callback]
+ness mcp logout <server>
+ness mcp import <cursor-or-claude.json> --dry-run
+ness mcp import <cursor-or-claude.json> [--server NAME] [--replace NAME] [--yes]
+```
+
+Imports are explicit and transactional. Differing name conflicts abort the entire import unless each is named with `--replace`, and a destination edit made after confirmation aborts rather than being overwritten. Imports are written to `.ness/mcp.json` but never grant execution trust; the next interactive startup still shows the redacted trust prompt. Import provenance is kept in global `configs.json`.
+
+SSE, WebSocket, `headersHelper`, OAuth metadata URL overrides, automatic config discovery, and native registry/add commands are not supported yet. Explicit `sse` and `ws` entries are reported as unsupported rather than guessed.
 
 Tools are exposed as `mcp__<server>__<tool>`. The startup header shows connected MCP servers in Add-ons; use `/mcp` for the full server and tool list. Connection failures are shown as a startup warning. Startup failures do not stop the CLI.
 
@@ -204,7 +247,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 - `/goal <objective>`: run up to three worker attempts, each followed by an isolated read-only judge. Failed verdicts become repair instructions for the next attempt.
 - `/save`: archive the current thread with a headline summary.
 - `/new`: archive and start a fresh thread.
-- `/compact`: mark/manual compaction request.
+- `/compact`: request a cache-safe summary at the next model boundary; the active user/tool turn remains verbatim.
 
 **Context & memory**
 
@@ -247,12 +290,14 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "approval", "tool": "edit", "decision": "yes", "t": "..."}
 {"kind": "usage", "model": "deepseek/deepseek-v4-flash", "input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 20, "cost_usd": 0.0001, "cost_source": "provider", "t": "..."}
 {"kind": "reflection", "prompt": "...", "response": {"new_bullet_points": []}, "message_index": 12, "memory_updated": true, "error": "", "t": "..."}
-{"kind": "compaction_llm", "prompt": "...", "response": "...", "action": "summary", "kept_recent": 10, "t": "..."}
+{"kind": "compaction_llm", "instruction": "...", "response": "...", "source_event_seq": 12, "active_user_seq": 13, "trigger": "automatic", "before_tokens": 101000, "after_tokens": 9000, "active_suffix_messages": 1, "t": "..."}
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}
 ```
 
 `/threads` lists user `session-*` threads only. The original conversation shows `×N` when it has forks; each fork shows `fork #k` in creation order. Fork lineage is stored explicitly on the thread row; inherited usage remains in the copied event history but is excluded from the child thread's cost totals. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
 
 Selecting a thread rebuilds user messages, assistant tool-call turns, and tool results from saved events. The startup `--resume <thread_id>` flag remains available for automation. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
+
+When a thread contains a successful new-format `compaction_llm` checkpoint, resume starts from its summary and replays only raw events after `source_event_seq`. Raw conversation events remain available for audit, rollback, and forks; L3 reminder messages are never written to the event log.
 
 Threads are archived on `/save`, `/new`, thread switching/forking, and session exit. Archived threads get a headline summary from the first user message.

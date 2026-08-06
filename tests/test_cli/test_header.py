@@ -4,6 +4,7 @@ import ness_cli.tui.transcript as transcript_module
 from ness_cli.tui.header import header_lines
 from ness_cli.tui.models import TranscriptLine
 from ness_cli.tui.transcript import TranscriptMixin
+from ness_cli.tui.widgets import TranscriptStore
 
 
 def _all_text(lines: list[TranscriptLine]) -> str:
@@ -93,39 +94,12 @@ def test_yolo_mode_label():
 # --- in-place replace + resize reflow (TranscriptMixin behavior) ------------
 
 
-class _FakeStore:
-    """Minimal TranscriptStore stand-in for append_header / reflow tests."""
-
-    def __init__(self, width: int = 120) -> None:
-        self.lines: list[TranscriptLine] = []
-        self.revision = 0
-        self.width = width
-
-    def set_width(self, width: int) -> bool:
-        if width == self.width:
-            return False
-        self.width = width
-        return True
-
-    def append(self, lines: list[TranscriptLine]) -> None:
-        self.lines.extend(lines)
-        self.revision += 1
-
-    def insert(self, start: int, lines: list[TranscriptLine]) -> None:
-        start = max(0, min(start, len(self.lines)))
-        self.lines[start:start] = lines
-        self.revision += 1
-
-    def replace(self, start: int, count: int, lines: list[TranscriptLine]) -> None:
-        self.lines[start : start + count] = lines
-        self.revision += 1
-
-
 class _HeaderHarness(TranscriptMixin):
     """Bare TranscriptMixin instance with stubbed dependencies."""
 
     def __init__(self, *, width: int = 120) -> None:
-        self._transcript_store = _FakeStore(width=width)
+        self._lines: list[TranscriptLine] = []
+        self._transcript_store = TranscriptStore(self._lines, width=width)
         self._transcript_revision = 0
         self._transcript_render_width = width
         self._header_block: dict | None = None
@@ -167,7 +141,7 @@ def test_append_header_inserts_above_existing_startup_notices():
         autosave=True,
         session_end_reflection=True,
     )
-    assert m._header_block["start"] == 0
+    assert m._header_block["block"].start == 0
     text = "\n".join(line.text for line in m._transcript_store.lines)
     assert "Ness" in text
     assert text.index("Ness") < text.index("missing API key")
@@ -184,8 +158,8 @@ def test_append_header_replaces_block_in_place_instead_of_duplicating():
         session_end_reflection=True,
     )
     first_count = len(m._transcript_store.lines)
-    assert m._header_block["start"] == 0
-    assert m._header_block["count"] == first_count
+    assert m._header_block["block"].start == 0
+    assert m._header_block["block"].count == first_count
     assert m._header_block["source"]["mode"] == "act"
 
     # second call (simulates /config refresh after a mode/model change)
@@ -199,8 +173,8 @@ def test_append_header_replaces_block_in_place_instead_of_duplicating():
     second_count = len(m._transcript_store.lines)
     # no duplicate banner: the line count is unchanged and the block still sits at index 0
     assert second_count == first_count
-    assert m._header_block["start"] == 0
-    assert m._header_block["count"] == second_count
+    assert m._header_block["block"].start == 0
+    assert m._header_block["block"].count == second_count
     assert m._header_block["source"]["mode"] == "plan"
     text = "\n".join(line.text for line in m._transcript_store.lines)
     assert "Plan" in text and "m2" in text

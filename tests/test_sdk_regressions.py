@@ -8,11 +8,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, messages_from_dict
 from langchain_core.tools import tool
 
-from ness_agent import NessAgent, PromptLayers, PromptLayersConfig
-from ness_agent.compaction import CompactionResult, apply_force_floor, summarize_history
+from ness_agent import NessAgent, NoOverlay, PromptLayers, PromptLayersConfig
+from ness_agent.compaction import summarize
+from ness_agent.context.budget import (
+    ContextPressure,
+    resolve_token_count,
+    resolve_usable_context_budget,
+)
+from ness_agent.context.overlay import OverlayContext, OverlayProvider
+from ness_cli.events import events_to_messages
 from ness_agent.context.layers import AuxPrompts
 from ness_agent.graph.nodes import make_nodes
 from ness_agent.memory import MemoryStore
@@ -39,16 +46,23 @@ def _agent(tmp_path: Path, **kwargs):
     )
 
 
-def test_apply_force_floor_upgrades_to_summary_when_history_long():
-    assert apply_force_floor("none", 0, 11) == ("summary", 10)
-    assert apply_force_floor("tool_outputs", 0, 11) == ("summary", 10)
-    assert apply_force_floor("summary", 5, 11) == ("summary", 5)
+def test_summarize_appends_human_instruction_to_exact_prefix():
+    seen = {}
 
+    class Model:
+        async def ainvoke(self, messages, **kwargs):
+            seen["messages"] = list(messages)
+            seen["kwargs"] = kwargs
+            return AIMessage(content="summary text")
 
-def test_apply_force_floor_tool_outputs_when_history_short():
-    assert apply_force_floor("none", 0, 10) == ("tool_outputs", 0)
-    assert apply_force_floor("none", 0, 5) == ("tool_outputs", 0)
-    assert apply_force_floor("tool_outputs", 3, 5) == ("tool_outputs", 3)
+    prefix = [HumanMessage(content="first"), AIMessage(content="answer")]
+    result = asyncio.run(
+        summarize(prefix, Model(), instruction="Summarize now", max_output_tokens=321)
+    )
+    assert result == "summary text"
+    assert seen["messages"][:-1] == prefix
+    assert seen["messages"][-1].content == "Summarize now"
+    assert seen["kwargs"]["max_tokens"] == 321
 
 
 def test_reflection_result_returns_bullets(tmp_path: Path):
@@ -95,13 +109,6 @@ def test_agent_node_tool_loop_without_overlay(tmp_path: Path):
     cfg = replace(agent.config, overlay=None, thread_store=store)
     rt = make_nodes(cfg, thread_id="subagent-explore-test", mode="act", git_available=False)
 
-    not_compacted = CompactionResult(
-        messages=[],
-        compacted=False,
-        token_count=10,
-        action="none",
-    )
-
     async def fake_ainvoke(_msgs):
         return AIMessage(content="ok")
 
@@ -112,15 +119,7 @@ def test_agent_node_tool_loop_without_overlay(tmp_path: Path):
         "todos": [],
     }
 
-    with (
-        patch(
-            "ness_agent.graph.nodes.progressive_compact",
-            side_effect=lambda conv, **kw: replace(
-                not_compacted, messages=list(conv)
-            ),
-        ),
-        patch.object(cfg.tool_registry, "bind_model", return_value=bind),
-    ):
+    with patch.object(cfg.tool_registry, "bind_model", return_value=bind):
         asyncio.run(rt.agent_node(state))
         tool_loop = {
             **state,
@@ -138,11 +137,92 @@ def test_agent_node_tool_loop_without_overlay(tmp_path: Path):
     assert updates["messages"][0].content == "ok"
 
 
-def test_summarize_history_persists_once_on_success_and_failure(tmp_path: Path):
-    store = ThreadStore(threads_dir=tmp_path / "threads", default_model="m")
+def test_gate_provides_overlay_note_without_agent_pressure_recalculation(tmp_path: Path):
+    class RecordingOverlay(OverlayProvider):
+        def __init__(self):
+            self.notes: list[str] = []
 
+        def sections(self, _state, ctx: OverlayContext) -> dict[str, str]:
+            self.notes.append(ctx.compaction_note)
+            return {"compaction": ctx.compaction_note} if ctx.compaction_note else {}
+
+    overlay = RecordingOverlay()
+    agent = _agent(tmp_path, overlay=overlay)
+    rt = make_nodes(agent.config, thread_id="gate-note", mode="act", git_available=False)
+    pressure = ContextPressure(
+        token_count=750,
+        context_limit=1_000,
+        ratio=0.75,
+        warning=True,
+        should_compact=False,
+        safety_threshold_reached=False,
+        hard_threshold_reached=False,
+    )
+
+    async def fake_ainvoke(_messages):
+        return AIMessage(content="ok")
+
+    state = {
+        "messages": [HumanMessage(content="check context")],
+        "mode": "act",
+        "todos": [],
+    }
+    with (
+        patch("ness_agent.graph.nodes.calculate_context_pressure", return_value=pressure) as calculate,
+        patch.object(
+            agent.config.tool_registry,
+            "bind_model",
+            return_value=SimpleNamespace(ainvoke=fake_ainvoke),
+        ),
+    ):
+        gate_updates = asyncio.run(rt.context_gate(state))
+        agent_updates = asyncio.run(rt.agent_node({**state, **gate_updates}))
+
+    assert calculate.call_count == 1
+    assert overlay.notes == [
+        "Context ~750 tokens (75% of the configured context limit). "
+        "Summary compaction may begin soon."
+    ]
+    assert agent_updates["compaction_status"] == {}
+
+
+def test_agent_node_fallback_token_count_uses_final_overlay_payload(tmp_path: Path):
+    class StaticOverlay(OverlayProvider):
+        def sections(self, _state, _ctx: OverlayContext) -> dict[str, str]:
+            return {"test": "Overlay content that must be counted."}
+
+    agent = _agent(tmp_path, overlay=StaticOverlay())
+    rt = make_nodes(agent.config, thread_id="fallback-token-count", mode="act", git_available=False)
+    seen: list = []
+
+    async def fake_ainvoke(messages):
+        seen[:] = list(messages)
+        return AIMessage(content="ok")
+
+    with patch.object(
+        agent.config.tool_registry,
+        "bind_model",
+        return_value=SimpleNamespace(ainvoke=fake_ainvoke),
+    ):
+        updates = asyncio.run(rt.agent_node({
+            "messages": [HumanMessage(content="count this request")],
+            "mode": "act",
+            "todos": [],
+        }))
+
+    assert any(
+        (message.additional_kwargs or {}).get("ness_internal") == "overlay"
+        for message in seen
+    )
+    assert updates["last_input_tokens"] == resolve_token_count(
+        seen,
+        known_input_tokens=None,
+    )
+
+
+def test_summarize_rejects_provider_failure_and_tool_calls():
     class OkModel:
-        async def ainvoke(self, _messages):
+        async def ainvoke(self, _messages, **_kwargs):
             return SimpleNamespace(
                 content="summary text",
                 usage_metadata=None,
@@ -150,44 +230,348 @@ def test_summarize_history_persists_once_on_success_and_failure(tmp_path: Path):
             )
 
     class BoomModel:
-        async def ainvoke(self, _messages):
+        async def ainvoke(self, _messages, **_kwargs):
             raise RuntimeError("summarizer down")
+    assert asyncio.run(summarize([HumanMessage(content="hello")], OkModel())) == "summary text"
+    with pytest.raises(RuntimeError, match="summarizer down"):
+        asyncio.run(summarize([HumanMessage(content="hello")], BoomModel()))
 
-    asyncio.run(
-        summarize_history(
-            [HumanMessage(content="hello")],
-            OkModel(),
-            thread_id="session-sum-ok",
-            persistence=store,
-            action="summary",
-            kept_recent=4,
-        )
-    )
-    ok_events = [
-        e
-        for e in store.load_thread_events("session-sum-ok")
-        if e.get("kind") == "compaction_llm"
-    ]
-    assert len(ok_events) == 1
-    assert ok_events[0]["response"] == "summary text"
+    class ToolModel:
+        async def ainvoke(self, _messages, **_kwargs):
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "ping", "args": {}, "id": "c1"}],
+            )
 
-    asyncio.run(
-        summarize_history(
-            [HumanMessage(content="hello")],
-            BoomModel(),
-            thread_id="session-sum-fail",
-            persistence=store,
-            action="summary",
-            kept_recent=4,
-        )
+    with pytest.raises(RuntimeError, match="tool call"):
+        asyncio.run(summarize([HumanMessage(content="hello")], ToolModel()))
+
+
+def test_forced_compaction_forks_cached_prefix_and_retains_active_user(tmp_path: Path):
+    class RecordingModel:
+        model = "recording"
+
+        def __init__(self):
+            self.calls = []
+            self.responses = [
+                "first answer",
+                "summary text",
+                "second answer",
+                "resumed answer",
+            ]
+
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, messages, **kwargs):
+            self.calls.append((list(messages), dict(kwargs)))
+            return AIMessage(content=self.responses[len(self.calls) - 1])
+
+    model = RecordingModel()
+    agent = NessAgent(
+        model=model,
+        tools=[],
+        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
+        overlay=NoOverlay(),
+        options=NessAgentOptions(ness_dir=tmp_path / ".ness", project_root=tmp_path),
     )
-    fail_events = [
-        e
-        for e in store.load_thread_events("session-sum-fail")
-        if e.get("kind") == "compaction_llm"
-    ]
-    assert len(fail_events) == 1
-    assert "Compaction summary unavailable" in fail_events[0]["response"]
+    session = agent.session(thread_id="session-cache-safe", git_available=False)
+    asyncio.run(session.run("first task"))
+    session.request_compact()
+    asyncio.run(session.run("active task"))
+
+    first_request = model.calls[0][0]
+    summary_request = model.calls[1][0]
+    post_compaction = model.calls[2][0]
+    assert summary_request[: len(first_request)] == first_request
+    assert "HARNESS COMPACTION RULES" in summary_request[-1].content
+    assert any(m.content == "active task" for m in post_compaction)
+    assert any("<compacted-history>" in str(m.content) for m in post_compaction)
+    assert not any(m.content == "first task" for m in post_compaction)
+
+    checkpoint = next(
+        event
+        for event in agent.config.thread_store.load_thread_events("session-cache-safe")
+        if event.get("kind") == "compaction_llm"
+    )
+    assert checkpoint["active_user_seq"] is None
+    durable_suffix = messages_from_dict(checkpoint["active_suffix"])
+    assert any(message.content == "active task" for message in durable_suffix)
+
+    resumed = agent.session(thread_id="session-cache-safe", git_available=False)
+    resumed.bootstrap(events_to_messages(
+        agent.config.thread_store.load_thread_events("session-cache-safe")
+    ))
+    asyncio.run(resumed.run("follow up"))
+    resumed_request = model.calls[3][0]
+    assert any(message.content == "active task" for message in resumed_request)
+    assert any(message.content == "follow up" for message in resumed_request)
+
+
+def test_failed_binding_does_not_replace_last_successful_compaction_parent(tmp_path: Path):
+    class Binding:
+        def __init__(self, responses=(), *, fail=False):
+            self.responses = list(responses)
+            self.fail = fail
+            self.calls = []
+
+        async def ainvoke(self, messages, **_kwargs):
+            self.calls.append(list(messages))
+            if self.fail:
+                raise RuntimeError("schema generation failed")
+            return AIMessage(content=self.responses.pop(0))
+
+    agent = _agent(tmp_path)
+    rt = make_nodes(
+        agent.config,
+        thread_id="session-binding-failure",
+        mode="act",
+        git_available=False,
+    )
+    successful = Binding(["first answer", "summary from successful binding"])
+    failed = Binding(fail=True)
+    first_state = {"messages": [HumanMessage(content="first task")], "mode": "act"}
+
+    with patch.object(
+        agent.config.tool_registry,
+        "bind_model",
+        side_effect=[successful, failed],
+    ):
+        first = asyncio.run(rt.agent_node(first_state))
+        assert rt.last_bound_model is successful
+
+        @tool("mcp__review__new_schema")
+        def new_schema_tool() -> str:
+            """Dynamically activated schema used by the failed request."""
+            return "new"
+
+        agent.config.tool_registry.register_dynamic([new_schema_tool])
+        added, unknown = agent.config.tool_registry.activate_mcp(
+            ["mcp__review__new_schema"]
+        )
+        assert added == ["mcp__review__new_schema"]
+        assert unknown == []
+        second_state = {
+            "messages": [
+                *first_state["messages"],
+                *first["messages"],
+                HumanMessage(content="active task", id="active-binding-turn"),
+            ],
+            "model_context_messages": first["model_context_messages"],
+            "model_context_source_count": first["model_context_source_count"],
+            "model_system_message": first["model_system_message"],
+            "last_input_tokens": first["last_input_tokens"],
+            "mode": "act",
+        }
+        with pytest.raises(RuntimeError, match="schema generation failed"):
+            asyncio.run(rt.agent_node(second_state))
+        assert rt.last_bound_model is successful
+
+        compacted = asyncio.run(rt.context_gate({
+            **second_state,
+            "force_compact": True,
+        }))
+
+    assert compacted["compaction_status"]["compacted"] is True
+    assert len(successful.calls) == 2
+    assert successful.calls[-1][0] == first["model_system_message"]
+    assert "HARNESS COMPACTION RULES" in successful.calls[-1][-1].content
+
+
+def test_session_pressure_includes_stable_system_prefix(tmp_path: Path):
+    agent = NessAgent(
+        model=FakeListChatModel(responses=["unused"]),
+        tools=[],
+        prompt=PromptLayers(PromptLayersConfig(l0="system " * 1200, persona="P")),
+        overlay=NoOverlay(),
+        options=NessAgentOptions(
+            context_window=8_000,
+            compaction_buffer_tokens=1_000,
+            compaction_summary_max_tokens=500,
+            ness_dir=tmp_path / ".ness",
+            project_root=tmp_path,
+        ),
+    )
+    session = agent.session(thread_id="session-pressure", git_available=False)
+    human = HumanMessage(content="short conversation")
+
+    class SnapshotApp:
+        async def aget_state(self, _config):
+            return SimpleNamespace(values={"messages": [human]})
+
+    session._app = SnapshotApp()
+    asyncio.run(session.refresh_context_snapshot())
+    expected = resolve_token_count(
+        [session.build_system_message(), human], known_input_tokens=None
+    )
+    conversation_only = resolve_token_count([human], known_input_tokens=None)
+    assert session.context_used == expected
+    assert session.context_used > conversation_only
+
+
+def test_incremental_input_tokens_counts_only_new_semantic_tail():
+    from langchain_core.messages import SystemMessage
+
+    from ness_agent.graph.helpers import _incremental_input_tokens
+
+    user = HumanMessage(content="task")
+    overlay = HumanMessage(
+        content="<system-reminder>plan</system-reminder>",
+        additional_kwargs={"ness_internal": "overlay"},
+    )
+    tool = ToolMessage(content="big output", tool_call_id="c1", name="read")
+    system = SystemMessage(content="sys")
+
+    stored_context = [user, overlay]
+    conversation = [user, overlay, tool]
+    tool_tokens = resolve_token_count([tool], known_input_tokens=None)
+
+    assert _incremental_input_tokens(
+        conversation=conversation,
+        stored_context=stored_context,
+        stored_system=system,
+        current_system=system,
+        last_input=1000,
+    ) == 1000 + tool_tokens
+
+
+def test_compaction_retains_multi_step_active_tool_trajectory(tmp_path: Path):
+    class SummaryBinding:
+        def __init__(self):
+            self.calls = []
+
+        async def ainvoke(self, messages, **_kwargs):
+            self.calls.append(list(messages))
+            return AIMessage(content="completed history summary")
+
+    agent = _agent(tmp_path)
+    rt = make_nodes(
+        agent.config,
+        thread_id="session-tool-trajectory",
+        mode="act",
+        git_available=False,
+    )
+    binding = SummaryBinding()
+    rt.last_bound_model = binding
+    active_user = HumanMessage(content="inspect and continue", id="active-tool-turn")
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "ping", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(
+        content="pong",
+        name="ping",
+        tool_call_id="call-1",
+    )
+    updates = asyncio.run(rt.context_gate({
+        "messages": [
+            HumanMessage(content="completed task"),
+            AIMessage(content="completed answer"),
+            active_user,
+            tool_call,
+            tool_result,
+        ],
+        "force_compact": True,
+        "mode": "act",
+    }))
+
+    retained = updates["model_context_messages"]
+    assert "<compacted-history>" in retained[0].content
+    assert retained[1:] == [active_user, tool_call, tool_result]
+    assert updates["compaction_status"]["overlay_note"].startswith(
+        "Conversation was summarized at this model boundary."
+    )
+    checkpoint = agent.config.thread_store.load_thread_events(
+        "session-tool-trajectory"
+    )[-1]
+    durable = messages_from_dict(checkpoint["active_suffix"])
+    assert [message.type for message in durable] == ["human", "ai", "tool"]
+    assert durable[-1].tool_call_id == "call-1"
+
+
+def test_summary_failure_is_suppressed_for_same_active_turn(tmp_path: Path):
+    class FailingSummaryBinding:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, _messages, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("summary unavailable")
+
+    agent = _agent(tmp_path)
+    rt = make_nodes(
+        agent.config,
+        thread_id="session-summary-retry",
+        mode="act",
+        git_available=False,
+    )
+    binding = FailingSummaryBinding()
+    rt.last_bound_model = binding
+    active = HumanMessage(content="active task", id="same-active-turn")
+    state = {
+        "messages": [
+            HumanMessage(content="old task"),
+            AIMessage(content="old answer"),
+            active,
+        ],
+        "mode": "act",
+    }
+    pressure = ContextPressure(
+        token_count=850,
+        context_limit=1_000,
+        ratio=0.85,
+        warning=True,
+        should_compact=True,
+        safety_threshold_reached=False,
+        hard_threshold_reached=False,
+    )
+    with patch("ness_agent.graph.nodes.calculate_context_pressure", return_value=pressure):
+        failed = asyncio.run(rt.context_gate(state))
+        assert failed["compaction_status"]["skip_reason"] == "failed"
+        assert "Summary compaction is due." in failed["compaction_status"]["overlay_note"]
+        suppressed = asyncio.run(rt.context_gate({
+            **state,
+            "compaction_failed_turn_id": failed["compaction_failed_turn_id"],
+        }))
+
+    assert suppressed["compaction_status"]["skip_reason"] == "retry_suppressed"
+    assert binding.calls == 1
+
+
+def test_ordinary_calls_retain_exact_prior_wire_prefix(tmp_path: Path):
+    class RecordingModel:
+        model = "recording"
+
+        def __init__(self):
+            self.calls = []
+
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, messages, **_kwargs):
+            self.calls.append(list(messages))
+            return AIMessage(content=f"answer-{len(self.calls)}")
+
+    model = RecordingModel()
+    agent = NessAgent(
+        model=model,
+        tools=[],
+        prompt=PromptLayers(PromptLayersConfig(l0="L0", persona="P")),
+        options=NessAgentOptions(ness_dir=tmp_path / ".ness", project_root=tmp_path),
+    )
+    session = agent.session(thread_id="session-prefix", mode="plan", git_available=False)
+    asyncio.run(session.run("one"))
+    asyncio.run(session.run("two"))
+    assert model.calls[1][: len(model.calls[0])] == model.calls[0]
+    state = asyncio.run(session.get_state())
+    assert not any(
+        (m.additional_kwargs or {}).get("ness_internal") == "overlay"
+        for m in state["messages"]
+    )
+    assert any(
+        (m.additional_kwargs or {}).get("ness_internal") == "overlay"
+        for m in state["model_context_messages"]
+    )
 
 
 def test_usage_event_always_logged_with_model(tmp_path: Path):
@@ -217,21 +601,11 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
     async def fake_ainvoke(_msgs):
         return response
 
-    with (
-        patch(
-            "ness_agent.graph.nodes.progressive_compact",
-            return_value=CompactionResult(
-                messages=[HumanMessage(content="hi")],
-                compacted=False,
-                token_count=5,
-            ),
-        ),
-        patch.object(
+    with patch.object(
             agent.config.tool_registry,
             "bind_model",
             return_value=SimpleNamespace(ainvoke=fake_ainvoke),
-        ),
-    ):
+        ):
         asyncio.run(
             rt.agent_node(
                 {
@@ -249,14 +623,12 @@ def test_usage_event_always_logged_with_model(tmp_path: Path):
 
 
 def test_options_context_window_drives_usable_budget():
-    from ness_agent.compaction import resolve_usable_context_budget
-
     opts = NessAgentOptions(
         context_window=100_000,
-        compaction_output_reserve=8_000,
-        compaction_input_reserve=2_000,
+        compaction_buffer_tokens=10_000,
+        compaction_summary_max_tokens=2_000,
     )
-    assert resolve_usable_context_budget("any-model", opts) == 90_000
+    assert resolve_usable_context_budget("any-model", opts) == 100_000
     assert resolve_usable_context_budget("any-model", None) == 120_000
     assert resolve_usable_context_budget(
         "any-model",
@@ -367,3 +739,12 @@ def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
             reset_session_context(ctx_token)
 
     asyncio.run(_run())
+
+
+def test_run_result_exposes_only_aggregate_usage_field():
+    from ness_agent.types import RunResult
+
+    result = RunResult(assistant_message="done", todos=[], events=[])
+
+    assert result.usage_total is None
+    assert not hasattr(result, "usage")

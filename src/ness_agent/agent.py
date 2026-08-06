@@ -68,9 +68,8 @@ class AgentSpec:
 
     **Optional auxiliary models**
 
-    ``compaction_model``, ``reflection_model``
-        Models for compaction summaries and background reflection.
-        Falls back to ``model`` when ``None``.
+    ``reflection_model``
+        Model for background reflection. Falls back to ``model`` when ``None``.
 
     **Behaviours**
 
@@ -101,7 +100,19 @@ class AgentSpec:
     **Filesystem paths**
 
     ``skills_dir``
-        ``.ness/skills/`` directory (or ``None`` to disable skills).
+        Single skills directory (CLI default ``.ness/skills/``), or
+        ``None`` to disable skills entirely. Exactly this directory is
+        scanned (including nested category layouts) — the SDK never adds
+        other roots implicitly. Mutually exclusive with ``skills_dirs``.
+    ``skills_dirs``
+        Explicit, exhaustive list of skill root directories to scan, or
+        ``None`` to disable skills entirely. To also load the well-known
+        agent skill roots (``.agents/skills``, ``.claude/skills``,
+        ``.codex/skills``, ``.cursor/skills``, and their ``~/``
+        equivalents), opt in via
+        :func:`~ness_agent.skills.merge_skill_dirs` or
+        :func:`~ness_agent.skills.default_skill_search_dirs`. Earlier
+        roots win on skill-name collisions.
     ``hooks_config``
         Path to ``hooks.json`` for pre/post tool-use hooks. When ``None``,
         defaults to ``{ness_dir}/hooks.json``.
@@ -138,7 +149,6 @@ class AgentSpec:
     tools: Sequence[BaseTool] | None = None
 
     # optional auxiliary models
-    compaction_model: BaseChatModel | None = None
     reflection_model: BaseChatModel | None = None
 
     # behaviours
@@ -153,6 +163,7 @@ class AgentSpec:
 
     # specs
     skills_dir: Path | None = None
+    skills_dirs: Sequence[Path] | None = None
     hooks_config: Path | None = None
     hooks: Sequence[Hook] | None = None
 
@@ -177,7 +188,6 @@ class NessAgentConfig:
     prompts: PromptLayers
 
     # optional auxiliary models
-    compaction_model: BaseChatModel | None = None
     reflection_model: BaseChatModel | None = None
 
     # behaviors
@@ -190,6 +200,7 @@ class NessAgentConfig:
 
     # specs
     skills_dir: Path | None = None
+    skills_dirs: list[Path] | None = None
     hooks_config: Path | None = None
 
     # runtime hooks
@@ -283,12 +294,22 @@ class NessAgentConfig:
         _require_instance("memory_store", spec.memory_store, MemoryBackend)
         _require_instance("approval_handler", spec.approval_handler, ApprovalHandler)
 
+        if spec.skills_dir is not None and spec.skills_dirs is not None:
+            raise ValueError(
+                "Pass either skills_dir (single root) or skills_dirs "
+                "(explicit root list), not both."
+            )
+        skills_dirs: list[Path] | None = (
+            list(spec.skills_dirs)
+            if spec.skills_dirs is not None
+            else ([spec.skills_dir] if spec.skills_dir is not None else None)
+        )
+
         return cls(
             model=spec.model,
             tools=resolved_tools,
             prompts=prompts,
 
-            compaction_model=spec.compaction_model,
             reflection_model=spec.reflection_model,
 
             options=options,
@@ -298,7 +319,8 @@ class NessAgentConfig:
             modes=spec.modes,
             subagents=spec.subagents,
             aux_prompts=spec.aux_prompts,
-            skills_dir=spec.skills_dir,
+            skills_dir=skills_dirs[0] if skills_dirs else None,
+            skills_dirs=skills_dirs,
             hooks_config=spec.hooks_config if spec.hooks_config is not None else ness_dir / "hooks.json",
 
             approval_handler=spec.approval_handler,
@@ -324,7 +346,7 @@ class NessAgentConfig:
                 project_root=project_root,
                 hooks=spec.hooks,
             ),
-            skill_loader=SkillLoader(spec.skills_dir),
+            skill_loader=SkillLoader(skills_dirs=skills_dirs),
             tool_registry=ToolRegistry(resolved_tools),
             cost_tracker=spec.cost_tracker or CostTracker(pricing=spec.tracing.pricing),
             tracer=spec.tracer or build_tracer(spec.tracing),

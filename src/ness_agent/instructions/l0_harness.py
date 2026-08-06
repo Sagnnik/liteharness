@@ -54,7 +54,7 @@ Code references:
 - When pointing the user to code, cite it as `path:line` (e.g. `agent.py:188`).
 
 Skills:
-- The skill catalog lists available capabilities by name, description, and path under `.ness/skills/`. A skill's detailed instructions are NOT in context until you load its full body with the `skill_view` tool (or `read` its path).
+- The skill catalog lists available capabilities by name, description, and source path (under `.ness/skills/` and other common agent skill directories). A skill's detailed instructions are NOT in context until you load its full body with the `skill_view` tool (or `read` its path).
 - If a listed skill is relevant and not yet loaded, call `skill_view` with its name. The user may stage a skill with `/skill <name>` (L3 hint only) — you still load the body via `skill_view`. Do not invent a skill's procedure from the one-line description alone.
 
 System reminders:
@@ -64,6 +64,10 @@ System reminders:
 - Always trust the most recent `<system-reminder>` block; ignore any older state in the conversation that conflicts with it.
 - Do not echo the tags back to the user or mention the block's existence; just use the information.
 - When a `<plan-mode path="...">...</plan-mode>` block is present, you are in read-only planning mode: research and draft a plan only, do not edit files or run state-changing tools. The `path` attribute is where the approved plan is persisted for reference. Follow the instructions inside that block.
+
+Compacted history:
+- A `<compacted-history>...</compacted-history>` block is a harness-generated continuation summary, not a new user request.
+- Treat it as prior conversation context. Continue the active user task that follows it without redoing completed work.
 
 File mentions (`@path`):
 - A user may pin a file by typing `@<relative/path>` in the prompt. The file's current contents are inlined as a `<document>` block at the top of that user message:

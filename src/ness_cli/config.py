@@ -222,8 +222,10 @@ class Settings(BaseSettings):
     session_end_reflection: bool = Field(default=False, alias="SESSION_END_REFLECTION")
     reflection_token_ratio: float = Field(default=0.4, alias="REFLECTION_TOKEN_RATIO")
     compaction_token_budget: int = Field(default=120_000, alias="COMPACTION_TOKEN_BUDGET")
-    compaction_output_reserve: int = Field(default=8_192, alias="COMPACTION_OUTPUT_RESERVE")
-    compaction_input_reserve: int = Field(default=4_096, alias="COMPACTION_INPUT_RESERVE")
+    compaction_buffer_tokens: int = Field(default=16_384, alias="COMPACTION_BUFFER_TOKENS")
+    compaction_summary_max_tokens: int = Field(
+        default=4_096, alias="COMPACTION_SUMMARY_MAX_TOKENS"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openrouter_session_id: str | None = Field(default=None, alias="OPENROUTER_SESSION_ID")
@@ -252,19 +254,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
-def settings_field_env_map() -> dict[str, str]:
-    """Map env aliases (``OPENAI_API_KEY``) to Settings field names.
-
-    Used by the one-time ``.env`` -> global JSON migration.
-    """
-    mapping: dict[str, str] = {}
-    for name, field in Settings.model_fields.items():
-        alias = field.validation_alias or field.alias
-        if isinstance(alias, str):
-            mapping[alias] = name
-    return mapping
 
 
 def reload_settings() -> None:

@@ -18,7 +18,7 @@ from ness_agent.memory import MemoryBackend, MemoryStore
 from ness_agent.persistence import ThreadStore
 from ness_agent.permissions import PermissionStore
 from ness_agent.hooks import Hook, HookRunner
-from ness_agent.skills import SkillLoader
+from ness_agent.skills import SkillLoader, default_skill_search_dirs, merge_skill_dirs
 from ness_agent.tools import ToolRegistry, coding_tools
 from ness_agent.tracing.cost import CostTracker
 from ness_agent.tracing.config import PricingDict, TracingConfig
@@ -29,6 +29,14 @@ from ness_agent.tracing.tracer import (
 from ness_agent.tracing.cost import TokenUsage
 from ness_agent.workspace import (
     git_worktree_summary, get_project_context, setup_ness_structure,
+)
+from ness_agent.compaction import summarize
+from ness_agent.mcp import (
+    HTTPAuthFactory,
+    MCPAuthenticationRequired,
+    MCPRuntime,
+    MCPServerSpec,
+    MCPServerState,
 )
 
 __all__ = [
@@ -41,9 +49,13 @@ __all__ = [
     "CodingOverlay", "NoOverlay", "AgentState",
     "message_to_text",
     "MemoryBackend", "MemoryStore", "ThreadStore", "PermissionStore",
-    "Hook", "HookRunner", "SkillLoader", "ToolRegistry", "coding_tools",
+    "Hook", "HookRunner", "SkillLoader", "default_skill_search_dirs",
+    "merge_skill_dirs", "ToolRegistry", "coding_tools",
     "CostTracker", "TokenUsage", "PricingDict",
     "TracingConfig", "Tracer", "NoopTracer", "NoopSpan", "InMemorySpan",
     "MultiTracer", "MultiSpan", "build_tracer", "Span",
     "git_worktree_summary", "get_project_context", "setup_ness_structure",
+    "summarize",
+    "MCPRuntime", "MCPServerSpec", "MCPServerState",
+    "MCPAuthenticationRequired", "HTTPAuthFactory",
 ]

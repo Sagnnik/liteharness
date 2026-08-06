@@ -42,7 +42,7 @@ def setup_ness_structure(ness_dir: Path) -> list[str]:
     for path, content in {
         root / "permissions.json": json.dumps(DEFAULT_RULES, indent=2) + "\n",
         root / "hooks.json": "{}\n",
-        root / "mcp.json": json.dumps({"servers": {}}, indent=2) + "\n",
+        root / "mcp.json": json.dumps({"mcpServers": {}}, indent=2) + "\n",
     }.items():
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)

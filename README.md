@@ -30,7 +30,7 @@ Ness Agent is an experimental, hackable coding-agent harness for engineers who w
 | **Ness Agent SDK** | LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, tracing |
 | **Ness CLI** | Terminal UI (`ness`), plan/act modes, git worktrees, global config, `.ness/` project layout |
 
-Both are included in the `ness-agent` PyPI package. OpenRouter-compatible chat models, native tool-calling, and filesystem-driven extension points under `.ness/`.
+Both are included in the `ness-agent` PyPI package. OpenRouter-compatible chat models, native tool-calling, cache-safe summary compaction, and filesystem-driven extension points under `.ness/`.
 
 ## Installation
 
@@ -53,6 +53,10 @@ export OPENAI_BASE_URL=https://openrouter.ai/api/v1
 ```
 
 Add those lines to `~/.bashrc` or `~/.zshrc` to persist across sessions. Alternatively, launch `ness` and set them via `/config` → **Provider** (stored in global `secrets.json` / `configs.json`).
+
+Ness does not automatically read or migrate a project `.env` file. You may
+still keep local values in `.env`, but load them into the process explicitly
+(for example, `uv run --env-file .env ness`) or use `/config`.
 
 Optional tracing support:
 
@@ -135,7 +139,7 @@ async def main() -> None:
     )
     session = agent.session(thread_id="demo-1")
     result = await session.run("say hello")
-    print(result.text)
+    print(result.assistant_message)
 
 asyncio.run(main())
 ```

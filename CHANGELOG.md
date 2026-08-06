@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Public, adapter-neutral `MCPRuntime`, `MCPServerSpec`, and structured MCP state APIs for applications that want MCP connections without adopting Ness project configuration or UI policy.
+- Native `.ness/mcp.json` loading in interactive and headless modes, with canonical `mcpServers` validation, custom `NESS_DIR` support, visible diagnostics, project-config fingerprints, and fail-closed headless trust.
+- MCP stdio and Streamable HTTP clients with headers, `envFile`, safe child-process environments, Cursor and Claude interpolation syntax, and isolated per-server errors.
+- Explicit `ness mcp status`, `ness mcp login`, and `ness mcp logout` OAuth management for Cursor `auth` and Claude `oauth` configurations, including loopback and manual callbacks, token refresh, project-scoped keyring storage, and an atomic `0600` file fallback.
+- Transactional `ness mcp import` for Cursor- and Claude-compatible JSON files, with dry runs, server selection, explicit conflict replacement, redacted previews, canonical destination output, and import provenance.
+- Multi-directory skill loading: `AgentSpec.skills_dirs` accepts an explicit, exhaustive list of skill roots, including nested category layouts. The Ness CLI loads `.ness/skills` plus the well-known project-local agent skill roots (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`) and only `~/.agents/skills` globally, passing them to the SDK explicitly; SDK helpers `merge_skill_dirs()` / `default_skill_search_dirs()` let other hosts opt into the same roots (`project_rels=` / `global_rels=` restrict the project-local and user-global sets).
+- Cache-safe `ness_agent.summarize()` API and durable summary checkpoints for resume/rollback.
+- Canonical model-facing history that preserves ordinary request prefixes while keeping L3 reminders out of durable transcripts.
+- `ness --version` flag to print the installed version and exit.
+
+### Changed
+
+- Scans the directories provided (`skills_dir` or `skills_dirs`; both `None` disables skills). Pass `skills_dirs=merge_skill_dirs(project_root, your_dir)` to opt into the well-known roots. The Ness CLI end-user behavior is unchanged in kind: it passes its root list explicitly.
+- Pinned the Python MCP SDK to `mcp>=1.27.1,<2` while Ness targets the v1 transport and OAuth APIs.
+- TUI: the per-frame user-band width validation now rescans only newly appended transcript lines instead of the whole buffer, removing render-thread stalls (spinner stutter, laggy streaming echo) on very long transcripts; misfit detection and resize reflow behavior are unchanged.
+- Fixed Ctrl+T thinking toggles corrupting active streamed answers, causing duplicate responses or preventing final Markdown rendering.
+- Compaction now uses the main bound model, identical tools/session/system prefix, a human tail instruction, and a boundary-safe graph node.
+- `/compact` retains the active user/tool turn verbatim and summarizes completed history only.
+- Compaction checkpoints atomically retain the active semantic suffix, preventing SDK resume from dropping an unlogged user turn.
+- Cache-safe forks retain the last successful model/tool binding; canonical image blocks are no longer stripped before compaction, and session pressure includes the stable system prefix.
+
+### Removed
+
+- Progressive tool-output compaction, the 40-message summary limit, `compaction_model`, `progressive_compact`, and `summarize_history`.
+- `COMPACTION_INPUT_RESERVE` and `COMPACTION_OUTPUT_RESERVE`; use `COMPACTION_BUFFER_TOKENS` and `COMPACTION_SUMMARY_MAX_TOKENS`.
+- **Breaking:** automatic first-start migration of project `.env` settings into global JSON configuration. Application settings now come only from the process environment or `configs.json` / `secrets.json`; MCP `envFile` remains supported explicitly.
+- **Breaking:** `RunResult.usage`; use `RunResult.usage_total`, which aggregates every model call made during the turn.
+- **Breaking:** the mixed `ness_agent.mcp.MCPManager`; SDK applications now use `MCPRuntime` with resolved server specs, while the Ness CLI owns project config, trust, OAuth persistence, and presentation through its adapter.
+
 ## [0.1.0] - 2026-07-31 — Released
 
 ### Added
