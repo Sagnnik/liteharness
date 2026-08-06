@@ -41,7 +41,7 @@ from ness_cli.tui.widgets import (
 )
 
 if TYPE_CHECKING:
-    from ness_agent.mcp import MCPManager
+    from ness_cli.mcp_manager import ProjectMCPManager
     from ness_cli import CodingSession
 
 CommandDispatcher = Callable[["TuiApp", str], Awaitable[None]]
@@ -65,7 +65,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         coding: CodingSession,
         *,
         history_path: Path,
-        mcp: MCPManager | None = None,
+        mcp: ProjectMCPManager | None = None,
         command_dispatcher: CommandDispatcher = dispatch,
     ) -> None:
         self.coding = coding

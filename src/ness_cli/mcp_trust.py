@@ -8,14 +8,15 @@ from typing import Any
 
 import typer
 
-from ness_agent.mcp import MCPManager, MCPTrustPreview
 from ness_cli.config_store import load_configs, write_config
+from ness_cli.mcp_manager import MCPTrustPreview, ProjectMCPManager
+from ness_cli.terminal import terminal_safe_text
 
 _TRUST_KEY = "mcp_trust"
 
 
 def is_mcp_trusted(
-    manager: MCPManager,
+    manager: ProjectMCPManager,
     *,
     config_dir: Path,
 ) -> bool:
@@ -35,7 +36,7 @@ def is_mcp_trusted(
 
 
 def authorize_mcp_interactively(
-    manager: MCPManager,
+    manager: ProjectMCPManager,
     *,
     config_dir: Path,
 ) -> bool:
@@ -44,9 +45,13 @@ def authorize_mcp_interactively(
     if not preview.has_runnable_servers or is_mcp_trusted(manager, config_dir=config_dir):
         return True
 
-    typer.echo(f"MCP configuration requests permission: {preview.config_path}")
+    typer.echo(
+        terminal_safe_text(
+            f"MCP configuration requests permission: {preview.config_path}"
+        )
+    )
     for summary in preview.servers:
-        typer.echo(f"  - {summary}")
+        typer.echo(terminal_safe_text(f"  - {summary}"))
     approved = typer.confirm(
         "Allow these MCP servers for this exact configuration?",
         default=False,
@@ -60,7 +65,7 @@ def authorize_mcp_interactively(
 
 
 def _persist_trust(
-    manager: MCPManager,
+    manager: ProjectMCPManager,
     preview: MCPTrustPreview,
     *,
     config_dir: Path,

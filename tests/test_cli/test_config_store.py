@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from ness_cli.config_store import (
     ensure_secrets_file,
     load_configs,
     load_secrets,
+    locked_path,
     write_config,
     write_secret,
 )
@@ -71,6 +73,20 @@ def test_ensure_secrets_file_creates_once(config_dir: Path):
     assert ensure_secrets_file() is None
 
 
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW is unavailable")
+def test_locked_path_refuses_a_sidecar_symlink(tmp_path: Path):
+    destination = tmp_path / "credentials.json"
+    target = tmp_path / "unrelated"
+    target.write_text("keep", encoding="utf-8")
+    destination.with_name("credentials.json.lock").symlink_to(target)
+
+    with pytest.raises(OSError):
+        with locked_path(destination, secret=True):
+            pass
+
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
 def test_settings_reads_global_json(config_dir: Path, monkeypatch):
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -99,3 +115,27 @@ def test_settings_defaults_without_json(config_dir: Path, monkeypatch):
     fresh = Settings()
     assert fresh.model_name == "deepseek/deepseek-v4-flash"
     assert fresh.openai_api_key is None
+
+
+def test_project_dotenv_is_not_loaded_or_migrated(
+    config_dir: Path, tmp_path: Path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "MODEL_NAME=dotenv/model\nOPENAI_API_KEY=dotenv-secret\n",
+        encoding="utf-8",
+    )
+    from ness_cli.config import Settings
+    from ness_cli.factory import prepare_paths
+
+    fresh = Settings()
+    prepare_paths(project_root=tmp_path)
+
+    assert fresh.model_name == "deepseek/deepseek-v4-flash"
+    assert fresh.openai_api_key is None
+    assert load_configs() == {}
+    assert load_secrets() == {}
+    assert "dotenv-secret" in dotenv.read_text(encoding="utf-8")

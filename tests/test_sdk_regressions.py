@@ -739,3 +739,12 @@ def test_run_result_usage_total_accumulates_bridge_events(tmp_path: Path):
             reset_session_context(ctx_token)
 
     asyncio.run(_run())
+
+
+def test_run_result_exposes_only_aggregate_usage_field():
+    from ness_agent.types import RunResult
+
+    result = RunResult(assistant_message="done", todos=[], events=[])
+
+    assert result.usage_total is None
+    assert not hasattr(result, "usage")

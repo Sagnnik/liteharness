@@ -61,7 +61,9 @@ Settings resolve in this order (highest wins):
 
 MCP trust fingerprints and non-secret import provenance also live in `configs.json`. OAuth tokens and dynamic client registrations use the system keyring when available; `mcp_oauth.json` is an atomic project-scoped fallback and is never written when keyring storage succeeds.
 
-On first start, known keys from an existing project `.env` are imported into the JSON files once (the `.env` is left untouched). You can also set the API key in-session: `/config` → Provider → Provider API key.
+Project `.env` files are not loaded or migrated for Ness application settings. Existing users should move those values to the process environment or enter them through `/config`; secret values are stored in `secrets.json` and other settings in `configs.json`. An MCP server may still opt into a dotenv file explicitly with its `envFile` field.
+
+You can set the API key in-session through `/config` → Provider → Provider API key.
 
 ---
 

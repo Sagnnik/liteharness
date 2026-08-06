@@ -7,15 +7,14 @@ import getpass
 import json
 import socket
 import webbrowser
-from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
 import typer
 
-from ness_agent.mcp import MCPManager
 from ness_cli.factory import prepare_paths
 from ness_cli.mcp_import import (
+    MCPImportConflictError,
     execute_mcp_import,
     plan_mcp_import,
     provenance_for_server,
@@ -23,9 +22,12 @@ from ness_cli.mcp_import import (
 from ness_cli.mcp_oauth import (
     LoopbackOAuthCallback,
     MCPOAuthService,
+    OAuthCredentialClearError,
     parse_oauth_callback_url,
 )
+from ness_cli.mcp_manager import ProjectMCPManager
 from ness_cli.mcp_trust import authorize_mcp_interactively
+from ness_cli.terminal import terminal_safe_text
 
 app = typer.Typer(add_completion=False, help="Manage Ness MCP servers")
 
@@ -36,7 +38,7 @@ def _manager_and_service():
         project_root=paths.project_root,
         config_dir=paths.config_dir,
     )
-    manager = MCPManager(
+    manager = ProjectMCPManager(
         paths.ness_dir / "mcp.json",
         project_root=paths.project_root,
         http_auth_factory=service.startup_auth,
@@ -55,7 +57,7 @@ async def _status(server: str | None) -> None:
     paths, manager, service = _manager_and_service()
     names = [server] if server else sorted(manager.servers)
     if server and server not in manager.servers:
-        typer.echo(f"error: unknown MCP server: {server}", err=True)
+        typer.echo(terminal_safe_text(f"error: unknown MCP server: {server}"), err=True)
         raise typer.Exit(2)
     raw_servers = _read_server_map(paths.ness_dir / "mcp.json")
     if not names:
@@ -85,9 +87,9 @@ async def _status(server: str | None) -> None:
         if provenance:
             state = "modified since import" if provenance.get("modified") else "unchanged"
             line += f"; imported from {provenance.get('source_path')} ({state})"
-        typer.echo(line)
+        typer.echo(terminal_safe_text(line))
     for warning in service.warnings:
-        typer.echo(f"warning: {warning}", err=True)
+        typer.echo(terminal_safe_text(f"warning: {warning}"), err=True)
 
 
 @app.command("login")
@@ -125,7 +127,7 @@ async def _login(
         message = f"unknown or invalid MCP server: {server}"
         if detail:
             message += f" ({detail})"
-        typer.echo(f"error: {message}", err=True)
+        typer.echo(terminal_safe_text(f"error: {message}"), err=True)
         raise typer.Exit(2)
     if spec.transport != "http":
         typer.echo("error: OAuth login is supported only for HTTP MCP servers", err=True)
@@ -181,11 +183,15 @@ async def _login(
         )
 
     manager.http_auth_factory = auth_factory
-    login_spec = dataclass_replace(spec, startup_timeout=timeout + 30)
+    login_spec = spec.with_startup_timeout(timeout + 30)
     try:
         await manager.start_server(server, login_spec)
         tools = manager.servers.get(server, {}).get("tools", [])
-        typer.echo(f"Authenticated {server}; verified {len(tools)} MCP tool(s).")
+        typer.echo(
+            terminal_safe_text(
+                f"Authenticated {server}; verified {len(tools)} MCP tool(s)."
+            )
+        )
     except Exception as exc:
         typer.echo(f"error: OAuth login failed: {type(exc).__name__}", err=True)
         raise typer.Exit(1) from exc
@@ -194,7 +200,7 @@ async def _login(
         if loopback is not None:
             await loopback.close()
     for warning in service.warnings:
-        typer.echo(f"warning: {warning}", err=True)
+        typer.echo(terminal_safe_text(f"warning: {warning}"), err=True)
 
 
 @app.command("logout")
@@ -207,10 +213,22 @@ async def _logout(server: str) -> None:
     _, manager, service = _manager_and_service()
     spec = manager.server_spec(server)
     if spec is None or spec.transport != "http":
-        typer.echo(f"error: unknown HTTP MCP server: {server}", err=True)
+        typer.echo(
+            terminal_safe_text(f"error: unknown HTTP MCP server: {server}"),
+            err=True,
+        )
         raise typer.Exit(2)
-    await service.storage_for(spec).clear()
-    typer.echo(f"Removed local OAuth credentials for {server}. Provider-side tokens were not revoked.")
+    try:
+        await service.storage_for(spec).clear()
+    except OAuthCredentialClearError as exc:
+        typer.echo(f"error: {terminal_safe_text(exc)}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(
+        terminal_safe_text(
+            f"Removed local OAuth credentials for {server}. "
+            "Provider-side tokens were not revoked."
+        )
+    )
 
 
 @app.command("import")
@@ -242,10 +260,14 @@ def import_config(
     if not yes and not typer.confirm("Apply this MCP import?", default=False, abort=False):
         typer.echo("Import cancelled.")
         raise typer.Exit(1)
-    warnings = execute_mcp_import(plan, config_dir=paths.config_dir)
+    try:
+        warnings = execute_mcp_import(plan, config_dir=paths.config_dir)
+    except MCPImportConflictError as exc:
+        typer.echo(f"error: {terminal_safe_text(exc)}", err=True)
+        raise typer.Exit(2) from exc
     typer.echo(f"Imported {len(plan.changes)} server(s). Execution trust was not granted.")
     for warning in warnings:
-        typer.echo(f"warning: {warning}", err=True)
+        typer.echo(terminal_safe_text(f"warning: {warning}"), err=True)
 
 
 def _available_loopback_port() -> int:

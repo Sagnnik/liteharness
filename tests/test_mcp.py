@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from ness_agent.mcp import MCPManager, _sanitize_tool_args
+from ness_agent.mcp import MCPServerState, _sanitize_tool_args
+from ness_cli.mcp_manager import ProjectMCPManager
 
 
 def _write(path: Path, data) -> Path:
@@ -16,11 +17,11 @@ def _write(path: Path, data) -> Path:
     return path
 
 
-def _manager(tmp_path: Path, data=None) -> MCPManager:
+def _manager(tmp_path: Path, data=None) -> ProjectMCPManager:
     path = tmp_path / "mcp.json"
     if data is not None:
         _write(path, data)
-    return MCPManager(path, project_root=tmp_path)
+    return ProjectMCPManager(path, project_root=tmp_path)
 
 
 def test_load_missing_and_empty_are_not_errors(tmp_path: Path):
@@ -37,7 +38,7 @@ def test_load_missing_and_empty_are_not_errors(tmp_path: Path):
 def test_load_reports_top_level_errors(tmp_path: Path, content: str):
     path = tmp_path / "mcp.json"
     path.write_text(content, encoding="utf-8")
-    manager = MCPManager(path, project_root=tmp_path)
+    manager = ProjectMCPManager(path, project_root=tmp_path)
     manager.load()
     message, level = manager.startup_summary()
     assert level == "warn"
@@ -106,6 +107,41 @@ def test_stdio_normalization_and_interpolation(tmp_path: Path, monkeypatch):
     assert dict(spec.env)["TOKEN"] == "secret-token"
     assert dict(spec.env)["PATH_SEP"] == os.sep
     assert "secret-token" not in "\n".join(preview.servers)
+
+
+def test_trust_preview_redacts_scopes_and_escapes_terminal_controls(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("MCP_SCOPE", "scope-secret-value")
+    monkeypatch.setenv("MCP_ENV_FILE", "secret-env-file")
+    (tmp_path / "secret-env-file").write_text("VALUE=yes\n", encoding="utf-8")
+    manager = _manager(
+        tmp_path,
+        {
+            "mcpServers": {
+                "stdio\x1b[2Jspoof": {
+                    "command": "python\nforged-line",
+                    "envFile": "${MCP_ENV_FILE}",
+                },
+                "remote": {
+                    "url": "https://example.com/mcp",
+                    "oauth": {
+                        "clientId": "client",
+                        "scopes": ["read", "${MCP_SCOPE}"],
+                    },
+                },
+            }
+        },
+    )
+
+    rendered = "\n".join(manager.load().servers)
+
+    assert "\x1b" not in rendered
+    assert "python\nforged-line" not in rendered
+    assert "scope-secret-value" not in rendered
+    assert "secret-env-file" not in rendered
+    assert "\\x1b[2Jspoof" in rendered
+    assert "python\\x0aforged-line" in rendered
 
 
 def test_interpolation_is_non_recursive_and_missing_variable_isolated(tmp_path: Path, monkeypatch):
@@ -206,13 +242,27 @@ def test_fingerprint_is_canonical_and_tracks_effective_target(tmp_path: Path, mo
     path = tmp_path / "mcp.json"
     first = {"mcpServers": {"one": {"command": "${MCP_COMMAND}", "env": {"TOKEN": "${TOKEN:-x}"}}}}
     _write(path, first)
-    fp1 = MCPManager(path, project_root=tmp_path).load().fingerprint
+    fp1 = ProjectMCPManager(path, project_root=tmp_path).load().fingerprint
     path.write_text('{\n  "mcpServers": {"one": {"env": {"TOKEN": "${TOKEN:-x}"}, "command": "${MCP_COMMAND}"}}\n}', encoding="utf-8")
-    fp2 = MCPManager(path, project_root=tmp_path).load().fingerprint
+    fp2 = ProjectMCPManager(path, project_root=tmp_path).load().fingerprint
     assert fp1 == fp2
     monkeypatch.setenv("MCP_COMMAND", "uv")
-    fp3 = MCPManager(path, project_root=tmp_path).load().fingerprint
+    fp3 = ProjectMCPManager(path, project_root=tmp_path).load().fingerprint
     assert fp3 != fp1
+
+
+def test_trust_fingerprint_remains_compatible_with_existing_projects(tmp_path: Path):
+    path = tmp_path / "mcp.json"
+    _write(
+        path,
+        {"mcpServers": {"remote": {"url": "https://example.com/mcp"}}},
+    )
+    fingerprint = ProjectMCPManager(
+        path,
+        project_root=Path("/workspace"),
+    ).load().fingerprint
+
+    assert fingerprint == "c87c61de2e6fa11263b5bddc372a5171f9e1a3c94afa496164c23fa57daf1f84"
 
 
 def test_mark_untrusted_and_stop_reset_lifecycle(tmp_path: Path):
@@ -330,19 +380,19 @@ def test_connection_errors_are_redacted_and_do_not_block_other_servers(
         },
     )
 
-    async def fake_http(name, spec, stack):
+    async def fake_http(spec, stack):
         raise RuntimeError("request failed with Bearer super-secret-value")
 
-    async def fake_stdio(name, spec, stack):
-        manager.servers[name] = {
-            "status": "connected",
-            "description": "",
-            "transport": "stdio",
-            "tools": [],
-        }
+    async def fake_stdio(spec, stack):
+        manager.runtime.states[spec.name] = MCPServerState(
+            name=spec.name,
+            status="connected",
+            description="",
+            transport="stdio",
+        )
 
-    monkeypatch.setattr(manager, "_connect_http", fake_http)
-    monkeypatch.setattr(manager, "_connect_stdio", fake_stdio)
+    monkeypatch.setattr(manager.runtime, "_connect_http", fake_http)
+    monkeypatch.setattr(manager.runtime, "_connect_stdio", fake_stdio)
 
     async def exercise():
         try:
@@ -353,6 +403,45 @@ def test_connection_errors_are_redacted_and_do_not_block_other_servers(
             assert "[redacted]" in manager.servers["bad"]["error"]
         finally:
             await manager.stop()
+
+    asyncio.run(exercise())
+
+
+def test_unexpected_post_start_disconnect_updates_status_and_cleans_tools(
+    tmp_path: Path, monkeypatch
+):
+    manager = _manager(tmp_path, {"mcpServers": {"one": {"command": "python"}}})
+    manager.load()
+
+    async def fake_connect(spec, stack):
+        name = spec.name
+        manager.sessions[name] = object()
+        manager.tools["mcp__one__tool"] = object()  # type: ignore[assignment]
+        manager.runtime.tool_meta["mcp__one__tool"] = {
+            "server": name,
+            "tool": "tool",
+        }
+        manager.runtime.states[name] = MCPServerState(
+            name=name,
+            status="connected",
+            description="",
+            transport="stdio",
+            tools=("tool",),
+        )
+
+    monkeypatch.setattr(manager.runtime, "_connect_stdio", fake_connect)
+
+    async def exercise():
+        await manager.start_server("one", manager._specs["one"])
+        task = manager.runtime._server_tasks["one"]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert manager.servers["one"]["status"] == "error"
+        assert manager.servers["one"]["tools"] == []
+        assert "mcp__one__tool" not in manager.tools
+        assert "one" not in manager.sessions
+        assert "one" not in manager.runtime._server_tasks
+        await manager.stop()
 
     asyncio.run(exercise())
 

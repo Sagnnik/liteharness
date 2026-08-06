@@ -170,7 +170,7 @@ Per-server fields:
 
 String fields support Cursor interpolation (`${env:NAME}`, `${userHome}`, `${workspaceFolder}`, `${workspaceFolderBasename}`, `${pathSeparator}`, `${/}`) and Claude interpolation (`${NAME}`, `${NAME:-default}`). Expansion uses the Ness process environment; `envFile` values are only passed to the stdio child. Missing required variables invalidate that server without blocking others.
 
-OAuth never launches a browser during normal interactive or headless startup. Authenticate explicitly with `ness mcp login <server>`; use `--no-open` to open the printed URL yourself or `--manual-callback` to paste a callback URL over SSH. Stored tokens refresh automatically. `ness mcp logout <server>` removes local credentials but does not revoke the provider-side token.
+OAuth never launches a browser during normal interactive or headless startup. Authenticate explicitly with `ness mcp login <server>`; use `--no-open` to open the printed URL yourself or `--manual-callback` to paste a callback URL over SSH. Stored tokens refresh automatically. `ness mcp logout <server>` removes local credentials but does not revoke the provider-side token; it exits with an error instead of claiming success when keyring deletion cannot be verified.
 
 Management commands:
 
@@ -182,7 +182,7 @@ ness mcp import <cursor-or-claude.json> --dry-run
 ness mcp import <cursor-or-claude.json> [--server NAME] [--replace NAME] [--yes]
 ```
 
-Imports are explicit and transactional. Differing name conflicts abort the entire import unless each is named with `--replace`. Imports are written to `.ness/mcp.json` but never grant execution trust; the next interactive startup still shows the redacted trust prompt. Import provenance is kept in global `configs.json`.
+Imports are explicit and transactional. Differing name conflicts abort the entire import unless each is named with `--replace`, and a destination edit made after confirmation aborts rather than being overwritten. Imports are written to `.ness/mcp.json` but never grant execution trust; the next interactive startup still shows the redacted trust prompt. Import provenance is kept in global `configs.json`.
 
 SSE, WebSocket, `headersHelper`, OAuth metadata URL overrides, automatic config discovery, and native registry/add commands are not supported yet. Explicit `sse` and `ws` entries are reported as unsupported rather than guessed.
 

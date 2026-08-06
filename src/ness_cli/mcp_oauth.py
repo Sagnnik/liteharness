@@ -19,19 +19,31 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 
-from ness_agent.mcp import (
-    MCPAuthenticationRequired,
-    MCPOAuthSpec,
-    MCPServerSpec,
-)
-from ness_cli.config_store import atomic_write_json
+from ness_agent.mcp import MCPAuthenticationRequired
+from ness_cli.config_store import atomic_write_json, locked_path
+from ness_cli.mcp_manager import MCPOAuthSpec, ProjectMCPServer
 
 _KEYRING_SERVICE = "ness-agent/mcp-oauth"
 _FALLBACK_NAME = "mcp_oauth.json"
 _RECORD_VERSION = 1
 
 
-def credential_id(project_root: Path, spec: MCPServerSpec) -> str:
+class OAuthCredentialClearError(RuntimeError):
+    """Local OAuth credentials could not be fully removed or verified."""
+
+
+@dataclass(frozen=True)
+class _KeyringReadResult:
+    available: bool
+    value: str | None
+    error: Exception | None = None
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        yield self.available
+        yield self.value
+
+
+def credential_id(project_root: Path, spec: ProjectMCPServer) -> str:
     oauth = spec.oauth
     payload = "\0".join(
         (
@@ -131,21 +143,34 @@ class ProjectOAuthTokenStorage:
 
     async def clear(self) -> None:
         async with self._lock:
-            keyring_available, _ = await _keyring_get(self.identity)
-            if keyring_available:
-                await _keyring_delete(self.identity)
-            document = self._fallback_document()
-            if document is None:
-                return
-            records = document.get("records", {})
-            if isinstance(records, dict) and self.identity in records:
-                records = dict(records)
-                del records[self.identity]
-                atomic_write_json(
-                    self.fallback_path,
-                    {"version": _RECORD_VERSION, "records": records},
-                    secret=True,
-                )
+            failure: BaseException | None = None
+            keyring_result = await _keyring_get(self.identity)
+            keyring_available, encoded = keyring_result
+            keyring_error = getattr(keyring_result, "error", None)
+            if keyring_error is not None:
+                failure = keyring_error
+            elif keyring_available and encoded is not None:
+                try:
+                    await _keyring_delete(self.identity)
+                    verification = await _keyring_get(self.identity)
+                    verified_available, verified_value = verification
+                    verification_error = getattr(verification, "error", None)
+                    if verification_error is not None:
+                        raise verification_error
+                    if not verified_available or verified_value is not None:
+                        raise RuntimeError("keyring credential deletion could not be verified")
+                except Exception as exc:
+                    failure = exc
+
+            try:
+                await asyncio.to_thread(self._remove_fallback_record, strict=True)
+            except Exception as exc:
+                failure = failure or exc
+
+            if failure is not None:
+                raise OAuthCredentialClearError(
+                    "local OAuth credentials could not be fully removed or verified"
+                ) from failure
 
     async def _read_record(self) -> dict[str, Any] | None:
         async with self._lock:
@@ -159,14 +184,14 @@ class ProjectOAuthTokenStorage:
                 self._warn("Stored MCP OAuth keyring record is corrupt; login is required.")
             return record
 
-        fallback = self._fallback_record()
+        fallback = await asyncio.to_thread(self._fallback_record)
         if fallback is not None and keyring_available:
             migrated = await _keyring_set(
                 self.identity,
                 json.dumps(fallback, separators=(",", ":")),
             )
             if migrated:
-                self._remove_fallback_record()
+                await asyncio.to_thread(self._remove_fallback_record)
             else:
                 self._warn_fallback()
             return fallback
@@ -178,42 +203,48 @@ class ProjectOAuthTokenStorage:
         available, _ = await _keyring_get(self.identity)
         encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         if available and await _keyring_set(self.identity, encoded):
-            self._remove_fallback_record()
+            await asyncio.to_thread(self._remove_fallback_record)
             return
         self._warn_fallback()
-        document = self._fallback_document(strict=True)
-        assert document is not None
-        records = document.get("records", {})
-        records = dict(records) if isinstance(records, dict) else {}
-        records[self.identity] = record
-        atomic_write_json(
-            self.fallback_path,
-            {"version": _RECORD_VERSION, "records": records},
-            secret=True,
-        )
+        await asyncio.to_thread(self._store_fallback_record, record)
 
     def _fallback_record(self) -> dict[str, Any] | None:
-        document = self._fallback_document()
-        if document is None:
-            return None
-        records = document.get("records", {})
-        value = records.get(self.identity) if isinstance(records, dict) else None
-        return dict(value) if isinstance(value, dict) else None
+        with locked_path(self.fallback_path, secret=True):
+            document = self._fallback_document()
+            if document is None:
+                return None
+            records = document.get("records", {})
+            value = records.get(self.identity) if isinstance(records, dict) else None
+            return dict(value) if isinstance(value, dict) else None
 
-    def _remove_fallback_record(self) -> None:
-        document = self._fallback_document()
-        if document is None:
-            return
-        records = document.get("records", {})
-        if not isinstance(records, dict) or self.identity not in records:
-            return
-        updated = dict(records)
-        del updated[self.identity]
-        atomic_write_json(
-            self.fallback_path,
-            {"version": _RECORD_VERSION, "records": updated},
-            secret=True,
-        )
+    def _store_fallback_record(self, record: dict[str, Any]) -> None:
+        with locked_path(self.fallback_path, secret=True):
+            document = self._fallback_document(strict=True)
+            assert document is not None
+            records = document.get("records", {})
+            records = dict(records) if isinstance(records, dict) else {}
+            records[self.identity] = record
+            atomic_write_json(
+                self.fallback_path,
+                {"version": _RECORD_VERSION, "records": records},
+                secret=True,
+            )
+
+    def _remove_fallback_record(self, *, strict: bool = False) -> None:
+        with locked_path(self.fallback_path, secret=True):
+            document = self._fallback_document(strict=strict)
+            if document is None:
+                return
+            records = document.get("records", {})
+            if not isinstance(records, dict) or self.identity not in records:
+                return
+            updated = dict(records)
+            del updated[self.identity]
+            atomic_write_json(
+                self.fallback_path,
+                {"version": _RECORD_VERSION, "records": updated},
+                secret=True,
+            )
 
     def _fallback_document(self, *, strict: bool = False) -> dict[str, Any] | None:
         if not self.fallback_path.exists():
@@ -272,7 +303,7 @@ class MCPOAuthService:
 
     def storage_for(
         self,
-        spec: MCPServerSpec,
+        spec: ProjectMCPServer,
         *,
         redirect_uri: str | None = None,
     ) -> ProjectOAuthTokenStorage:
@@ -284,7 +315,7 @@ class MCPOAuthService:
             warnings=self.warnings,
         )
 
-    async def startup_auth(self, spec: MCPServerSpec) -> Any | None:
+    async def startup_auth(self, spec: ProjectMCPServer) -> Any | None:
         redirect_uri = _default_redirect_uri(spec.oauth)
         storage = self.storage_for(spec, redirect_uri=redirect_uri)
         if not await storage.has_credentials():
@@ -305,7 +336,7 @@ class MCPOAuthService:
 
     def interactive_auth(
         self,
-        spec: MCPServerSpec,
+        spec: ProjectMCPServer,
         *,
         redirect_uri: str,
         redirect_handler: Any,
@@ -324,7 +355,7 @@ class MCPOAuthService:
 
     def _provider(
         self,
-        spec: MCPServerSpec,
+        spec: ProjectMCPServer,
         *,
         storage: ProjectOAuthTokenStorage,
         redirect_uri: str,
@@ -469,21 +500,23 @@ def _decode_record(value: str) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-async def _keyring_get(identity: str) -> tuple[bool, str | None]:
+async def _keyring_get(identity: str) -> _KeyringReadResult:
     try:
         import keyring
-
+    except ImportError:
+        return _KeyringReadResult(False, None)
+    try:
         backend = keyring.get_keyring()
         if float(getattr(backend, "priority", 0)) <= 0:
-            return False, None
+            return _KeyringReadResult(False, None)
         value = await asyncio.to_thread(
             keyring.get_password,
             _KEYRING_SERVICE,
             identity,
         )
-        return True, value
-    except Exception:
-        return False, None
+        return _KeyringReadResult(True, value)
+    except Exception as exc:
+        return _KeyringReadResult(False, None, exc)
 
 
 async def _keyring_set(identity: str, value: str) -> bool:
@@ -497,9 +530,6 @@ async def _keyring_set(identity: str, value: str) -> bool:
 
 
 async def _keyring_delete(identity: str) -> None:
-    try:
-        import keyring
+    import keyring
 
-        await asyncio.to_thread(keyring.delete_password, _KEYRING_SERVICE, identity)
-    except Exception:
-        pass
+    await asyncio.to_thread(keyring.delete_password, _KEYRING_SERVICE, identity)

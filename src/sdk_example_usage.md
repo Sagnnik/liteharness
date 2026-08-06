@@ -9,6 +9,7 @@ Construct agents with `NessAgent(...)` kwargs (builds an `AgentSpec` internally)
 - Supply `l2_context` in the prompt when the model needs project/domain structure (SDK does not auto-load repo context).
 - Append user events / call `thread_store.save_checkpoint` if you want resumable threads (the coding CLI does this around the graph).
 - Pass `cost_tracker=make_sdk_cost_tracker()` from `ness_cli.config` when you want estimated USD for non-provider-cost models.
+- Supply resolved MCP server settings and own connection approval, trust, and authentication policy when adding MCP (the bare SDK does not read Ness CLI project files).
 
 ---
 
@@ -71,6 +72,52 @@ agent = NessAgent(
     tools=["read", "grep", "glob", my_custom_fn],   # mixed list
 )
 ```
+
+---
+
+## MCP-enabled application
+
+`MCPRuntime` is the domain-agnostic connection layer. It accepts resolved
+server specifications and exposes discovered MCP tools as ordinary LangChain
+tools. It does not read `.ness/mcp.json`, display trust prompts, or persist
+OAuth credentials; those policies belong to the embedding application.
+
+```python
+from ness_agent import MCPRuntime, MCPServerSpec, NessAgent, PromptLayersConfig
+
+
+async def answer_with_mcp(model, question: str):
+    runtime = MCPRuntime(http_auth_factory=my_optional_auth_factory)
+    try:
+        await runtime.start(
+            [
+                MCPServerSpec(
+                    name="knowledge",
+                    transport="http",
+                    url="https://example.com/mcp",
+                    headers=(("X-Application", "my-app"),),
+                )
+            ]
+        )
+
+        agent = NessAgent(
+            model=model,
+            prompt=PromptLayersConfig(
+                l0="Use the connected knowledge source when it can help."
+            ),
+            tools=list(runtime.tools.values()),
+        )
+        result = await agent.session(thread_id="knowledge-1").run(question)
+        return result.assistant_message
+    finally:
+        await runtime.stop()
+```
+
+An application can build `MCPServerSpec` objects from a database, its own
+configuration format, user input, or another service. Provide an
+`HTTPAuthFactory` when HTTP connections require app-managed authentication.
+The Ness CLI's project config, trust fingerprints, OAuth storage, and terminal
+status rendering are adapter features rather than requirements of the SDK.
 
 ---
 

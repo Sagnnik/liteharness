@@ -18,7 +18,6 @@ import sys
 import uuid
 from typing import TYPE_CHECKING
 
-from ness_agent.mcp import MCPManager
 from ness_agent.session_context import SessionContext, set_session_context
 from ness_agent.tools import is_git_repo
 
@@ -27,6 +26,7 @@ from ness_cli.config import settings
 from ness_cli.factory import build_coding_session, prepare_paths
 from ness_cli.mcp_trust import is_mcp_trusted
 from ness_cli.mcp_oauth import MCPOAuthService
+from ness_cli.mcp_manager import ProjectMCPManager
 
 if TYPE_CHECKING:
     from ness_cli.coding_session import CodingSession
@@ -124,7 +124,7 @@ async def run_headless(
         project_root=paths.project_root,
         config_dir=paths.config_dir,
     )
-    mcp = MCPManager(
+    mcp = ProjectMCPManager(
         mcp_file=paths.ness_dir / "mcp.json",
         project_root=paths.project_root,
         http_auth_factory=mcp_oauth.startup_auth,

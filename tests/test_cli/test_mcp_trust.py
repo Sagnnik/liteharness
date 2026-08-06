@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ness_agent.mcp import MCPManager
 from ness_cli.config_store import load_configs
 from ness_cli import mcp_trust
+from ness_cli.mcp_manager import ProjectMCPManager
 
 
-def _manager(tmp_path: Path) -> MCPManager:
+def _manager(tmp_path: Path) -> ProjectMCPManager:
     path = tmp_path / ".ness" / "mcp.json"
     path.parent.mkdir()
     path.write_text(
@@ -24,7 +24,7 @@ def _manager(tmp_path: Path) -> MCPManager:
         ),
         encoding="utf-8",
     )
-    return MCPManager(path, project_root=tmp_path)
+    return ProjectMCPManager(path, project_root=tmp_path)
 
 
 def test_interactive_approval_persists_and_skips_next_prompt(tmp_path: Path, monkeypatch, capsys):
@@ -69,14 +69,14 @@ def test_config_change_requires_new_approval(tmp_path: Path, monkeypatch):
     data = json.loads(path.read_text(encoding="utf-8"))
     data["mcpServers"]["second"] = {"command": "python"}
     path.write_text(json.dumps(data), encoding="utf-8")
-    changed = MCPManager(path, project_root=tmp_path)
+    changed = ProjectMCPManager(path, project_root=tmp_path)
     assert not mcp_trust.is_mcp_trusted(changed, config_dir=config_dir)
 
 
 def test_empty_config_is_implicitly_trusted(tmp_path: Path, monkeypatch):
     path = tmp_path / "mcp.json"
     path.write_text('{"mcpServers": {}}', encoding="utf-8")
-    manager = MCPManager(path, project_root=tmp_path)
+    manager = ProjectMCPManager(path, project_root=tmp_path)
     monkeypatch.setattr(
         mcp_trust.typer,
         "confirm",

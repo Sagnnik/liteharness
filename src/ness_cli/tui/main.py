@@ -14,7 +14,7 @@ Headless one-shot queries (final response to stdout, then exit):
 The TUI is wired directly to the SDK stack: a
 :class:`~ness_cli.CodingSession` built via
 :func:`ness_cli.factory.build_coding_session`, an SDK
-:class:`~ness_agent.mcp.MCPManager`, and the SDK tool registry. The old
+:class:`~ness_cli.mcp_manager.ProjectMCPManager`, and the SDK tool registry. The old
 root-level monolith modules are no longer imported here.
 """
 
@@ -60,7 +60,6 @@ _bootstrap_worktree()
 import typer
 
 from ness_agent.context.budget import resolve_token_count
-from ness_agent.mcp import MCPManager
 from ness_agent.session_context import SessionContext, set_session_context
 from ness_agent.tools import is_git_repo
 from ness_cli.chat_model import (
@@ -74,6 +73,7 @@ from ness_cli.factory import build_coding_session, prepare_paths
 from ness_cli.headless import merge_prompt_parts, run_headless
 from ness_cli.mcp_trust import authorize_mcp_interactively
 from ness_cli.mcp_oauth import MCPOAuthService
+from ness_cli.mcp_manager import ProjectMCPManager
 
 from ness_cli.tui import render
 from ness_cli.tui.app import TuiApp
@@ -216,7 +216,7 @@ def run(
     asyncio.run(_main(resume_thread_id=resume or None, yolo=yolo))
 
 
-def _render_mcp_startup(mcp: MCPManager) -> None:
+def _render_mcp_startup(mcp: ProjectMCPManager) -> None:
     message, level = mcp.startup_summary()
     if level != "warn":
         return
@@ -262,7 +262,7 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
         project_root=paths.project_root,
         config_dir=paths.config_dir,
     )
-    mcp = MCPManager(
+    mcp = ProjectMCPManager(
         mcp_file=paths.ness_dir / "mcp.json",
         project_root=paths.project_root,
         http_auth_factory=mcp_oauth.startup_auth,

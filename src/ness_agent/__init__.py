@@ -31,6 +31,13 @@ from ness_agent.workspace import (
     git_worktree_summary, get_project_context, setup_ness_structure,
 )
 from ness_agent.compaction import summarize
+from ness_agent.mcp import (
+    HTTPAuthFactory,
+    MCPAuthenticationRequired,
+    MCPRuntime,
+    MCPServerSpec,
+    MCPServerState,
+)
 
 __all__ = [
     "NessAgent", "NessAgentConfig", "AgentSpec", "Session",
@@ -48,4 +55,6 @@ __all__ = [
     "MultiTracer", "MultiSpan", "build_tracer", "Span",
     "git_worktree_summary", "get_project_context", "setup_ness_structure",
     "summarize",
+    "MCPRuntime", "MCPServerSpec", "MCPServerState",
+    "MCPAuthenticationRequired", "HTTPAuthFactory",
 ]

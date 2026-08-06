@@ -245,7 +245,7 @@ def _patch_headless_infra(monkeypatch, tmp_path: Path, coding: CodingSession) ->
         fake_mcp.kwargs = kwargs
         return fake_mcp
 
-    monkeypatch.setattr(headless, "MCPManager", make_mcp)
+    monkeypatch.setattr(headless, "ProjectMCPManager", make_mcp)
     monkeypatch.setattr(headless, "build_coding_session", lambda **kw: coding)
     monkeypatch.setattr(headless, "provider_key_missing", lambda: False)
     monkeypatch.setattr(headless.settings, "auto_save_threads", True)

@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Iterator
 
 from ness_cli.paths import config_dir_from_env
 
@@ -26,6 +27,57 @@ SECRET_KEYS: frozenset[str] = frozenset({"openai_api_key", "exa_api_key"})
 
 _CONFIGS_NAME = "configs.json"
 _SECRETS_NAME = "secrets.json"
+
+
+def _lock_file(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def locked_path(path: Path, *, secret: bool = False) -> Iterator[None]:
+    """Hold an advisory lock that remains stable when ``path`` is replaced."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(lock_path, flags, 0o600 if secret else 0o666)
+    with os.fdopen(fd, "r+b") as handle:
+        if secret and hasattr(os, "fchmod"):
+            os.fchmod(handle.fileno(), 0o600)
+        _lock_file(handle)
+        try:
+            yield
+        finally:
+            _unlock_file(handle)
 
 
 def configs_path(config_dir: Path | None = None) -> Path:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing
 import os
 import socket
 from pathlib import Path
@@ -10,8 +11,8 @@ import pytest
 
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-from ness_agent.mcp import MCPManager
 from ness_cli import mcp_oauth
+from ness_cli.mcp_manager import ProjectMCPManager
 from ness_cli.mcp_oauth import (
     LoopbackOAuthCallback,
     MCPOAuthService,
@@ -22,12 +23,23 @@ from ness_cli.mcp_oauth import (
 )
 
 
-def _write_config(tmp_path: Path, spec: dict) -> MCPManager:
+def _write_config(tmp_path: Path, spec: dict) -> ProjectMCPManager:
     path = tmp_path / "mcp.json"
     path.write_text(json.dumps({"mcpServers": {"remote": spec}}), encoding="utf-8")
-    manager = MCPManager(path, project_root=tmp_path)
+    manager = ProjectMCPManager(path, project_root=tmp_path)
     manager.load()
     return manager
+
+
+def _write_fallback_in_process(config_dir: str, identity: str, start_event) -> None:
+    storage = ProjectOAuthTokenStorage(
+        config_dir=Path(config_dir),
+        identity=identity,
+    )
+    start_event.wait()
+    storage._store_fallback_record(
+        {"version": 1, "tokens": {"access_token": f"{identity}-token"}}
+    )
 
 
 def test_cursor_and_claude_oauth_normalize_and_redact(tmp_path: Path, monkeypatch):
@@ -60,7 +72,7 @@ def test_cursor_and_claude_oauth_normalize_and_redact(tmp_path: Path, monkeypatc
         ),
         encoding="utf-8",
     )
-    manager = MCPManager(path, project_root=tmp_path)
+    manager = ProjectMCPManager(path, project_root=tmp_path)
     preview = manager.load()
     cursor = manager.server_spec("cursor")
     claude = manager.server_spec("claude")
@@ -99,7 +111,7 @@ def test_invalid_oauth_combinations_are_visible(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    manager = MCPManager(path, project_root=tmp_path)
+    manager = ProjectMCPManager(path, project_root=tmp_path)
     manager.load()
     assert all(value["status"] == "error" for value in manager.servers.values())
     assert "both auth and oauth" in manager.servers["both"]["error"]
@@ -160,6 +172,72 @@ def test_fallback_storage_is_atomic_0600_and_round_trips(tmp_path: Path, monkeyp
     assert "No usable system keyring" in storage.warnings[0]
 
 
+def test_fallback_concurrent_identity_updates_do_not_lose_records(
+    tmp_path: Path, monkeypatch
+):
+    async def unavailable(identity):
+        await asyncio.sleep(0)
+        return False, None
+
+    monkeypatch.setattr(mcp_oauth, "_keyring_get", unavailable)
+    first = ProjectOAuthTokenStorage(config_dir=tmp_path, identity="first")
+    second = ProjectOAuthTokenStorage(config_dir=tmp_path, identity="second")
+
+    async def exercise():
+        await asyncio.gather(
+            first.set_tokens(OAuthToken(access_token="first-token")),
+            second.set_tokens(OAuthToken(access_token="second-token")),
+        )
+        assert (await first.get_tokens()).access_token == "first-token"
+        assert (await second.get_tokens()).access_token == "second-token"
+
+    asyncio.run(exercise())
+    records = json.loads(first.fallback_path.read_text(encoding="utf-8"))["records"]
+    assert set(records) == {"first", "second"}
+    assert os.stat(first.fallback_path.with_name("mcp_oauth.json.lock")).st_mode & 0o777 == 0o600
+
+
+def test_fallback_cross_process_updates_do_not_lose_records(tmp_path: Path):
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    processes = [
+        context.Process(
+            target=_write_fallback_in_process,
+            args=(str(tmp_path), identity, start_event),
+        )
+        for identity in ("first", "second")
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    for process in processes:
+        process.join(timeout=15)
+        assert process.exitcode == 0
+
+    records = json.loads((tmp_path / "mcp_oauth.json").read_text(encoding="utf-8"))[
+        "records"
+    ]
+    assert set(records) == {"first", "second"}
+
+
+def test_clear_reports_keyring_deletion_failure(tmp_path: Path, monkeypatch):
+    async def stored(identity):
+        return True, '{"tokens":{"access_token":"still-present"}}'
+
+    async def failed_delete(identity):
+        raise RuntimeError("keyring backend failed")
+
+    monkeypatch.setattr(mcp_oauth, "_keyring_get", stored)
+    monkeypatch.setattr(mcp_oauth, "_keyring_delete", failed_delete)
+    storage = ProjectOAuthTokenStorage(config_dir=tmp_path, identity="identity")
+
+    async def exercise():
+        with pytest.raises(mcp_oauth.OAuthCredentialClearError):
+            await storage.clear()
+
+    asyncio.run(exercise())
+
+
 def test_static_client_info_is_not_persisted_to_fallback(tmp_path: Path, monkeypatch):
     async def unavailable(identity):
         return False, None
@@ -209,6 +287,32 @@ def test_credential_identity_is_project_scoped(tmp_path: Path):
     spec = manager.server_spec("remote")
     assert spec
     assert credential_id(tmp_path, spec) != credential_id(tmp_path / "other", spec)
+
+
+def test_credential_identity_remains_compatible_with_existing_keyring_records(
+    tmp_path: Path,
+):
+    path = tmp_path / "mcp.json"
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://example.com/mcp",
+                        "oauth": {"clientId": "client", "scopes": "read write"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = ProjectMCPManager(path, project_root=Path("/workspace"))
+    spec = manager.server_spec("remote")
+    assert spec
+
+    assert credential_id(Path("/workspace"), spec) == (
+        "21d0896cf34783310fb56bd33dfc7bc1b94685ec98c0441a04c95b09f4cfb066"
+    )
 
 
 def test_pinned_scope_adapter_reapplies_configured_scope(tmp_path: Path, monkeypatch):

@@ -12,6 +12,12 @@ Ness Agent is split into a reusable **SDK** and a **coding CLI adapter** (Ness).
 
 See also: [SDK guide](sdk.md) · [CLI guide](cli.md) · [Configuration](configuration.md)
 
+### MCP boundary
+
+The SDK's `MCPRuntime` accepts fully resolved stdio or HTTP server specifications and owns connections, session lifecycle, tool discovery, LangChain tool conversion, calls, and structured connection state. It has no project-file, terminal, trust, or credential-storage policy, so it can be embedded in domain-specific or domain-agnostic applications.
+
+The Ness adapter owns `.ness/mcp.json`, Cursor/Claude compatibility, environment interpolation, trust fingerprints, OAuth credential persistence, and CLI presentation. It converts project entries into resolved SDK `MCPServerSpec` values before starting the runtime.
+
 ---
 
 ## Prompt layers

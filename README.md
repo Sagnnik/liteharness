@@ -54,6 +54,10 @@ export OPENAI_BASE_URL=https://openrouter.ai/api/v1
 
 Add those lines to `~/.bashrc` or `~/.zshrc` to persist across sessions. Alternatively, launch `ness` and set them via `/config` → **Provider** (stored in global `secrets.json` / `configs.json`).
 
+Ness does not automatically read or migrate a project `.env` file. You may
+still keep local values in `.env`, but load them into the process explicitly
+(for example, `uv run --env-file .env ness`) or use `/config`.
+
 Optional tracing support:
 
 ```bash
@@ -135,7 +139,7 @@ async def main() -> None:
     )
     session = agent.session(thread_id="demo-1")
     result = await session.run("say hello")
-    print(result.text)
+    print(result.assistant_message)
 
 asyncio.run(main())
 ```

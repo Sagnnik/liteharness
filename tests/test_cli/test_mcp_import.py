@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ness_cli.config_store import load_configs
 from ness_cli.mcp_import import (
+    MCPImportConflictError,
     execute_mcp_import,
     plan_mcp_import,
     provenance_for_server,
@@ -144,3 +147,50 @@ def test_unresolved_placeholders_import_with_warning(tmp_path: Path):
     plan = plan_mcp_import(source, destination, project_root=tmp_path)
     assert plan.valid
     assert "unresolved placeholders" in plan.entries[0].warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://user:secret@example.com/mcp", "embedded credentials"),
+        ("https://example.com/mcp#fragment", "fragment"),
+        ("https://user:secret@example.com/${MCP_PATH}", "embedded credentials"),
+    ],
+)
+def test_import_url_validation_matches_runtime(tmp_path: Path, url: str, expected: str):
+    source = tmp_path / "source.json"
+    _write(source, {"mcpServers": {"remote": {"url": url}}})
+
+    plan = plan_mcp_import(source, tmp_path / ".ness" / "mcp.json", project_root=tmp_path)
+
+    assert not plan.valid
+    assert any(expected in error for error in plan.errors)
+
+
+def test_literal_url_query_is_flagged_as_a_credential(tmp_path: Path):
+    source = tmp_path / "source.json"
+    _write(
+        source,
+        {"mcpServers": {"remote": {"url": "https://example.com/mcp?token=literal"}}},
+    )
+    plan = plan_mcp_import(source, tmp_path / ".ness" / "mcp.json", project_root=tmp_path)
+
+    assert plan.valid
+    assert "literal credential" in plan.entries[0].warnings[0]
+
+
+def test_destination_change_after_plan_aborts_without_provenance(tmp_path: Path):
+    source = tmp_path / "source.json"
+    destination = tmp_path / ".ness" / "mcp.json"
+    config_dir = tmp_path / "config"
+    _write(source, {"mcpServers": {"new": {"command": "python"}}})
+    _write(destination, {"mcpServers": {"existing": {"command": "old"}}})
+    plan = plan_mcp_import(source, destination, project_root=tmp_path)
+    _write(destination, {"mcpServers": {"manual": {"command": "keep"}}})
+    manual_bytes = destination.read_bytes()
+
+    with pytest.raises(MCPImportConflictError, match="changed after confirmation"):
+        execute_mcp_import(plan, config_dir=config_dir)
+
+    assert destination.read_bytes() == manual_bytes
+    assert "mcp_imports" not in load_configs(config_dir)

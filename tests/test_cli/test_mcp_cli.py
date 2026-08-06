@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from ness_cli import mcp_cli
+from ness_cli.mcp_import import MCPImportConflictError
+from ness_cli.mcp_oauth import OAuthCredentialClearError
 from ness_cli.tui import main as tui_main
 
 
@@ -64,6 +66,22 @@ def test_import_cli_conflict_exit_2(tmp_path: Path, monkeypatch):
     assert json.loads(destination.read_text(encoding="utf-8"))["mcpServers"]["one"]["command"] == "old"
 
 
+def test_import_cli_stale_plan_exit_2(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(mcp_cli, "prepare_paths", lambda: _paths(tmp_path))
+    source = tmp_path / "source.json"
+    _write(source, {"mcpServers": {"one": {"command": "new"}}})
+
+    def stale_plan(*args, **kwargs):
+        raise MCPImportConflictError("destination changed after confirmation")
+
+    monkeypatch.setattr(mcp_cli, "execute_mcp_import", stale_plan)
+    result = CliRunner().invoke(mcp_cli.app, ["import", str(source), "--yes"])
+
+    assert result.exit_code == 2
+    assert "changed after confirmation" in result.output
+    assert "Imported 1 server" not in result.output
+
+
 def test_status_and_logout_cli(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(mcp_cli, "prepare_paths", lambda: _paths(tmp_path))
     _write(
@@ -85,6 +103,31 @@ def test_status_and_logout_cli(tmp_path: Path, monkeypatch):
     logout = runner.invoke(mcp_cli.app, ["logout", "remote"])
     assert logout.exit_code == 0, logout.output
     assert "were not revoked" in logout.output
+
+
+def test_logout_does_not_claim_success_when_keyring_clear_fails(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(mcp_cli, "prepare_paths", lambda: _paths(tmp_path))
+    _write(
+        tmp_path / ".ness" / "mcp.json",
+        {"mcpServers": {"remote": {"url": "https://example.com/mcp"}}},
+    )
+
+    class FailedStorage:
+        async def clear(self):
+            raise OAuthCredentialClearError("credentials could not be removed")
+
+    monkeypatch.setattr(
+        mcp_cli.MCPOAuthService,
+        "storage_for",
+        lambda self, spec: FailedStorage(),
+    )
+    result = CliRunner().invoke(mcp_cli.app, ["logout", "remote"])
+
+    assert result.exit_code == 1
+    assert "could not be removed" in result.output
+    assert "Removed local OAuth credentials" not in result.output
 
 
 def test_login_rejects_stdio_without_browser(tmp_path: Path, monkeypatch):

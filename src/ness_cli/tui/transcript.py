@@ -44,7 +44,7 @@ def _header_project() -> str:
 def _header_addons_summary(mcp, skill_loader) -> str:
     """Summarize active MCP servers + skills for the header's Add-ons cell.
 
-    Reads the TuiApp-held MCPManager and the coding session's SkillLoader;
+    Reads the TuiApp-held ProjectMCPManager and the coding session's SkillLoader;
     both are optional so headless/test paths (no MCP, no skills dir) render
     an empty summary instead of failing.
     """

@@ -9,12 +9,18 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
-from ness_cli.config_store import atomic_write_json, load_configs, write_config
+from ness_cli.config_store import atomic_write_json, load_configs, locked_path, write_config
+from ness_cli.mcp_manager import validate_project_mcp_http_url
+from ness_cli.terminal import terminal_safe_text
 
 _IMPORTS_KEY = "mcp_imports"
 _PLACEHOLDER = re.compile(r"\$\{[^{}]+\}")
+
+
+class MCPImportConflictError(RuntimeError):
+    """The import destination changed after the plan was created."""
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,7 @@ class MCPImportPlan:
     destination: Path
     project_root: Path
     source_digest: str
+    destination_digest: str | None = None
     entries: list[ImportEntry] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -53,7 +60,7 @@ class MCPImportPlan:
             lines.extend(f"  warning: {warning}" for warning in entry.warnings)
         lines.extend(f"Warning: {warning}" for warning in self.warnings)
         lines.extend(f"Error: {error}" for error in self.errors)
-        return "\n".join(lines)
+        return terminal_safe_text("\n".join(lines), multiline=True)
 
 
 def plan_mcp_import(
@@ -107,12 +114,18 @@ def plan_mcp_import(
     else:
         names = list(source_servers)
 
-    destination_doc, destination_key, destination_error = _load_destination(destination)
+    (
+        destination_doc,
+        destination_key,
+        destination_error,
+        destination_digest,
+    ) = _load_destination(destination)
     if destination_error:
         plan.errors.append(destination_error)
         return plan
     plan.destination_document = destination_doc
     plan.destination_key = destination_key
+    plan.destination_digest = destination_digest
     existing = destination_doc[destination_key]
     assert isinstance(existing, dict)
 
@@ -167,7 +180,18 @@ def execute_mcp_import(plan: MCPImportPlan, *, config_dir: Path) -> list[str]:
     for item in plan.changes:
         server_map[item.name] = item.entry
     document[plan.destination_key] = server_map
-    atomic_write_json(plan.destination, document)
+    with locked_path(plan.destination):
+        try:
+            current_digest = _file_digest(plan.destination)
+        except OSError as exc:
+            raise MCPImportConflictError(
+                "MCP destination could not be re-read; import was not applied"
+            ) from exc
+        if current_digest != plan.destination_digest:
+            raise MCPImportConflictError(
+                "MCP destination changed after confirmation; import was not applied"
+            )
+        atomic_write_json(plan.destination, document)
 
     warnings: list[str] = []
     try:
@@ -259,14 +283,10 @@ def validate_import_entry(value: Any) -> tuple[list[str], list[str]]:
     if transport == "http":
         if not isinstance(url, str) or not url:
             errors.append("http server requires a non-empty url")
-        elif not _PLACEHOLDER.search(url):
-            try:
-                parts = urlsplit(url)
-                _ = parts.port
-                if parts.scheme not in {"http", "https"} or not parts.hostname:
-                    errors.append("url must be an http(s) URL with a hostname")
-            except ValueError:
-                errors.append("url is malformed")
+        else:
+            url_error = validate_project_mcp_http_url(url)
+            if url_error:
+                errors.append(url_error)
         if value.get("envFile") is not None:
             errors.append("envFile is only supported for stdio servers")
     for field_name in ("env", "headers"):
@@ -353,24 +373,46 @@ def _validate_import_oauth(value: dict[str, Any], errors: list[str]) -> None:
             )
 
 
-def _load_destination(path: Path) -> tuple[dict[str, Any], str, str | None]:
+def _load_destination(
+    path: Path,
+) -> tuple[dict[str, Any], str, str | None, str | None]:
     if not path.exists():
-        return {"mcpServers": {}}, "mcpServers", None
+        return {"mcpServers": {}}, "mcpServers", None, None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        value = json.loads(raw)
     except OSError as exc:
-        return {}, "mcpServers", f"cannot read destination: {exc}"
+        return {}, "mcpServers", f"cannot read destination: {exc}", None
     except json.JSONDecodeError as exc:
-        return {}, "mcpServers", f"destination contains invalid JSON at line {exc.lineno}, column {exc.colno}"
+        return (
+            {},
+            "mcpServers",
+            f"destination contains invalid JSON at line {exc.lineno}, column {exc.colno}",
+            None,
+        )
+    digest = hashlib.sha256(raw).hexdigest()
     if not isinstance(value, dict):
-        return {}, "mcpServers", "destination root must be a JSON object"
+        return {}, "mcpServers", "destination root must be a JSON object", digest
     if "servers" in value:
-        return {}, "mcpServers", "destination uses unsupported 'servers'; migrate it to 'mcpServers' before importing"
+        return (
+            {},
+            "mcpServers",
+            "destination uses unsupported 'servers'; migrate it to 'mcpServers' before importing",
+            digest,
+        )
     if "mcpServers" not in value:
         value["mcpServers"] = {}
     if not isinstance(value["mcpServers"], dict):
-        return {}, "mcpServers", "destination mcpServers must be a JSON object"
-    return value, "mcpServers", None
+        return {}, "mcpServers", "destination mcpServers must be a JSON object", digest
+    return value, "mcpServers", None, digest
+
+
+def _file_digest(path: Path) -> str | None:
+    try:
+        value = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    return hashlib.sha256(value).hexdigest()
 
 
 def _entry_summary(value: dict[str, Any]) -> str:
@@ -421,4 +463,15 @@ def _contains_literal_secret(value: dict[str, Any]) -> bool:
     oauth = value.get("oauth")
     if isinstance(oauth, dict) and isinstance(oauth.get("clientSecret"), str):
         candidates.append(oauth["clientSecret"])
+    url = value.get("url")
+    if isinstance(url, str):
+        try:
+            parts = urlsplit(url)
+            if parts.username:
+                candidates.append(parts.username)
+            if parts.password:
+                candidates.append(parts.password)
+            candidates.extend(query_value for _, query_value in parse_qsl(parts.query))
+        except ValueError:
+            pass
     return any(candidate and not _PLACEHOLDER.search(candidate) for candidate in candidates)

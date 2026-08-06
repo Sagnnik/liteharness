@@ -52,7 +52,7 @@ async def main() -> None:
     )
     session = agent.session(thread_id="demo-1")
     result = await session.run("say hello")
-    print(result.text)
+    print(result.assistant_message)
 
 
 asyncio.run(main())
@@ -89,6 +89,7 @@ Core exports from `ness_agent`:
 | `PromptLayers`, `PromptLayersConfig` | L0–L2 prompt assembly |
 | `NessAgentOptions`, `MemoryConfig`, `ModeConfig` | Behavior toggles |
 | `ToolRegistry`, `coding_tools` | Built-in and custom tools |
+| `MCPRuntime`, `MCPServerSpec`, `MCPServerState` | Adapter-neutral MCP connections and discovered LangChain tools |
 | `PermissionStore`, `HookRunner`, `SkillLoader` | Policy and extension points |
 | `ThreadStore`, `MemoryStore` | Persistence backends |
 | `CostTracker`, `TracingConfig`, `Tracer` | Usage and observability |
@@ -96,6 +97,41 @@ Core exports from `ness_agent`:
 | `summarize` | Cache-safe summary fork using exact parent messages and bound model |
 
 Import smoke test: `tests/test_sdk_smoke.py`.
+
+`Session.run()` returns a `RunResult`. Use `assistant_message` for the final text and `usage_total` for the aggregate usage of every model call in that turn. The former single-call `usage` attribute has been removed; replace `result.usage` with `result.usage_total` when upgrading.
+
+## MCP in an SDK application
+
+`MCPRuntime` connects fully resolved server specifications without depending on Ness project files, trust prompts, terminal output, or credential storage. Start the runtime before constructing an agent, then pass its discovered tools to any LangChain-compatible application:
+
+```python
+from ness_agent import MCPRuntime, MCPServerSpec, NessAgent
+
+runtime = MCPRuntime(http_auth_factory=my_optional_auth_factory)
+await runtime.start(
+    [
+        MCPServerSpec(
+            name="knowledge",
+            transport="http",
+            url="https://example.com/mcp",
+            headers=(("X-Application", "my-app"),),
+        )
+    ]
+)
+
+agent = NessAgent(
+    model=model,
+    prompt=prompt,
+    tools=list(runtime.tools.values()),
+)
+
+try:
+    result = await agent.session().run("Search the connected knowledge source")
+finally:
+    await runtime.stop()
+```
+
+The embedding application decides where server configuration comes from and how users approve or authenticate connections. `HTTPAuthFactory` can provide an `httpx` authentication object for each resolved HTTP spec.
 
 ---
 

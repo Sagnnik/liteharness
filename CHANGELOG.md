@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Public, adapter-neutral `MCPRuntime`, `MCPServerSpec`, and structured MCP state APIs for applications that want MCP connections without adopting Ness project configuration or UI policy.
 - Native `.ness/mcp.json` loading in interactive and headless modes, with canonical `mcpServers` validation, custom `NESS_DIR` support, visible diagnostics, project-config fingerprints, and fail-closed headless trust.
 - MCP stdio and Streamable HTTP clients with headers, `envFile`, safe child-process environments, Cursor and Claude interpolation syntax, and isolated per-server errors.
 - Explicit `ness mcp status`, `ness mcp login`, and `ness mcp logout` OAuth management for Cursor `auth` and Claude `oauth` configurations, including loopback and manual callbacks, token refresh, project-scoped keyring storage, and an atomic `0600` file fallback.
@@ -32,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Progressive tool-output compaction, the 40-message summary limit, `compaction_model`, `progressive_compact`, and `summarize_history`.
 - `COMPACTION_INPUT_RESERVE` and `COMPACTION_OUTPUT_RESERVE`; use `COMPACTION_BUFFER_TOKENS` and `COMPACTION_SUMMARY_MAX_TOKENS`.
+- **Breaking:** automatic first-start migration of project `.env` settings into global JSON configuration. Application settings now come only from the process environment or `configs.json` / `secrets.json`; MCP `envFile` remains supported explicitly.
+- **Breaking:** `RunResult.usage`; use `RunResult.usage_total`, which aggregates every model call made during the turn.
+- **Breaking:** the mixed `ness_agent.mcp.MCPManager`; SDK applications now use `MCPRuntime` with resolved server specs, while the Ness CLI owns project config, trust, OAuth persistence, and presentation through its adapter.
 
 ## [0.1.0] - 2026-07-31 — Released
 
