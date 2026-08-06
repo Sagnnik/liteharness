@@ -41,6 +41,11 @@ def test_factory_wires_hooks_and_skills(tmp_path: Path, monkeypatch):
     assert agent.config.skill_loader is not None
     assert agent.config.skill_loader.skills_dirs[0] == ness.resolve() / "skills"
     assert (tmp_path / ".agents" / "skills") in agent.config.skill_loader.skills_dirs
+    # CLI policy: all project-local well-known roots, but only ~/.agents/skills globally
+    assert (tmp_path / ".cursor" / "skills") in agent.config.skill_loader.skills_dirs
+    assert (Path.home() / ".agents" / "skills") in agent.config.skill_loader.skills_dirs
+    for rel in (".claude", ".codex", ".cursor"):
+        assert (Path.home() / rel / "skills") not in agent.config.skill_loader.skills_dirs
     assert agent.config.hook_runner is not None
     assert agent.config.hook_runner.hooks_file == ness.resolve() / "hooks.json"
     assert agent.config.memory_store.user_file == (tmp_path / "cfg" / "USER.md").resolve()

@@ -26,7 +26,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ness_agent import ApprovalHandler, MemoryConfig, NessAgent, NessAgentOptions
+from ness_agent import (
+    ApprovalHandler,
+    MemoryConfig,
+    NessAgent,
+    NessAgentOptions,
+    merge_skill_dirs,
+)
 from ness_agent.workspace import setup_ness_structure
 
 from ness_cli.chat_model import (
@@ -103,7 +109,14 @@ def build_coding_agent(
             session_memory_dir=paths.sessions_dir,
         ),
         "hooks_config": paths.ness_dir / "hooks.json",
-        "skills_dir": paths.ness_dir / "skills",
+        # Ness CLI policy: .ness/skills plus the well-known project-local
+        # agent skill roots; globally only ~/.agents/skills is trusted.
+        # The SDK itself scans only what it is given.
+        "skills_dirs": merge_skill_dirs(
+            paths.project_root,
+            paths.ness_dir / "skills",
+            global_rels=(".agents/skills",),
+        ),
         "options": NessAgentOptions(
             context_window=context_window_for(active_model_name()),
             compaction_token_budget=settings.compaction_token_budget,

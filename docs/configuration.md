@@ -39,12 +39,14 @@ cli_history              Prompt history for this project root
     │   └── mem_<thread_id>.md
     └── shells/          Background shell job metadata and logs
 
-# Also discovered when present (after .ness/skills; project before global)
+# Also discovered by the Ness CLI when present (after .ness/skills; project before global)
 .agents/skills/  .claude/skills/  .codex/skills/  .cursor/skills/
-~/.agents/skills/  ~/.claude/skills/  ~/.codex/skills/  ~/.cursor/skills/
+~/.agents/skills/
 ```
 
 Override roots with `NESS_AGENT_CONFIG_DIR`, `NESS_AGENT_CACHE_DIR`, and `NESS_DIR`. Skills may be nested under category folders (`category/skill/SKILL.md`); see [Skills in the CLI guide](cli.md#skills).
+
+Well-known-root discovery is Ness CLI policy: the CLI hands these directories to the SDK explicitly. SDK applications scan only the roots they configure (`skills_dir` / `skills_dirs`) and can opt into the same list via `merge_skill_dirs()` — see [SDK guide → Skills](sdk.md#skills).
 
 ---
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from typing import Any
 
 from ness_cli.tui.tool_display import (
@@ -82,8 +83,58 @@ def _header_version() -> str:
             return "dev"
     except Exception:
         return "dev"
-    except Exception:
-        return "dev"
+
+
+def _table_column_widths(
+    headers: list[str], rows: list[list[str]], available: int
+) -> list[int]:
+    """Fit natural column widths into *available* cells.
+
+    Columns shrink from the widest value first, preserving enough room for
+    their heading. Cell content is wrapped by :func:`_table_cell_lines`.
+    """
+    if not headers:
+        return []
+    minimums = [max(4, min(len(str(header)), 12)) for header in headers]
+    widths = minimums.copy()
+    for index, header in enumerate(headers):
+        values = [
+            str(header),
+            *(str(row[index]) if index < len(row) else "" for row in rows),
+        ]
+        widths[index] = max(
+            minimums[index],
+            *(len(line) for value in values for line in value.splitlines() or [""]),
+        )
+
+    target = max(sum(minimums), available)
+    while sum(widths) > target:
+        candidates = [
+            index for index, width in enumerate(widths) if width > minimums[index]
+        ]
+        if not candidates:
+            break
+        widest = max(candidates, key=lambda index: (widths[index], index))
+        widths[widest] -= 1
+    return widths
+
+
+def _table_cell_lines(value: Any, width: int) -> list[str]:
+    """Wrap one table cell without allowing prompt_toolkit to break the row."""
+    output: list[str] = []
+    for raw_line in str(value).splitlines() or [""]:
+        output.extend(
+            textwrap.wrap(
+                raw_line,
+                width=max(1, width),
+                break_long_words=True,
+                break_on_hyphens=False,
+                replace_whitespace=True,
+                drop_whitespace=True,
+            )
+            or [""]
+        )
+    return output
 
 
 class TranscriptMixin:
@@ -369,23 +420,45 @@ class TranscriptMixin:
     def append_table(
         self, title: str, headers: list[str], rows: list[list[str]]
     ) -> None:
-        col_widths = [len(h) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                col_widths[i] = max(col_widths[i], len(str(cell)))
-        header_line = "  ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
+        if not headers:
+            return
+        render_width = self._transcript_render_width or term_width()
+        leading = 2
+        separator = "  "
+        available = max(
+            len(headers) * 4,
+            render_width - leading - len(separator) * (len(headers) - 1),
+        )
+        col_widths = _table_column_widths(headers, rows, available)
+        header_line = separator.join(
+            str(header).upper().ljust(col_widths[index])
+            for index, header in enumerate(headers)
+        )
         lines_out = [
             TranscriptLine("class:transcript.notice", title),
             TranscriptLine("class:transcript.panel", f"  {header_line}"),
             TranscriptLine(
-                "class:transcript.muted", "  " + "  ".join("-" * w for w in col_widths)
+                "class:transcript.muted",
+                "  " + separator.join("─" * width for width in col_widths),
             ),
         ]
         for row in rows:
-            line = "  ".join(
-                str(row[i]).ljust(col_widths[i]) for i in range(len(headers))
-            )
-            lines_out.append(TranscriptLine("class:transcript.panel", f"  {line}"))
+            cells = [
+                _table_cell_lines(
+                    row[index] if index < len(row) else "", col_widths[index]
+                )
+                for index in range(len(headers))
+            ]
+            for line_index in range(max(len(cell) for cell in cells)):
+                line = separator.join(
+                    (cell[line_index] if line_index < len(cell) else "").ljust(
+                        col_widths[index]
+                    )
+                    for index, cell in enumerate(cells)
+                ).rstrip()
+                lines_out.append(
+                    TranscriptLine("class:transcript.panel", " " * leading + line)
+                )
         lines_out.append(TranscriptLine("class:transcript.muted", ""))
         self._append_transcript(*lines_out)
 

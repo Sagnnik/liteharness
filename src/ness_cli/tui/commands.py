@@ -42,6 +42,21 @@ def _add_text(args: str) -> str | None:
     return args[4:].strip() if args.startswith("add ") else None
 
 
+def _display_skill_source(source: str, project_root: Path) -> str:
+    """Return a compact, useful source path for the skill catalog."""
+    if not source:
+        return ""
+    path = Path(source)
+    try:
+        return str(path.relative_to(project_root))
+    except (ValueError, OSError):
+        pass
+    try:
+        return str(Path("~") / path.relative_to(Path.home()))
+    except (ValueError, OSError):
+        return str(path)
+
+
 # --- handlers ---------------------------------------------------------------
 async def cmd_exit(app: "TuiApp", args: str) -> None:
     app.should_exit = True
@@ -103,10 +118,22 @@ async def cmd_skill(app: "TuiApp", args: str) -> None:
             render.render_notice("No skills found.")
         else:
             rows = [
-                [s.get("name", ""), s.get("source", ""), s.get("description", "")]
-                for s in skills.values()
+                [
+                    s.get("name", ""),
+                    _display_skill_source(
+                        str(s.get("source", "")), app.coding.project_root
+                    ),
+                    s.get("description", ""),
+                ]
+                for s in sorted(
+                    skills.values(), key=lambda item: str(item.get("name", ""))
+                )
             ]
-            render.render_table(title="skills", columns=["skill", "source", "description"], rows=rows)
+            render.render_table(
+                title=f"skills ({len(rows)})",
+                columns=["skill", "source", "description"],
+                rows=rows,
+            )
         if loader.errors:
             render.render_warning("Skill load warnings:\n" + "\n".join(loader.errors))
         render.render_notice("Load a skill with /skill <name>.")

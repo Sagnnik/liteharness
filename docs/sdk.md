@@ -91,6 +91,7 @@ Core exports from `ness_agent`:
 | `ToolRegistry`, `coding_tools` | Built-in and custom tools |
 | `MCPRuntime`, `MCPServerSpec`, `MCPServerState` | Adapter-neutral MCP connections and discovered LangChain tools |
 | `PermissionStore`, `HookRunner`, `SkillLoader` | Policy and extension points |
+| `merge_skill_dirs`, `default_skill_search_dirs` | Opt-in well-known agent skill roots |
 | `ThreadStore`, `MemoryStore` | Persistence backends |
 | `CostTracker`, `TracingConfig`, `Tracer` | Usage and observability |
 | `CodingOverlay`, `OverlayProvider` | Internal, non-durable L3 context (used by CLI) |
@@ -99,6 +100,31 @@ Core exports from `ness_agent`:
 Import smoke test: `tests/test_sdk_smoke.py`.
 
 `Session.run()` returns a `RunResult`. Use `assistant_message` for the final text and `usage_total` for the aggregate usage of every model call in that turn. The former single-call `usage` attribute has been removed; replace `result.usage` with `result.usage_total` when upgrading.
+
+## Skills
+
+Skills are directories containing a `SKILL.md` (YAML frontmatter with `name` and `description`, plus the instruction body). Available skills appear as a one-line catalog in L1; the model loads full bodies on demand via the `skill_view` tool.
+
+The SDK scans **exactly** the roots you configure — it never adds directories implicitly:
+
+- `skills_dir=Path(...)` — scan this one directory (nested `category/skill/SKILL.md` layouts supported).
+- `skills_dirs=[Path(...), ...]` — an explicit, exhaustive root list; earlier roots win on name collisions. Mutually exclusive with `skills_dir`.
+- Both `None` (the default) — skills disabled.
+
+To also load the well-known agent skill roots (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, and their `~/` equivalents), opt in explicitly:
+
+```python
+from pathlib import Path
+from ness_agent import NessAgent, merge_skill_dirs
+
+agent = NessAgent(
+    model=model,
+    prompt=prompt,
+    skills_dirs=merge_skill_dirs(project_root, project_root / ".ness" / "skills"),
+)
+```
+
+`merge_skill_dirs(project_root, skills_dir)` returns your directory first, then the well-known project-local roots, then the user-global ones, deduped by resolved path (`default_skill_search_dirs(project_root)` returns just the well-known roots). Pass `project_rels=` / `global_rels=` to restrict which project-local and user-global roots are included (e.g. `global_rels=()` opts out of global roots entirely) — the Ness CLI uses `global_rels=(".agents/skills",)`, trusting only `~/.agents/skills` globally; your own application chooses whichever roots it trusts.
 
 ## MCP in an SDK application
 

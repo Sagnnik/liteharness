@@ -27,22 +27,82 @@ _GLOBAL_SKILL_RELS = (
 )
 
 
-def default_skill_search_dirs(project_root: Path) -> list[Path]:
+def default_skill_search_dirs(
+    project_root: Path,
+    *,
+    project_rels: Sequence[str] | None = None,
+    global_rels: Sequence[str] | None = None,
+) -> list[Path]:
     """Well-known project-local and user-global skill roots.
 
+    Opt-in helper for host applications — the SDK never scans these
+    unless the caller passes them in via ``AgentSpec.skills_dirs``.
     Does not include ``.ness/skills`` — that comes from the caller via
     ``skills_dir``.
+
+    ``project_rels`` / ``global_rels`` restrict which project-local
+    (relative to ``project_root``) and user-global (relative to the home
+    directory) roots are included; ``None`` means all well-known ones.
+
+    Example::
+
+        from pathlib import Path
+        from ness_agent import NessAgent, default_skill_search_dirs
+
+        project_root = Path("/path/to/repo")
+        agent = NessAgent(
+            model=model,
+            prompt=prompt,
+            skills_dirs=default_skill_search_dirs(project_root),
+        )
     """
     root = project_root.resolve()
     home = Path.home()
-    dirs: list[Path] = [root / rel for rel in _PROJECT_SKILL_RELS]
-    dirs.extend(home / rel for rel in _GLOBAL_SKILL_RELS)
+    dirs: list[Path] = [
+        root / rel for rel in (_PROJECT_SKILL_RELS if project_rels is None else project_rels)
+    ]
+    dirs.extend(home / rel for rel in (_GLOBAL_SKILL_RELS if global_rels is None else global_rels))
     return dirs
 
 
-def merge_skill_dirs(project_root: Path, skills_dir: Path) -> list[Path]:
-    """User/CLI dir first, then known roots; dedupe by resolved path."""
-    ordered: list[Path] = [skills_dir, *default_skill_search_dirs(project_root)]
+def merge_skill_dirs(
+    project_root: Path,
+    skills_dir: Path,
+    *,
+    project_rels: Sequence[str] | None = None,
+    global_rels: Sequence[str] | None = None,
+) -> list[Path]:
+    """User/CLI dir first, then known roots; dedupe by resolved path.
+
+    Convenience for host applications (e.g. the Ness CLI) that want to
+    opt into the well-known agent skill roots in addition to their own
+    directory. Pass the result as ``AgentSpec.skills_dirs``.
+
+    ``project_rels`` / ``global_rels`` restrict which project-local
+    (relative to ``project_root``) and user-global (relative to the home
+    directory) roots are included; ``None`` means all well-known ones.
+
+    Example::
+
+        from pathlib import Path
+        from ness_agent import NessAgent, merge_skill_dirs
+
+        project_root = Path("/path/to/repo")
+        agent = NessAgent(
+            model=model,
+            prompt=prompt,
+            skills_dirs=merge_skill_dirs(
+                project_root,
+                project_root / ".ness" / "skills",
+            ),
+        )
+    """
+    ordered: list[Path] = [
+        skills_dir,
+        *default_skill_search_dirs(
+            project_root, project_rels=project_rels, global_rels=global_rels
+        ),
+    ]
     seen: set[Path] = set()
     result: list[Path] = []
     for path in ordered:

@@ -14,13 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP stdio and Streamable HTTP clients with headers, `envFile`, safe child-process environments, Cursor and Claude interpolation syntax, and isolated per-server errors.
 - Explicit `ness mcp status`, `ness mcp login`, and `ness mcp logout` OAuth management for Cursor `auth` and Claude `oauth` configurations, including loopback and manual callbacks, token refresh, project-scoped keyring storage, and an atomic `0600` file fallback.
 - Transactional `ness mcp import` for Cursor- and Claude-compatible JSON files, with dry runs, server selection, explicit conflict replacement, redacted previews, canonical destination output, and import provenance.
-- Multi-directory skill discovery: when skills are enabled, load from `.ness/skills` plus well-known project/global agent skill roots (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, and `~/` equivalents), including nested category layouts.
+- Multi-directory skill loading: `AgentSpec.skills_dirs` accepts an explicit, exhaustive list of skill roots, including nested category layouts. The Ness CLI loads `.ness/skills` plus the well-known project-local agent skill roots (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`) and only `~/.agents/skills` globally, passing them to the SDK explicitly; SDK helpers `merge_skill_dirs()` / `default_skill_search_dirs()` let other hosts opt into the same roots (`project_rels=` / `global_rels=` restrict the project-local and user-global sets).
 - Cache-safe `ness_agent.summarize()` API and durable summary checkpoints for resume/rollback.
 - Canonical model-facing history that preserves ordinary request prefixes while keeping L3 reminders out of durable transcripts.
 - `ness --version` flag to print the installed version and exit.
 
 ### Changed
 
+- Scans the directories provided (`skills_dir` or `skills_dirs`; both `None` disables skills). Pass `skills_dirs=merge_skill_dirs(project_root, your_dir)` to opt into the well-known roots. The Ness CLI end-user behavior is unchanged in kind: it passes its root list explicitly.
 - Pinned the Python MCP SDK to `mcp>=1.27.1,<2` while Ness targets the v1 transport and OAuth APIs.
 - TUI: the per-frame user-band width validation now rescans only newly appended transcript lines instead of the whole buffer, removing render-thread stalls (spinner stutter, laggy streaming echo) on very long transcripts; misfit detection and resize reflow behavior are unchanged.
 - Fixed Ctrl+T thinking toggles corrupting active streamed answers, causing duplicate responses or preventing final Markdown rendering.

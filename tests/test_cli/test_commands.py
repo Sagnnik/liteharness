@@ -33,6 +33,36 @@ def test_help_command_lists_supported_commands(make_app):
     assert "/image" not in text
 
 
+def test_skill_catalog_uses_compact_sources_and_wrapped_table(
+    make_app, tmp_path
+):
+    app = make_app()
+    app._on_transcript_render_size(72, 20)
+    app.coding.project_root = tmp_path
+    app.coding.skill_loader = SimpleNamespace(
+        errors=[],
+        load=lambda: {
+            "long-skill-name": {
+                "name": "long-skill-name",
+                "source": str(
+                    tmp_path / ".agents" / "skills" / "long-skill-name" / "SKILL.md"
+                ),
+                "description": "A long skill description that should wrap cleanly inside its column.",
+            }
+        },
+    )
+
+    asyncio.run(_dispatch_with_sink(app, "/skill"))
+
+    lines = [line.text for line in app._lines]
+    text = "\n".join(lines)
+    assert "skills (1)" in text
+    assert ".agents/skills" in text
+    assert "SKILL.md" in text
+    assert str(tmp_path) not in text
+    assert max(map(len, lines)) <= 72
+
+
 def test_dispatch_exit_sets_session_flag(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/exit"))

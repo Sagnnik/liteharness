@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+from ness_agent import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
 from ness_agent.skills import SkillLoader, merge_skill_dirs
 
 
@@ -11,6 +15,15 @@ def _write_skill(skill_dir: Path, name: str, description: str, body: str = "Body
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: {description}\n---\n{body}\n"
+    )
+
+
+def _make_agent(tmp_path: Path, **kwargs) -> NessAgent:
+    return NessAgent(
+        model=FakeListChatModel(responses=["ok"]),
+        prompt=PromptLayers(PromptLayersConfig(l0="L0")),
+        options=NessAgentOptions(project_root=tmp_path, ness_dir=tmp_path / ".ness"),
+        **kwargs,
     )
 
 
@@ -171,6 +184,95 @@ def test_merge_skill_dirs_order_and_dedupe(tmp_path: Path, monkeypatch):
     # No duplicate resolved paths
     resolved = [p.resolve() for p in dirs]
     assert len(resolved) == len(set(resolved))
+
+
+def test_merge_skill_dirs_global_rels_filter(tmp_path: Path, monkeypatch):
+    """global_rels restricts user-global roots; project roots stay complete."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    project = tmp_path / "proj"
+    project.mkdir()
+    user = project / ".ness" / "skills"
+
+    dirs = merge_skill_dirs(project, user, global_rels=(".agents/skills",))
+    assert dirs[0] == user
+    # Project-local well-known roots are all still present
+    for rel in (".agents", ".claude", ".codex", ".cursor"):
+        assert (project / rel / "skills") in dirs
+    # Only the chosen global root is included
+    assert (home / ".agents" / "skills") in dirs
+    for rel in (".claude", ".codex", ".cursor"):
+        assert (home / rel / "skills") not in dirs
+
+
+def test_merge_skill_dirs_project_rels_filter(tmp_path: Path, monkeypatch):
+    """project_rels restricts project-local roots; global roots stay complete."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    project = tmp_path / "proj"
+    project.mkdir()
+    user = project / ".ness" / "skills"
+
+    dirs = merge_skill_dirs(
+        project, user, project_rels=(".agents/skills", "skills"), global_rels=()
+    )
+    assert dirs[0] == user
+    # Only the chosen project-local roots are included
+    assert (project / ".agents" / "skills") in dirs
+    assert (project / "skills") in dirs
+    for rel in (".claude", ".codex", ".cursor"):
+        assert (project / rel / "skills") not in dirs
+    # Empty global_rels opts out of user-global roots entirely
+    for rel in (".agents", ".claude", ".codex", ".cursor"):
+        assert (home / rel / "skills") not in dirs
+
+
+def test_agent_skills_dir_scans_exactly_that_dir(tmp_path: Path):
+    """A bare skills_dir is exact — the SDK adds no well-known roots."""
+    mine = tmp_path / "my-skills"
+    _write_skill(mine / "mine", "mine", "Explicit dir skill")
+    _write_skill(tmp_path / ".agents" / "skills" / "sneaky", "sneaky", "Well-known root skill")
+
+    agent = _make_agent(tmp_path, skills_dir=mine)
+
+    assert agent.config.skills_dir == mine
+    assert agent.config.skills_dirs == [mine]
+    assert agent.config.skill_loader.skills_dirs == [mine]
+    assert set(agent.config.skill_loader.load()) == {"mine"}
+
+
+def test_agent_skills_dirs_used_verbatim(tmp_path: Path):
+    """skills_dirs is the exhaustive root list — nothing is appended."""
+    a = tmp_path / "a-skills"
+    b = tmp_path / "b-skills"
+    _write_skill(a / "one", "one", "From a")
+    _write_skill(b / "two", "two", "From b")
+    _write_skill(tmp_path / ".claude" / "skills" / "sneaky", "sneaky", "Well-known root skill")
+
+    agent = _make_agent(tmp_path, skills_dirs=[a, b])
+
+    assert agent.config.skills_dir == a  # primary root = first entry
+    assert agent.config.skills_dirs == [a, b]
+    assert agent.config.skill_loader.skills_dirs == [a, b]
+    assert set(agent.config.skill_loader.load()) == {"one", "two"}
+
+
+def test_agent_skills_dir_and_skills_dirs_conflict(tmp_path: Path):
+    with pytest.raises(ValueError, match="skills_dir"):
+        _make_agent(tmp_path, skills_dir=tmp_path / "x", skills_dirs=[tmp_path / "y"])
+
+
+def test_agent_skills_disabled_by_default(tmp_path: Path):
+    """No skills_dir / skills_dirs → no skill scanning at all."""
+    _write_skill(tmp_path / ".agents" / "skills" / "sneaky", "sneaky", "Well-known root skill")
+
+    agent = _make_agent(tmp_path)
+
+    assert agent.config.skills_dir is None
+    assert agent.config.skills_dirs is None
+    assert agent.config.skill_loader.load() == {}
 
 
 def test_skill_view_returns_skill_content(tmp_path: Path):

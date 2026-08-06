@@ -64,10 +64,12 @@ Each worktree gets its own branch (`worktree-<name>`), file edits, and runtime d
 
 ## Skills
 
-Primary project skills live under `.ness/skills/<name>/SKILL.md`. The loader also discovers skills from common agent directories when present:
+Primary project skills live under `.ness/skills/<name>/SKILL.md`. Ness also discovers skills from common agent directories when present:
 
 **Project-local:** `.agents/skills/`, `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`  
-**User-global:** `~/.agents/skills/`, `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`
+**User-global:** `~/.agents/skills/` only
+
+This discovery is a Ness CLI policy — the CLI passes these roots to the SDK explicitly. The SDK itself scans only the directories it is given; embedders opt into the well-known roots via `merge_skill_dirs()` (see [SDK guide → Skills](sdk.md#skills)).
 
 `.ness/skills` wins on name collisions; then other project roots; then global. Nested category layouts (`category/skill/SKILL.md`) are supported. A directory with `SKILL.md` is a skill (resources like `scripts/` are not scanned as skills).
 

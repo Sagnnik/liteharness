@@ -15,6 +15,21 @@ def _text(app) -> str:
     return "\n".join(line.text for line in app._lines)
 
 
+def test_table_wraps_cells_to_transcript_width(make_app) -> None:
+    app = make_app()
+    app._on_transcript_render_size(48, 20)
+
+    app.append_table(
+        "skills (1)",
+        ["skill", "source", "description"],
+        [["example-skill", ".agents/skills/example/SKILL.md", "description " * 12]],
+    )
+
+    assert max(len(line.text) for line in app._lines) <= 48
+    assert "description" in _text(app)
+    assert "─" in _text(app)
+
+
 def test_tracked_blocks_follow_structural_mutations() -> None:
     store = TranscriptStore([_line("prefix")])
     first = store.append_tracked([_line("first")])

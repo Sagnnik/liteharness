@@ -178,7 +178,7 @@ agent = NessAgent(
         "include_git_line": False,
         "include_skill_catalog": False,
     },
-    skills_dir=None,
+    skills_dir=None,                            # skills fully disabled (SDK default)
     memory=MemoryConfig(
         project_memory=Path("./kb/POLICIES.md"),
         user_memory=Path("./users/u-42.md"),
@@ -248,6 +248,9 @@ agent = NessAgent(
         "l2_header": "RESEARCH BRIEF",
         "include_git_line": False,
     },
+    # The SDK scans exactly this directory — nothing is added implicitly.
+    # To also load well-known roots (.agents/.claude/.codex/.cursor skills,
+    # project + ~/), pass skills_dirs=merge_skill_dirs(project_root, ...) instead.
     skills_dir=Path("./skills/research"),
     subagents=SubagentConfig(
         prompt_template=RESEARCH_SUBAGENT_PROMPT,
@@ -429,7 +432,7 @@ agent = NessAgent.from_spec(AgentSpec(
         "include_git_line": False,
         "include_skill_catalog": True,
     },
-    skills_dir=Path("./skills/support"),
+    skills_dir=Path("./skills/support"),        # exact: only this dir is scanned
     memory=MemoryConfig(
         project_memory=Path("./support/POLICIES.md"),
         user_memory=Path(f"./customers/{customer_id}.md"),
