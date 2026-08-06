@@ -168,3 +168,58 @@ def test_todo_move_and_reasoning_toggle_preserve_live_answer(make_app) -> None:
     assert text.count("First item") == 1
     assert text.count("todo-safe answer") == 1
     assert "todo-safe **answer**" not in text
+
+
+def test_turn_finish_moves_last_answer_below_late_tools_after_toggle(make_app) -> None:
+    app = make_app()
+    app._on_transcript_render_size(40, 20)
+    app._turn_render_active = True
+
+    stream = app.start_assistant_stream()
+    stream.feed("final **answer**")
+    stream.stop()
+    app.append_tool_calls(
+        [{"name": "first_tool", "args": {}, "id": "1", "type": "tool_call"}]
+    )
+    app.append_reasoning("later reasoning " * 20, elapsed=1.0)
+    app.toggle_reasoning()
+    app.append_tool_calls(
+        [{"name": "second_tool", "args": {}, "id": "2", "type": "tool_call"}]
+    )
+
+    assert _text(app).index("final answer") < _text(app).index("second_tool")
+    app._finalize_turn_assistant_order()
+    app._turn_render_active = False
+
+    text = _text(app)
+    assert text.count("final answer") == 1
+    assert text.index("first_tool") < text.index("final answer")
+    assert text.index("second_tool") < text.index("final answer")
+    assert app._last_assistant_block is None
+
+    # Moving the answer crosses the tracked reasoning span; its handle must
+    # remain valid for future Ctrl+T toggles.
+    app.toggle_reasoning()
+    assert _text(app).count("final answer") == 1
+    assert _text(app).index("second_tool") < _text(app).index("final answer")
+
+
+def test_newer_answer_releases_intermediate_candidate(make_app) -> None:
+    app = make_app()
+    app._turn_render_active = True
+
+    first = app.start_assistant_stream()
+    first.feed("intermediate narration")
+    first.stop()
+    app.append_tool_calls(
+        [{"name": "lookup", "args": {}, "id": "1", "type": "tool_call"}]
+    )
+    second = app.start_assistant_stream()
+    second.feed("actual final")
+    second.stop()
+    app._finalize_turn_assistant_order()
+    app._turn_render_active = False
+
+    text = _text(app)
+    assert text.index("intermediate narration") < text.index("lookup")
+    assert text.index("lookup") < text.index("actual final")

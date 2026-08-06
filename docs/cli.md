@@ -125,21 +125,32 @@ The fallback requires no API key but is less capable: no neural search, weaker s
 
 ## MCP
 
-Ness Agent connects to local **stdio** MCP servers at CLI startup. Each server is a child process; Ness Agent discovers its tools and exposes them to the agent.
+Ness Agent connects to local **stdio** and remote **Streamable HTTP** MCP servers at CLI startup, discovers their tools, and exposes them to the agent.
 
-**Security:** MCP servers run arbitrary commands with your user permissions. Only add servers you trust, same as running `npx @some/mcp-server` directly.
+**Security:** stdio servers run arbitrary commands with your user permissions, and remote servers receive the configured headers. Before starting a changed non-empty configuration, interactive Ness shows a redacted server summary and asks you to trust that exact configuration. The approval is stored by project and config fingerprint in global `configs.json`; changing a command, endpoint, credential template, or server set requires approval again. Headless mode never prompts and skips untrusted MCP servers, even with `--yolo`; run interactive Ness once to approve them.
 
-Configure servers in `.ness/mcp.json`. Either `servers` or `mcpServers` works (the latter matches Cursor's config shape):
+Configure MCP servers in `.ness/mcp.json` with the `mcpServers` key (same shape as Cursor):
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "filesystem": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-      "env": {},
-      "cwd": ".",
+      "envFile": ".env",
+      "env": {"API_KEY": "${env:FILES_API_KEY}"},
+      "cwd": "${workspaceFolder}",
       "startup_timeout": 20
+    },
+    "hosted": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "oauth": {
+        "clientId": "${MCP_CLIENT_ID}",
+        "callbackPort": 8787,
+        "scopes": "read write"
+      }
     }
   }
 }
@@ -147,10 +158,33 @@ Configure servers in `.ness/mcp.json`. Either `servers` or `mcpServers` works (t
 
 Per-server fields:
 
-- `command` / `args`: process to spawn. `command` may also be a one-element array like `["npx", "-y", "..."]`.
-- `env`: optional environment overrides.
+- `type`: optional `stdio`, `http`, or `streamable-http`. When omitted, `command` implies stdio and `url` implies HTTP.
+- `command` / `args`: stdio process to spawn. `command` may also be an array like `["npx", "-y", "..."]`; its remaining elements are prepended to `args`.
+- `env`: optional stdio environment overrides. Ness inherits only the MCP SDK's safe environment allowlist, then applies `envFile`, then `env`.
+- `envFile`: optional dotenv file for stdio servers, resolved from the project root.
 - `cwd`: working directory for the server process (defaults to the project root).
+- `url` / `headers`: Streamable HTTP endpoint and optional request headers.
+- `auth`: Cursor static OAuth shape (`CLIENT_ID`, optional `CLIENT_SECRET`, and optional scope list).
+- `oauth`: Claude OAuth shape (`clientId`, optional `clientSecret`, `callbackPort`, scopes, and token endpoint authentication method). Omit the client ID to use dynamic registration.
 - `startup_timeout`: seconds to wait for connect + tool discovery (default `20`).
+
+String fields support Cursor interpolation (`${env:NAME}`, `${userHome}`, `${workspaceFolder}`, `${workspaceFolderBasename}`, `${pathSeparator}`, `${/}`) and Claude interpolation (`${NAME}`, `${NAME:-default}`). Expansion uses the Ness process environment; `envFile` values are only passed to the stdio child. Missing required variables invalidate that server without blocking others.
+
+OAuth never launches a browser during normal interactive or headless startup. Authenticate explicitly with `ness mcp login <server>`; use `--no-open` to open the printed URL yourself or `--manual-callback` to paste a callback URL over SSH. Stored tokens refresh automatically. `ness mcp logout <server>` removes local credentials but does not revoke the provider-side token.
+
+Management commands:
+
+```text
+ness mcp status [server]
+ness mcp login <server> [--callback-port PORT] [--no-open] [--manual-callback]
+ness mcp logout <server>
+ness mcp import <cursor-or-claude.json> --dry-run
+ness mcp import <cursor-or-claude.json> [--server NAME] [--replace NAME] [--yes]
+```
+
+Imports are explicit and transactional. Differing name conflicts abort the entire import unless each is named with `--replace`. Imports are written to `.ness/mcp.json` but never grant execution trust; the next interactive startup still shows the redacted trust prompt. Import provenance is kept in global `configs.json`.
+
+SSE, WebSocket, `headersHelper`, OAuth metadata URL overrides, automatic config discovery, and native registry/add commands are not supported yet. Explicit `sse` and `ws` entries are reported as unsupported rather than guessed.
 
 Tools are exposed as `mcp__<server>__<tool>`. The startup header shows connected MCP servers in Add-ons; use `/mcp` for the full server and tool list. Connection failures are shown as a startup warning. Startup failures do not stop the CLI.
 

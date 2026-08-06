@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Native `.ness/mcp.json` loading in interactive and headless modes, with canonical `mcpServers` validation, custom `NESS_DIR` support, visible diagnostics, project-config fingerprints, and fail-closed headless trust.
+- MCP stdio and Streamable HTTP clients with headers, `envFile`, safe child-process environments, Cursor and Claude interpolation syntax, and isolated per-server errors.
+- Explicit `ness mcp status`, `ness mcp login`, and `ness mcp logout` OAuth management for Cursor `auth` and Claude `oauth` configurations, including loopback and manual callbacks, token refresh, project-scoped keyring storage, and an atomic `0600` file fallback.
+- Transactional `ness mcp import` for Cursor- and Claude-compatible JSON files, with dry runs, server selection, explicit conflict replacement, redacted previews, canonical destination output, and import provenance.
 - Multi-directory skill discovery: when skills are enabled, load from `.ness/skills` plus well-known project/global agent skill roots (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, and `~/` equivalents), including nested category layouts.
 - Cache-safe `ness_agent.summarize()` API and durable summary checkpoints for resume/rollback.
 - Canonical model-facing history that preserves ordinary request prefixes while keeping L3 reminders out of durable transcripts.
@@ -16,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pinned the Python MCP SDK to `mcp>=1.27.1,<2` while Ness targets the v1 transport and OAuth APIs.
 - TUI: the per-frame user-band width validation now rescans only newly appended transcript lines instead of the whole buffer, removing render-thread stalls (spinner stutter, laggy streaming echo) on very long transcripts; misfit detection and resize reflow behavior are unchanged.
 - Fixed Ctrl+T thinking toggles corrupting active streamed answers, causing duplicate responses or preventing final Markdown rendering.
 - Compaction now uses the main bound model, identical tools/session/system prefix, a human tail instruction, and a boundary-safe graph node.

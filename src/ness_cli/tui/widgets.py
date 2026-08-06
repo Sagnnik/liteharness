@@ -160,6 +160,33 @@ class TranscriptStore:
         self._require_attached(block)
         self._detach_block(block)
 
+    def move_tracked_to_end(self, block: TranscriptBlock) -> None:
+        """Move a tracked block after every other transcript line.
+
+        The handle remains attached and every block crossed by the move has
+        its start adjusted.  This is useful for content whose final ordering
+        is known only after later streaming events arrive.
+        """
+        self._require_attached(block)
+        start = block.start
+        count = block.count
+        end = start + count
+        if end == len(self.lines):
+            return
+
+        moved_lines = self.lines[start:end]
+        moved_row_counts = self._row_counts[start:end]
+        del self.lines[start:end]
+        del self._row_counts[start:end]
+        for other in self._blocks:
+            if other is not block and other.start >= end:
+                other.start -= count
+        block.start = len(self.lines)
+        self.lines.extend(moved_lines)
+        self._row_counts.extend(moved_row_counts)
+        self._rebuild_offsets_from(start)
+        self._mark_changed()
+
     def reset(self, lines: list[TranscriptLine] | None = None) -> None:
         for block in self._blocks:
             block.attached = False

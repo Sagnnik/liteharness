@@ -44,6 +44,11 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def read_json_document(path: Path) -> dict[str, Any]:
+    """Read an object-valued JSON document, returning ``{}`` on failure."""
+    return _read_json(path)
+
+
 def load_configs(config_dir: Path | None = None) -> dict[str, Any]:
     """Read ``configs.json`` (missing/corrupt file -> ``{}``)."""
     return _read_json(configs_path(config_dir))
@@ -70,6 +75,11 @@ def _atomic_write(path: Path, data: dict[str, Any], *, secret: bool) -> None:
         except OSError:
             pass
         raise
+
+
+def atomic_write_json(path: Path, data: dict[str, Any], *, secret: bool = False) -> None:
+    """Atomically replace a JSON object, optionally enforcing mode ``0600``."""
+    _atomic_write(path, data, secret=secret)
 
 
 def _write_value(path: Path, key: str, value: Any, *, secret: bool) -> None:

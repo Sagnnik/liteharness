@@ -164,6 +164,12 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         # every span while the store keeps all following block handles aligned.
         self._show_reasoning = False
         self._reasoning_spans: list[dict] = []
+        # During a live turn, retain the newest non-empty assistant block
+        # until the event stream ends. Some providers emit assistant text
+        # before late tool events; the block is then moved behind those tools
+        # so the final response cannot remain stranded mid-tool sequence.
+        self._turn_render_active = False
+        self._last_assistant_block: TranscriptBlock | None = None
         self._transcript_store = TranscriptStore(self._lines)
 
         self._buffer = Buffer(history=FileHistory(str(history_path)), multiline=True)

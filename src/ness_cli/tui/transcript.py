@@ -395,7 +395,55 @@ class TranscriptMixin:
             return
         width = self._transcript_render_width or term_width()
         lines = markdown_transcript_lines(text, width=width)
-        self._append_transcript(*lines, TranscriptLine("class:transcript.muted", ""))
+        rendered = [*lines, TranscriptLine("class:transcript.muted", "")]
+        if not self._turn_render_active:
+            self._append_transcript(*rendered)
+            return
+        self._release_last_assistant_block()
+        self._last_assistant_block = self._transcript_store.append_tracked(rendered)
+        self._transcript_revision = self._transcript_store.revision
+        self._scroll_transcript_to_bottom()
+        self.invalidate()
+
+    def _release_last_assistant_block(self) -> None:
+        block = self._last_assistant_block
+        if block is not None and block.attached:
+            self._transcript_store.release_tracked(block)
+        self._last_assistant_block = None
+
+    def _finalize_turn_assistant_order(self) -> None:
+        """Keep the turn's final non-empty response below late tool rows."""
+        block = self._last_assistant_block
+        if block is None or not block.attached:
+            self._last_assistant_block = None
+            return
+        following = self._lines[block.start + block.count :]
+        has_later_tool = any(
+            line.style.startswith("class:transcript.tool")
+            or any(
+                style.startswith("class:transcript.tool")
+                for style, _text in (line.fragments or [])
+            )
+            for line in following
+        )
+        if has_later_tool:
+            self._transcript_store.move_tracked_to_end(block)
+            self._transcript_revision = self._transcript_store.revision
+            self._scroll_transcript_to_bottom()
+            self.invalidate()
+        self._release_last_assistant_block()
+
+    def begin_turn(self) -> None:
+        self._release_last_assistant_block()
+        self._turn_render_active = True
+        super().begin_turn()
+
+    def finish_turn(self) -> None:
+        try:
+            self._finalize_turn_assistant_order()
+        finally:
+            self._turn_render_active = False
+            super().finish_turn()
 
     def _reasoning_block_for_span(
         self, span: dict, *, expanded: bool | None = None
@@ -521,7 +569,11 @@ class TranscriptMixin:
         self._transcript_store.replace_tracked(
             block, [*final_lines, TranscriptLine("class:transcript.muted", "")]
         )
-        self._transcript_store.release_tracked(block)
+        if self._turn_render_active:
+            self._release_last_assistant_block()
+            self._last_assistant_block = block
+        else:
+            self._transcript_store.release_tracked(block)
         self._transcript_revision = self._transcript_store.revision
         self._scroll_transcript_to_bottom()
         self.invalidate()
@@ -552,6 +604,7 @@ class TranscriptMixin:
         self._header_block = None
         self._todos_block = None
         self._reasoning_spans = []
+        self._last_assistant_block = None
         self._user_fit_checked_upto = 0
         self._sync_transcript_buffer()
 

@@ -72,10 +72,24 @@ from ness_cli.chat_model import (
 from ness_cli.config import settings
 from ness_cli.factory import build_coding_session, prepare_paths
 from ness_cli.headless import merge_prompt_parts, run_headless
+from ness_cli.mcp_trust import authorize_mcp_interactively
+from ness_cli.mcp_oauth import MCPOAuthService
 
 from ness_cli.tui import render
 from ness_cli.tui.app import TuiApp
 from ness_cli.tui.theme import build_console
+
+_MCP_HELP = """MCP management commands:
+
+ness mcp status [SERVER] — Show configured servers and authentication state.
+
+ness mcp login SERVER — Authenticate an HTTP MCP server.
+
+ness mcp logout SERVER — Remove stored OAuth credentials.
+
+ness mcp import PATH — Import a Cursor- or Claude-compatible MCP config.
+
+Run 'ness mcp --help' for command options."""
 
 app = typer.Typer(add_completion=False, help="Ness Agent agent CLI")
 
@@ -118,7 +132,7 @@ def _overrides(
     return ModelOverrides(**active) if active else None
 
 
-@app.command()
+@app.command(epilog=_MCP_HELP)
 def run(
     prompt: list[str] = typer.Argument(
         None, help="One-shot query text (requires --print)"
@@ -244,8 +258,17 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
 
     paths = prepare_paths()
 
-    mcp = MCPManager(project_root=paths.project_root)
-    await mcp.start()
+    mcp_oauth = MCPOAuthService(
+        project_root=paths.project_root,
+        config_dir=paths.config_dir,
+    )
+    mcp = MCPManager(
+        mcp_file=paths.ness_dir / "mcp.json",
+        project_root=paths.project_root,
+        http_auth_factory=mcp_oauth.startup_auth,
+    )
+    if authorize_mcp_interactively(mcp, config_dir=paths.config_dir):
+        await mcp.start()
 
     thread_id = f"session-{uuid.uuid4().hex[:8]}"
     coding = build_coding_session(
@@ -309,6 +332,8 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
     if budget_warning:
         render.render_warning(budget_warning)
     _render_mcp_startup(mcp)
+    for oauth_warning in mcp_oauth.warnings:
+        render.render_warning(oauth_warning)
 
     try:
         await ui.run_async(resume_thread_id=resume_thread_id)
@@ -346,6 +371,11 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        from ness_cli.mcp_cli import app as mcp_app
+
+        mcp_app(args=sys.argv[2:], prog_name="ness mcp")
+        return
     app()
 
 

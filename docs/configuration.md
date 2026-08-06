@@ -16,6 +16,7 @@ See also: [CLI guide](cli.md) · [Architecture](architecture.md)
 USER.md                  Cross-repo user preferences
 configs.json             Non-secret adapter settings (only values you changed)
 secrets.json             API keys and other secrets (mode 0600)
+mcp_oauth.json           OAuth fallback when no system keyring is available (mode 0600)
 instructions/            Editable prompt templates (L0, persona, plan/act, aux, goal)
 plans/<project-slug>/    Saved plan-mode output for this project
 
@@ -27,7 +28,7 @@ cli_history              Prompt history for this project root
 ├── NESS.md              Project conventions loaded into L1
 ├── permissions.json     Tool allow/deny/ask rules
 ├── hooks.json           Hook commands
-├── mcp.json             MCP stdio servers
+├── mcp.json             Trusted stdio / Streamable HTTP MCP servers
 ├── agents/              Subagent definitions
 ├── commands/            User slash commands
 ├── skills/              Project-local SKILL.md skills (highest precedence)
@@ -57,6 +58,8 @@ Settings resolve in this order (highest wins):
 4. Built-in defaults
 
 `configs.json` is written lazily — it only contains values you changed via `/config` (defaults stay in code and evolve with upgrades).
+
+MCP trust fingerprints and non-secret import provenance also live in `configs.json`. OAuth tokens and dynamic client registrations use the system keyring when available; `mcp_oauth.json` is an atomic project-scoped fallback and is never written when keyring storage succeeds.
 
 On first start, known keys from an existing project `.env` are imported into the JSON files once (the `.env` is left untouched). You can also set the API key in-session: `/config` → Provider → Provider API key.
 
