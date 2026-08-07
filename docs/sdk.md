@@ -26,39 +26,95 @@ Requires **Python 3.12+**.
 
 ## Quick start
 
-Minimal agent with a custom tool:
+Omit `tools=` and `overlay=` and you get a working coding agent: all SDK built-in tools plus `CodingOverlay` (plan/act, git snapshot, todos, compaction note, session memory, skills). Default instruction texts come from `ness_agent.instructions`.
 
 ```python
 import asyncio
 
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 
-from ness_agent import NessAgent, PromptLayers, PromptLayersConfig
-
-
-@tool
-def ping() -> str:
-    """Return pong."""
-    return "pong"
+from ness_agent import NessAgent, PromptLayersConfig
 
 
 async def main() -> None:
-    model = FakeListChatModel(responses=["hello"])
     agent = NessAgent(
-        model=model,
-        tools=[ping],
-        prompt=PromptLayers(PromptLayersConfig(l0="You are a helpful agent.", persona="Be concise.")),
+        model=ChatOpenAI(model="gpt-4o"),
+        prompt=PromptLayersConfig(),  # default L0 from ness_agent.instructions.L0_HARNESS
+        # tools=      omitted → all SDK built-ins
+        # overlay=    omitted → CodingOverlay
+        # aux_prompts= omitted → compaction / reflection / subagent defaults
     )
-    session = agent.session(thread_id="demo-1")
-    result = await session.run("say hello")
+    session = agent.session(thread_id="proj-1")
+    # session.toggle_mode() flips plan ↔ act
+    result = await session.run("Plan then implement: add a rate limiter on /api/login")
     print(result.assistant_message)
+    print(result.usage_total)  # aggregate of every model call in the turn
 
 
 asyncio.run(main())
 ```
 
-Replace `FakeListChatModel` with any LangChain `BaseChatModel` (OpenAI-compatible, OpenRouter, etc.).
+`tools=` accepts a mix of `BaseTool` instances, plain callables (auto-wrapped), and built-in name strings (`"read"`, `"grep"`, `"shell"`, …). Pass `overlay=NoOverlay()` to drop L3 entirely. Instruction bodies are importable — e.g. `from ness_agent.instructions import L0_HARNESS, PLAN_MODE`.
+
+### What the host owns
+
+Bare `Session.run` is the turn engine only. Your application still needs to:
+
+- Supply `l2_context` in the prompt when the model needs project or domain structure (not auto-loaded).
+- Persist user events / resume via `ThreadStore` if you want durable threads (the coding CLI does this around the graph).
+- Own MCP config, trust, and auth when connecting servers — the SDK does not read `.ness/mcp.json`.
+
+For domain sketches (RAG, research, support), persistence helpers, and tracing recipes, see [SDK examples](../src/sdk_example_usage.md).
+
+### Custom overlay and metadata
+
+Replace the default coding overlay when your product has its own working state. Put per-turn facts on `session.metadata`; your `OverlayProvider` reads them into named L3 sections:
+
+```python
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+
+from ness_agent import NessAgent, OverlayContext, OverlayProvider
+
+
+@tool
+def vector_search(query: str, top_k: int = 5) -> str:
+    """Semantic search over the indexed knowledge base."""
+    ...
+
+
+class RAGOverlay(OverlayProvider):
+    def sections(self, state, ctx: OverlayContext) -> dict[str, str]:
+        sections = {}
+        retrieval = ctx.metadata.get("retrieval_summary", "")
+        if retrieval:
+            sections["retrieval_context"] = f"RETRIEVED THIS TURN\n{retrieval}"
+        return sections
+
+
+agent = NessAgent(
+    model=ChatOpenAI(model="gpt-4o", temperature=0),
+    tools=[vector_search],
+    prompt={
+        "l0": "Answer only from retrieved sources. Cite doc_id. Do not invent facts.",
+        "persona": "Citation-first research assistant.",
+        "l2_context": kb_catalog.describe(),  # app-supplied
+        "l2_header": "KNOWLEDGE BASE",
+        "include_git_line": False,
+        "include_skill_catalog": False,
+    },
+    overlay=RAGOverlay(),
+)
+
+
+async def answer(user_id: str, question: str) -> str:
+    session = agent.session(thread_id=f"user-{user_id}")
+    session.metadata["retrieval_summary"] = retriever.retrieve(question).summary
+    result = await session.run(question)
+    return result.assistant_message
+```
+
+Stable section names matter: the harness sends only changed L3 sections during a tool loop. Mutate `session.metadata` in place so later turns see updates; reassignment (`session.metadata = {...}`) needs `rebuild_graph()`.
 
 ---
 
@@ -94,10 +150,10 @@ Core exports from `ness_agent`:
 | `merge_skill_dirs`, `default_skill_search_dirs` | Opt-in well-known agent skill roots |
 | `ThreadStore`, `MemoryStore` | Persistence backends |
 | `CostTracker`, `TracingConfig`, `Tracer` | Usage and observability |
-| `CodingOverlay`, `OverlayProvider` | Internal, non-durable L3 context (used by CLI) |
+| `CodingOverlay`, `OverlayProvider`, `NoOverlay` | Default or custom L3 working-state overlay |
 | `summarize` | Cache-safe summary fork using exact parent messages and bound model |
 
-Import smoke test: `tests/test_sdk_smoke.py`.
+Import smoke test: `tests/test_sdk_smoke.py`. Longer embedding examples: [src/sdk_example_usage.md](../src/sdk_example_usage.md).
 
 `Session.run()` returns a `RunResult`. Use `assistant_message` for the final text and `usage_total` for the aggregate usage of every model call in that turn. The former single-call `usage` attribute has been removed; replace `result.usage` with `result.usage_total` when upgrading.
 
@@ -167,7 +223,7 @@ For signatures and contracts for every public export in `ness_agent.__all__`, se
 
 The SDK splits prompts into L0–L3 layers for stable prefix caching. See [Architecture → Prompt layers](architecture.md#prompt-layers) for the full model.
 
-When using the SDK directly, you supply L0–L2 via `PromptLayers` / `PromptLayersConfig`. L3 overlays are optional via `OverlayProvider` implementations such as `CodingOverlay`.
+When using the SDK directly, you supply L0–L2 via `PromptLayers` / `PromptLayersConfig` (or a plain mapping). Omitting `overlay=` installs `CodingOverlay`; pass a custom `OverlayProvider` or `NoOverlay()` as shown above.
 
 ## Cache-safe summarization
 

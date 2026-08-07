@@ -1,6 +1,6 @@
 # SDK API reference
 
-This reference covers the symbols exported by `ness_agent.__all__` in the 0.1.0 source tree. It is intentionally an API map rather than a second tutorial: start with the [SDK guide](sdk.md) for the shortest working example, then use this page when choosing a seam to own.
+This reference covers the symbols exported by `ness_agent.__all__` in the 0.2.0 source tree. It is intentionally an API map rather than a second tutorial: start with the [SDK guide](sdk.md) for the shortest working example, then use this page when choosing a seam to own.
 
 > **0.x experimental.** Names and signatures below describe the current public surface; pin a version before relying on it in production.
 
@@ -38,7 +38,6 @@ Source: `src/ness_agent/agent.py`.
 AgentSpec(*, model: BaseChatModel,
           prompt: PromptLayers | PromptLayersConfig | Mapping[str, Any],
           tools: Sequence[BaseTool] | None = None,
-          compaction_model: BaseChatModel | None = None,
           reflection_model: BaseChatModel | None = None,
           options: NessAgentOptions = NessAgentOptions(),
           overlay: OverlayProvider | None = None,
@@ -47,7 +46,9 @@ AgentSpec(*, model: BaseChatModel,
           modes: ModeConfig | None = None,
           subagents: SubagentConfig | None = None,
           aux_prompts: AuxPrompts = AuxPrompts(),
-          skills_dir: Path | None = None, hooks_config: Path | None = None,
+          skills_dir: Path | None = None,
+          skills_dirs: Sequence[Path] | None = None,
+          hooks_config: Path | None = None,
           hooks: Sequence[Hook] | None = None,
           approval_handler: ApprovalHandler | None = None,
           question_handler: QuestionHandler | None = None,
@@ -59,6 +60,8 @@ NessAgentConfig.resolve(spec: AgentSpec) -> NessAgentConfig
 ```
 
 `AgentSpec` is the declarative construction surface. Supply it to `NessAgent.from_spec()` when an application wants to assemble all dependencies in one place. `NessAgentConfig` is the fully wired result: prompt layers, normalized tools, stores, permission and hook runners, skill loader, cost tracker, and tracer. Prefer the spec or `NessAgent(...)` for normal construction; use `resolve()` only when the application deliberately needs the fully resolved dependencies.
+
+`skills_dir` and `skills_dirs` are mutually exclusive. Pass exactly the roots you want scanned (nested `category/skill/SKILL.md` layouts are supported); both `None` disables skills. Use `merge_skill_dirs()` / `default_skill_search_dirs()` to opt into well-known agent skill roots. Compaction always uses the main bound `model` — there is no separate `compaction_model`.
 
 With an absent overlay, resolution installs `CodingOverlay`; use `NoOverlay()` to opt out. An injected memory backend must subclass `MemoryBackend`, and an injected approval handler must subclass `ApprovalHandler`.
 
@@ -73,7 +76,7 @@ async for event in session.stream(message: str, *, images=None,
                                   active_skills=None, mode=None): ...
 ```
 
-`run()` collects one complete turn. It returns assistant text, the last usage record, an aggregate usage record, the current todos, and every intermediate event. `stream()` yields those `SessionEvent` records as the graph advances. `mode=` is a one-turn override; otherwise the session’s current `act` or `plan` mode is used.
+`run()` collects one complete turn. It returns assistant text, an aggregate `usage_total` over every model call in the turn, the current todos, and every intermediate event. `stream()` yields those `SessionEvent` records as the graph advances. `mode=` is a one-turn override; otherwise the session’s current `act` or `plan` mode is used.
 
 Important control and inspection methods:
 
@@ -98,7 +101,7 @@ Source: `src/ness_agent/session.py`.
 | `UsageEvent` | `model`, input/uncached/cached/output token counts, `cost_usd`, and `calls`. Represents usage from a model call. |
 | `aggregate_usage(events) -> UsageEvent | None` | Sums a turn’s usage events; model becomes `"*"` when they differ and cost is `None` if no event reported one. |
 | `SessionEvent` | Frozen `{kind, data}` record. Kinds include assistant deltas/final output, tool start/end, usage, approvals, questions, compaction, errors, warnings, interruptions, and plan turns. |
-| `RunResult` | Frozen result from `run()`: `assistant_message`, `usage` (last call), `usage_total` (whole turn), `todos`, and `events`. |
+| `RunResult` | Frozen result from `run()`: `assistant_message`, `usage_total` (aggregate of every model call in the turn), `todos`, and `events`. The former single-call `usage` field was removed in 0.2.0. |
 | `ContextPreview` | Frozen debug snapshot: stable `system_message`, raw overlay, named `overlay_sections`, wrapped reminder, and active `mode`. |
 | `ApprovalHandler` | Abstract async callable `(tool: str, args: dict) -> str`; return `yes`, `no`, `always`, `session`, or `never`. |
 | `QuestionHandler` | `Callable[[list[dict]], Awaitable[list[dict]]]` for model-originated choice questions. |
@@ -113,7 +116,7 @@ All are dataclasses, passed through `AgentSpec` or the `NessAgent` keyword const
 
 | Export | Key fields and use |
 | --- | --- |
-| `NessAgentOptions` | `context_window`, compaction token budget and reserves, `enable_approval`, `yolo_mode`, `auto_save_threads`, reflection settings, `format_on_write`, `exa_api_key`, `project_root`, `ness_dir`, interruption marker, and `recursion_limit`. These are runtime knobs, not prompt text. |
+| `NessAgentOptions` | `context_window`, `compaction_token_budget`, `compaction_buffer_tokens`, `compaction_summary_max_tokens`, `enable_approval`, `yolo_mode`, `auto_save_threads`, reflection settings, `format_on_write`, `exa_api_key`, `project_root`, `ness_dir`, interruption marker, and `recursion_limit`. These are runtime knobs, not prompt text. |
 | `MemoryConfig` | `disabled`, plus optional paths for project, user, and session memory. Used when no custom `MemoryBackend` is injected. |
 | `ModeConfig` | `default` mode, optional `plans_dir`, custom plan/act instruction templates, and `plan_mode_readonly`. |
 | `SubagentConfig` | Optional subagent prompt template, `max_parallel`, default tool names, and timeout. It supports the `spawn_subagent` tool. |
@@ -198,15 +201,65 @@ HookRunner(hooks_file: Path | None = None, *, project_root: Path = Path.cwd(),
 
 Hooks run on `preToolUse` and `postToolUse`. A matcher selects a tool; a callable handler takes precedence over a shell command. `HookRunner.register()`, `clear_registered()`, and `load()` manage definitions. `run(event, payload) -> tuple[bool, str]` returns the combined output and fails a blocking pre-tool hook closed. File hooks are read from the configured JSON file.
 
-### `SkillLoader`
+### `SkillLoader`, `merge_skill_dirs`, `default_skill_search_dirs`
 
 ```python
-SkillLoader(skills_dir: Path | None = None)
+SkillLoader(skills_dir: Path | None = None, *, skills_dirs: Sequence[Path] | None = None)
 loader.load() -> dict[str, dict[str, Any]]
 loader.render_catalog(skills) -> str
+
+default_skill_search_dirs(project_root: Path, *,
+                          project_rels: Sequence[str] | None = None,
+                          global_rels: Sequence[str] | None = None) -> list[Path]
+merge_skill_dirs(project_root: Path, skills_dir: Path, *,
+                 project_rels: Sequence[str] | None = None,
+                 global_rels: Sequence[str] | None = None) -> list[Path]
 ```
 
-Loads project `SKILL.md` files and returns parsed metadata/body records. `render_catalog()` creates the compact stable-prefix catalog; full skill bodies remain on demand. Source: `src/ness_agent/skills.py`.
+Loads `SKILL.md` files from the configured roots and returns parsed metadata/body records. Prefer `skills_dirs=` for an explicit exhaustive list; `skills_dir=` is the single-root shorthand. Earlier roots win on name collisions. `render_catalog()` creates the compact stable-prefix catalog; full skill bodies remain on demand.
+
+`default_skill_search_dirs()` returns the well-known project-local and user-global agent skill roots (it does not include `.ness/skills`). `merge_skill_dirs()` puts your directory first, then those roots, deduped by resolved path. Pass `project_rels=` / `global_rels=` to restrict either set. The SDK never scans these roots unless the host passes them via `AgentSpec.skills_dirs`.
+
+Source: `src/ness_agent/skills.py`.
+
+## MCP runtime
+
+### `MCPRuntime`, `MCPServerSpec`, `MCPServerState`
+
+```python
+MCPServerSpec(*, name: str, transport: Literal["stdio", "http"],
+              description: str = "", startup_timeout: float = 20.0,
+              command: str | None = None, args: tuple[str, ...] = (),
+              cwd: Path | None = None, env: tuple[tuple[str, str], ...] = (),
+              url: str | None = None, headers: tuple[tuple[str, str], ...] = (),
+              redactions: tuple[str, ...] = ())
+
+MCPRuntime(*, http_auth_factory: HTTPAuthFactory | None = None)
+await runtime.start(specs: Iterable[MCPServerSpec]) -> None
+await runtime.start_server(spec: MCPServerSpec) -> None
+await runtime.stop() -> None
+runtime.tools: dict[str, StructuredTool]
+runtime.states: dict[str, MCPServerState]
+```
+
+`MCPRuntime` connects fully resolved server specifications and exposes discovered tools as LangChain tools. It owns connections, session lifecycle, tool discovery, calls, and structured `MCPServerState` — not project files, trust prompts, terminal output, or credential storage. Those stay with the embedding application (the Ness CLI is one such adapter).
+
+Provide an `HTTPAuthFactory` when HTTP servers need per-spec authentication. Failures are isolated per server. Pass `list(runtime.tools.values())` into `NessAgent(..., tools=...)` or any LangChain-compatible host. The older mixed `ness_agent.mcp.MCPManager` was removed in 0.2.0.
+
+Source: `src/ness_agent/mcp.py`. See [SDK guide → MCP](sdk.md#mcp-in-an-sdk-application).
+
+## Cache-safe summarization
+
+### `summarize`
+
+```python
+async def summarize(messages: Sequence[BaseMessage], model: Any, *,
+                    instruction: str = ..., max_output_tokens: int = 4096) -> str
+```
+
+Summarize an exact parent request with a cache-safe human tail. `model` must be the same already-bound runnable used by the parent conversation — identical system messages and tool definitions are what allow the provider to reuse the cached prefix. Automatic compaction uses this path with the main bound model.
+
+Source: `src/ness_agent/compaction.py`.
 
 ## Memory and durable history
 
