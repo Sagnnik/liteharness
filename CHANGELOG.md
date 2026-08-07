@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-07 — Released
+
 ### Added
 
 - Public, adapter-neutral `MCPRuntime`, `MCPServerSpec`, and structured MCP state APIs for applications that want MCP connections without adopting Ness project configuration or UI policy.
@@ -46,5 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK: LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, and tracing.
 - CLI: interactive TUI (`ness`), headless print mode (`-p`), plan/act modes, git worktrees, global config, and `.ness/` project layout.
 
-[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Sagnnik/ness-agent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Sagnnik/ness-agent/releases/tag/v0.1.0

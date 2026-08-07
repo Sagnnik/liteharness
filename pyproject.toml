@@ -7,7 +7,7 @@ packages = ["src/ness_agent", "src/ness_cli"]
 
 [project]
 name = "ness-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Ness Agent is an experimental, hackable agent harness."
 readme = "README.md"
 license = "Apache-2.0"
