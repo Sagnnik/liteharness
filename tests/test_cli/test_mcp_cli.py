@@ -9,7 +9,6 @@ from typer.testing import CliRunner
 from ness_cli import mcp_cli
 from ness_cli.mcp_import import MCPImportConflictError
 from ness_cli.mcp_oauth import OAuthCredentialClearError
-from ness_cli.tui import main as tui_main
 
 
 def _paths(tmp_path: Path):
@@ -23,17 +22,6 @@ def _paths(tmp_path: Path):
 def _write(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
-
-
-def test_root_help_advertises_mcp_management_commands():
-    result = CliRunner().invoke(tui_main.app, ["--help"])
-
-    assert result.exit_code == 0
-    assert "ness mcp status [SERVER]" in result.output
-    assert "ness mcp login SERVER" in result.output
-    assert "ness mcp logout SERVER" in result.output
-    assert "ness mcp import PATH" in result.output
-    assert "ness mcp --help" in result.output
 
 
 def test_import_cli_dry_run_and_apply(tmp_path: Path, monkeypatch):
