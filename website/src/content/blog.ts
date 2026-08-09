@@ -20,8 +20,9 @@ const assets = import.meta.glob('../../content/blog/*/assets/*', {
   import: 'default',
 }) as Record<string, string>
 
+/** Parent folder of index.md — e.g. .../blog/<slug>/index.md → <slug>. */
 function pathSlug(path: string) {
-  return path.split('/').at(-3) ?? ''
+  return path.split('/').at(-2) ?? ''
 }
 
 /** Minimal frontmatter parser — avoids gray-matter/js-yaml (needs Node `buffer`). */

@@ -1727,7 +1727,7 @@ input:focus-visible {
 .post-reading__shell {
   display: flex;
   align-items: flex-start;
-  gap: 0;
+  gap: clamp(1.5rem, 3vw, 3rem);
   width: 100%;
 }
 
@@ -1804,9 +1804,13 @@ input:focus-visible {
   flex: 0 0 16rem;
   width: 16rem;
   max-width: 16rem;
+  max-height: calc(100dvh - 72px);
+  overflow-y: auto;
   padding-top: 0.35rem;
   padding-right: 2rem;
-  margin-right: 0.5rem;
+  margin-right: 0;
+  scrollbar-color: var(--ness-border) transparent;
+  scrollbar-width: thin;
 }
 
 .post-toc > p {
@@ -1859,6 +1863,18 @@ input:focus-visible {
   line-height: 1.75;
 }
 
+.post-prose::selection,
+.post-prose *::selection {
+  background-color: #8f343d;
+  color: #fff;
+}
+
+.post-prose::-moz-selection,
+.post-prose *::-moz-selection {
+  background-color: #8f343d;
+  color: #fff;
+}
+
 :root[data-theme='light'] .post-prose {
   color: #334155;
 }
@@ -1879,6 +1895,13 @@ input:focus-visible {
   font-weight: 650;
   letter-spacing: -0.02em;
   line-height: 1.25;
+}
+
+.post-prose h1 {
+  margin: 3.5rem 0 1.2rem;
+  padding: 0;
+  border: 0;
+  font-size: clamp(1.8rem, 3vw, 2.35rem);
 }
 
 .post-prose h2 {
@@ -1905,9 +1928,23 @@ input:focus-visible {
   margin: 0 0 1.25rem;
 }
 
+.post-prose p,
+.post-prose li,
+.post-prose blockquote {
+  text-align: justify;
+}
+
 .post-prose ul,
 .post-prose ol {
   padding-left: 1.35rem;
+}
+
+.post-prose ul {
+  list-style-type: disc;
+}
+
+.post-prose ol {
+  list-style-type: decimal;
 }
 
 .post-prose li + li {
@@ -1922,7 +1959,7 @@ input:focus-visible {
 }
 
 .post-prose a:hover {
-  color: var(--ness-bright);
+  color: var(--ness-cyan);
 }
 
 .post-prose blockquote {

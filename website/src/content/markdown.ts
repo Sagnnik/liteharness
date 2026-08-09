@@ -1,7 +1,7 @@
 export interface MarkdownHeading {
   id: string
   label: string
-  level: 2 | 3
+  level: 1 | 2 | 3
 }
 
 export function slugifyHeading(value: string) {
@@ -12,13 +12,13 @@ export function slugifyHeading(value: string) {
     .replace(/\s+/g, '-')
 }
 
-/** Extract `##` / `###` headings for ToC and scroll-spy. */
+/** Extract `#`–`###` headings for ToC and scroll-spy. */
 export function extractMarkdownHeadings(markdown: string): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
   for (const line of markdown.split(/\r?\n/)) {
-    const match = /^(#{2,3})\s+(.+)$/.exec(line.trim())
+    const match = /^(#{1,3})\s+(.+)$/.exec(line.trim())
     if (!match) continue
-    const level = match[1].length as 2 | 3
+    const level = match[1].length as 1 | 2 | 3
     const label = match[2].replace(/`/g, '').trim()
     const id = slugifyHeading(label)
     if (id) headings.push({ id, label, level })
