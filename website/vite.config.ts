@@ -4,9 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 
 export default defineConfig({
-  // GitHub Pages serves this repository beneath /ness-agent/. Vite rewrites
-  // imported content assets against this base instead of emitting root URLs.
-  base: process.env.GITHUB_ACTIONS ? '/ness-agent/' : '/',
+  base: '/',
   plugins: [
     react(),
     tailwindcss(),
