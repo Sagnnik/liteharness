@@ -1,0 +1,215 @@
+import { ArrowLeft, ArrowUpRight, CornerDownRight } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Link, useParams } from 'react-router'
+import { SiteShell } from './shared/SiteShell'
+
+const CHANGELOG = 'https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md'
+const BLOG_SLUG = 'inside-coding-agent-building-the-harness-around-the-model'
+
+type Highlight = readonly [string, string]
+
+type Release = {
+  slug: string
+  title: string
+  date: string
+  version: string
+  summary: string
+  sectionLabel: string
+  intro: string
+  highlights: readonly Highlight[]
+  fieldNote?: ReactNode
+}
+
+const RELEASES: readonly Release[] = [
+  {
+    slug: 'mcp-runtime-and-skills',
+    title: 'MCP runtime, skills roots, and cache-safe compaction',
+    date: '2026-08-07',
+    version: 'v0.2.0',
+    summary:
+      'Adapter-neutral MCP for SDK hosts, first-class .ness/mcp.json and OAuth CLI, multi-root skills, and a leaner compaction surface.',
+    sectionLabel: '00.2 // ADDED',
+    intro:
+      '0.2.0 splits MCP policy from connection runtime, opens explicit skill roots to host apps, and tightens compaction around the bound model. A few public APIs break on purpose — pin and read the changelog before upgrading.',
+    highlights: [
+      [
+        'MCPRuntime',
+        'Public, adapter-neutral MCPRuntime and MCPServerSpec so apps can connect without Ness project files or UI policy.',
+      ],
+      [
+        'Ness MCP CLI',
+        'Native .ness/mcp.json, stdio and Streamable HTTP, plus ness mcp status / login / logout / import for Cursor and Claude shapes.',
+      ],
+      [
+        'Multi-root skills',
+        'AgentSpec.skills_dirs plus merge_skill_dirs() / default_skill_search_dirs(); Ness loads .ness/skills and well-known agent roots.',
+      ],
+      [
+        'Cache-safe summarize',
+        'ness_agent.summarize() and durable summary checkpoints; compaction uses the main bound model and keeps the active turn verbatim.',
+      ],
+      [
+        'Breaking cleanup',
+        'RunResult.usage → usage_total; MCPManager removed in favor of MCPRuntime; automatic .env → global JSON migration dropped.',
+      ],
+    ],
+  },
+  {
+    slug: 'initial-public-release',
+    title: 'Initial public release',
+    date: '2026-07-31',
+    version: 'v0.1.0',
+    summary:
+      'Ness Agent and Ness are now public: one Python package, a reusable harness, and an interactive coding surface.',
+    sectionLabel: '00.1 // ADDED',
+    intro:
+      'The initial release establishes Ness Agent as an experimental, hackable harness. APIs may change before 1.0; the seams are meant to be inspected.',
+    highlights: [
+      ['SDK + CLI', 'LangGraph agent loop and an interactive coding adapter in the same package.'],
+      ['Tools + policy', 'Built-in tools, permissions, memory, skills, hooks, and MCP support.'],
+      [
+        'Context layers',
+        'L0–L3 prompt assembly, ephemeral overlays, cache-aware compaction, and reflection.',
+      ],
+      [
+        '/goal verification',
+        'Bounded worker attempts with an independent judge and repair instructions on failure.',
+      ],
+      [
+        'Project-local',
+        'A versionable .ness/ surface for behavior, plus editable global instructions/templates.',
+      ],
+    ],
+    fieldNote: (
+      <>
+        For the longer framing, read{' '}
+        <Link to={`/blog/${BLOG_SLUG}`} className="site-inline-link">
+          Harness Engineering: A Ness Agent Intro
+        </Link>
+        .
+      </>
+    ),
+  },
+]
+
+function ReleaseDetail({ release }: { release: Release }) {
+  return (
+    <>
+      <header className="dispatch-header">
+        <p className="site-kicker">[ RELEASE DISPATCH // {release.version} ]</p>
+        <h1>{release.title}</h1>
+        <p>{release.summary}</p>
+        <p className="dispatch-header__changelog">
+          <a href={CHANGELOG} target="_blank" rel="noopener noreferrer">
+            changelog
+          </a>
+        </p>
+        <dl className="dispatch-meta">
+          <div>
+            <dt>DATE</dt>
+            <dd>{release.date}</dd>
+          </div>
+          <div>
+            <dt>STATUS</dt>
+            <dd>RELEASED</dd>
+          </div>
+          <div>
+            <dt>CHANNEL</dt>
+            <dd>PUBLIC</dd>
+          </div>
+        </dl>
+      </header>
+
+      <section className="dispatch-body" aria-labelledby="release-highlights">
+        <div className="dispatch-body__rail">{release.sectionLabel}</div>
+        <div>
+          <h2 id="release-highlights">
+            {release.version === 'v0.1.0' ? 'first transmission' : 'field notes'}
+          </h2>
+          <p>{release.intro}</p>
+          <ol className="dispatch-list">
+            {release.highlights.map(([title, description], index) => (
+              <li key={title}>
+                <span>{String(index + 1).padStart(2, '0')}</span>
+                <strong>{title}</strong>
+                <p>{description}</p>
+              </li>
+            ))}
+          </ol>
+          {release.fieldNote ? (
+            <p className="dispatch-field-note">{release.fieldNote}</p>
+          ) : null}
+        </div>
+      </section>
+
+      <footer className="dispatch-footer">
+        <Link to="/docs" className="site-link-button">
+          <CornerDownRight size={15} aria-hidden="true" />
+          inspect the docs
+        </Link>
+        <Link to="/news" className="site-inline-link">
+          back to dispatches
+        </Link>
+      </footer>
+    </>
+  )
+}
+
+function NewsMissing({ slug }: { slug: string }) {
+  return (
+    <section className="site-empty">
+      <p className="site-kicker">[ NO DISPATCH ]</p>
+      <h1>release not found</h1>
+      <p>
+        No news item matches <code>{slug}</code>.
+      </p>
+      <Link to="/news" className="site-inline-link">
+        <ArrowLeft size={14} /> return to dispatches
+      </Link>
+    </section>
+  )
+}
+
+export function NewsPage() {
+  const { slug } = useParams()
+  const release = slug ? RELEASES.find((item) => item.slug === slug) : undefined
+
+  return (
+    <SiteShell className="site-shell--news">
+      {slug ? (
+        release ? <ReleaseDetail release={release} /> : <NewsMissing slug={slug} />
+      ) : (
+        <>
+          <header className="news-hero">
+            <div className="news-hero__left">
+              <p className="site-kicker">[ RELEASE DISPATCHES ]</p>
+              <h1>field updates</h1>
+            </div>
+            <p className="news-hero__right">
+              Short release records from the harness.
+            </p>
+          </header>
+          <section className="release-index" aria-label="Release dispatches">
+            {RELEASES.map((item) => (
+              <article key={item.slug}>
+                <div className="release-index__meta">
+                  <span>{item.version}</span>
+                  <time dateTime={item.date}>{item.date}</time>
+                </div>
+                <div className="release-index__body">
+                  <h2>
+                    <Link to={`/news/${item.slug}`}>{item.title}</Link>
+                  </h2>
+                  <p>{item.summary}</p>
+                  <Link to={`/news/${item.slug}`} className="site-inline-link">
+                    open dispatch <ArrowUpRight size={14} aria-hidden="true" />
+                  </Link>
+                </div>
+              </article>
+            ))}
+          </section>
+        </>
+      )}
+    </SiteShell>
+  )
+}
