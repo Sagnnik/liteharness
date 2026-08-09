@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router'
 import { SiteShell } from './shared/SiteShell'
 
 const CHANGELOG = 'https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md'
-const BLOG_SLUG = 'harness-engineering-a-ness-agent-intro'
+const BLOG_SLUG = 'inside-coding-agent-building-the-harness-around-the-model'
 
 type Highlight = readonly [string, string]
 

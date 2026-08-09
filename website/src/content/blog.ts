@@ -3,6 +3,8 @@ export interface BlogPost {
   date: string
   description: string
   slug: string
+  /** Folder name under content/blog/ — used for asset paths, not the URL slug. */
+  contentSlug: string
   body: string
 }
 
@@ -57,12 +59,14 @@ function parseFrontmatter(source: string): {
 export const blogPosts: BlogPost[] = Object.entries(entries)
   .map(([path, source]) => {
     const parsed = parseFrontmatter(source)
+    const contentSlug = pathSlug(path)
 
     return {
       title: parsed.data.title ?? 'Untitled field note',
       date: parsed.data.date ?? '',
       description: parsed.data.description ?? '',
-      slug: parsed.data.slug ?? pathSlug(path),
+      slug: parsed.data.slug ?? contentSlug,
+      contentSlug,
       body: parsed.content,
     }
   })
@@ -72,10 +76,10 @@ export function getBlogPost(slug: string | undefined) {
   return blogPosts.find((post) => post.slug === slug)
 }
 
-export function resolveBlogAsset(slug: string, source: string) {
+export function resolveBlogAsset(contentSlug: string, source: string) {
   if (/^(?:https?:|data:|#)/i.test(source)) return source
 
   const localPath = source.replace(/^\.\//, '').replace(/^assets\//, '')
-  const key = `../../content/blog/${slug}/assets/${localPath}`
+  const key = `../../content/blog/${contentSlug}/assets/${localPath}`
   return assets[key] ?? source
 }

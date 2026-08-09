@@ -13,12 +13,13 @@ export function VariantNavbar() {
   const { theme, toggleTheme } = useTheme()
   const { pathname } = useLocation()
   const isLight = theme === 'light'
+  const onConsole = pathname === '/v1b'
 
   return (
     <nav className="variant-nav" aria-label="Primary">
-      <Link className="variant-nav__brand" to="/v1b">
+      <Link className="variant-nav__brand" to={onConsole ? '/home' : '/v1b'}>
         <ArrowLeft size={13} aria-hidden="true" />
-        return to console
+        {onConsole ? 'return to site' : 'return to console'}
       </Link>
       <div className="variant-nav__links">
         {NAV_LINKS.map(([to, label], index) => (

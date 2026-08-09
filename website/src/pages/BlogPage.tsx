@@ -159,7 +159,7 @@ function BlogPost() {
           <div className="post-prose">
             <MarkdownDocument
               content={post.body}
-              resolveImage={(source) => resolveBlogAsset(post.slug, source)}
+              resolveImage={(source) => resolveBlogAsset(post.contentSlug, source)}
             />
           </div>
         </div>
