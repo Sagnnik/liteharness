@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
-from typing import Any, cast
+from typing import cast
 
 from langchain_core.language_models import BaseChatModel
-from langchain_openrouter import ChatOpenRouter
+from langchain_openrouter import ChatOpenRouter  # compatibility patch point
 
 from ness_cli.config import (
     ReasoningEffort,
     coerce_reasoning_effort,
-    model_supports_reasoning,
     reasoning_efforts_for_model,
     settings,
 )
-from ness_cli.anthropic_messages import OpenRouterAnthropicMessages
+from ness_cli.provider.profile import provider_profile, update_provider_profile
+from ness_cli.provider.registry import active_provider, get_provider
 
 
 @dataclass(frozen=True)
@@ -31,19 +31,9 @@ class ModelOverrides:
 
 _overrides: ModelOverrides | None = None
 
-# Placeholder used when no provider key is configured: lets the TUI boot so
-# the user can set the key via /config; the first model call fails with a
-# provider auth error until then.
-_MISSING_API_KEY = "sk-missing-api-key"
-
-
 def provider_key_missing() -> bool:
-    """True when no provider API key is configured (env, JSON, or CLI arg)."""
-    return not _resolved_setting("openai_api_key")
-
-
-def _resolved_api_key() -> str:
-    return cast(str | None, _resolved_setting("openai_api_key")) or _MISSING_API_KEY
+    """True when the active provider has no usable credentials."""
+    return not active_provider().is_authenticated()
 
 
 def configure_model(overrides: ModelOverrides | None = None) -> None:
@@ -76,11 +66,14 @@ def set_active_model(model_name: str) -> str | None:
     else:
         _overrides = replace(base, model_name=model_name)
     settings.model_name = model_name
+    profile = dict(settings.provider_profiles.get(settings.model_provider, {}))
+    profile["model_name"] = model_name
+    settings.provider_profiles[settings.model_provider] = profile
     return coerced if coerced != current_effort else None
 
 
 def set_active_reasoning_effort(reasoning_effort: ReasoningEffort) -> None:
-    """Switch the active OpenRouter reasoning effort at runtime."""
+    """Switch the active provider's reasoning effort at runtime."""
     allowed = reasoning_efforts_for_model(active_model_name())
     if reasoning_effort not in allowed:
         allowed_text = ", ".join(allowed) if allowed else "(none)"
@@ -89,6 +82,9 @@ def set_active_reasoning_effort(reasoning_effort: ReasoningEffort) -> None:
     base = _overrides or ModelOverrides()
     _overrides = replace(base, reasoning_effort=reasoning_effort)
     settings.reasoning_effort = reasoning_effort
+    profile = dict(settings.provider_profiles.get(settings.model_provider, {}))
+    profile["reasoning_effort"] = reasoning_effort
+    settings.provider_profiles[settings.model_provider] = profile
 
 
 def _resolved_setting(field: str) -> str | int | bool | None:
@@ -100,11 +96,48 @@ def _resolved_setting(field: str) -> str | int | bool | None:
 
 
 def active_model_name() -> str:
-    return cast(str, _resolved_setting("model_name"))
+    if _overrides is not None and _overrides.model_name is not None:
+        return _overrides.model_name
+    profile = settings.provider_profiles.get(settings.model_provider, {})
+    return cast(str, profile.get("model_name") or _resolved_setting("model_name"))
 
 
 def active_reasoning_effort() -> ReasoningEffort:
-    return cast(ReasoningEffort, _resolved_setting("reasoning_effort"))
+    if _overrides is not None and _overrides.reasoning_effort is not None:
+        return _overrides.reasoning_effort
+    profile = settings.provider_profiles.get(settings.model_provider, {})
+    return cast(ReasoningEffort, profile.get("reasoning_effort") or _resolved_setting("reasoning_effort"))
+
+
+def active_provider_id() -> str:
+    return settings.model_provider
+
+
+def activate_provider(provider_id: str, *, model_name: str | None = None, reasoning_effort: str | None = None) -> None:
+    """Activate a provider and its profile without storing provider secrets."""
+    get_provider(provider_id)  # validate before mutating config
+    previous_id = settings.model_provider
+    if previous_id != provider_id:
+        previous = provider_profile(previous_id)
+        previous.setdefault("model_name", active_model_name())
+        previous.setdefault("reasoning_effort", active_reasoning_effort())
+        update_provider_profile(previous_id, previous)
+        settings.provider_profiles[previous_id] = previous
+    profile = provider_profile(provider_id)
+    if model_name:
+        profile["model_name"] = model_name
+    if reasoning_effort:
+        profile["reasoning_effort"] = reasoning_effort
+    update_provider_profile(provider_id, profile)
+    from ness_cli.config_store import write_config
+
+    write_config("model_provider", provider_id)
+    settings.model_provider = provider_id
+    settings.provider_profiles[provider_id] = profile
+    if profile.get("model_name"):
+        settings.model_name = str(profile["model_name"])
+    if profile.get("reasoning_effort"):
+        settings.reasoning_effort = str(profile["reasoning_effort"])
 
 
 def openrouter_session(thread_id: str, *, suffix: str = "") -> str:
@@ -114,66 +147,19 @@ def openrouter_session(thread_id: str, *, suffix: str = "") -> str:
     return cast(str, base)
 
 
-def _reasoning_kwargs(model_name: str, reasoning_effort: str | int | None) -> dict[str, Any]:
-    if not model_supports_reasoning(model_name):
-        return {}
-    effort = str(reasoning_effort) if reasoning_effort else None
-    if not effort or effort == "none":
-        return {}
-    allowed = reasoning_efforts_for_model(model_name)
-    if effort not in allowed:
-        effort = coerce_reasoning_effort(model_name, effort)
-    if not effort or effort == "none":
-        return {}
-    return {"reasoning": {"effort": effort}}
-
-
 def build_chat_model(
     thread_id: str,
     *,
     model_name: str | None = None,
     session_suffix: str = "",
 ) -> BaseChatModel:
-    resolved_model = cast(str, model_name or _resolved_setting("model_name"))
-    session_id = openrouter_session(thread_id, suffix=session_suffix)
-    base_url = cast(str | None, _resolved_setting("openai_base_url"))
-    is_openrouter = not base_url or "openrouter.ai" in base_url
-    reasoning = _reasoning_kwargs(
-        resolved_model,
-        _resolved_setting("reasoning_effort"),
-    ).get("reasoning")
-    if (
-        resolved_model.startswith("anthropic/")
-        and is_openrouter
-        and settings.openrouter_anthropic_messages
-    ):
-        return OpenRouterAnthropicMessages(
-            model=resolved_model,
-            api_key=_resolved_api_key(),
-            base_url=(base_url or "https://openrouter.ai/api/v1").rstrip("/"),
-            session_id=session_id,
-            cache_ttl=settings.openrouter_cache_ttl,
-            max_retries=int(_resolved_setting("api_max_retries") or 3),
-            reasoning=reasoning,
-        )
-    model_kwargs: dict[str, Any] = {
-        "model": resolved_model,
-        "api_key": _resolved_api_key(),
-        "session_id": session_id,
-    }
-    model_kwargs.update(_reasoning_kwargs(resolved_model, _resolved_setting("reasoning_effort")))
-    if base_url:
-        model_kwargs["base_url"] = base_url
-    if resolved_model.startswith("anthropic/") and is_openrouter:
-        model_kwargs["model_kwargs"] = {
-            "cache_control": {
-                "type": "ephemeral",
-                "ttl": settings.openrouter_cache_ttl,
-            }
-        }
-
-    model_kwargs["max_retries"] = _resolved_setting("api_max_retries")
-    return ChatOpenRouter(**model_kwargs)
+    resolved_model = cast(str, model_name or active_model_name())
+    return active_provider().build_chat_model(
+        thread_id,
+        model_name=resolved_model,
+        reasoning_effort=active_reasoning_effort(),
+        session_suffix=session_suffix,
+    )
 
 
 def create_model(thread_id: str) -> BaseChatModel:
@@ -181,9 +167,14 @@ def create_model(thread_id: str) -> BaseChatModel:
 
 
 def create_reflection_model(thread_id: str) -> BaseChatModel:
+    profile = settings.provider_profiles.get(settings.model_provider, {})
+    reflection_model = (
+        profile.get("reflection_model_name")
+        or (active_model_name() if settings.model_provider == "codex" else _resolved_setting("reflection_model_name"))
+    )
     return build_chat_model(
         thread_id,
-        model_name=cast(str, _resolved_setting("reflection_model_name")),
+        model_name=cast(str, reflection_model),
         session_suffix="reflection",
     )
 

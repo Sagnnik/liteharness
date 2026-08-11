@@ -20,6 +20,31 @@ def default_question_index(options: list[dict]) -> int:
 class PromptMixin:
     """Approval, question, and line prompts."""
 
+    async def ask_picker(
+        self,
+        title: str,
+        items: list[MenuItem],
+        *,
+        initial_key: str | None = None,
+        hint: str = "↑/↓ select · Enter confirm · Esc back",
+    ) -> str | None:
+        """Show a compact native picker without question/note affordances."""
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "picker"
+        self._prompt_title = title
+        self._prompt_hint = hint
+        self._prompt_items = list(items)
+        self._prompt_summary_lines = []
+        self._prompt_detail_lines = []
+        index = next(
+            (i for i, item in enumerate(items) if item.key == initial_key),
+            0,
+        )
+        self._open_picker("picker", "/login", index=index)
+        result = await self._prompt_future
+        self._clear_prompt()
+        return str(result) if result else None
+
     async def ask_approval(self, name: str, args: dict) -> str:
         self._prompt_future = asyncio.get_running_loop().create_future()
         self._prompt_kind = "approval"
@@ -130,6 +155,22 @@ class PromptMixin:
         self._focus_command_input()
         self.invalidate()
         result = await self._prompt_future
+        self._clear_prompt()
+        return str(result or "")
+
+    async def ask_secret(self, label: str, *, example: str = "") -> str:
+        """Prompt in the password-masked form field and return the value."""
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "secret"
+        self._form_kind = "openai_api_key"  # registered masked form kind
+        self._form_label = label
+        self._form_example = example
+        self._form_buffer.text = ""
+        self._set_buffer_text("/login")
+        self._focus_form_field()
+        self.invalidate()
+        result = await self._prompt_future
+        self._form_kind = None
         self._clear_prompt()
         return str(result or "")
 

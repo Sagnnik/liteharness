@@ -28,7 +28,7 @@ from ness_cli.config import (
     reasoning_efforts_for_model,
     settings,
 )
-from ness_cli.model_catalog import model_record
+from ness_cli.provider.openrouter.catalog import model_record
 
 # Characters allowed inside an @mention token after the `@`.
 _PATH_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./_-")
@@ -359,6 +359,7 @@ class MenuMixin:
             MENTION_MENU: self._mention_items,
             "approval": lambda: self._prompt_items,
             "question": lambda: self._prompt_items,
+            "picker": lambda: self._prompt_items,
             "rollback": lambda: self._prompt_items,
             "threads": lambda: self._prompt_items,
             "fork": lambda: self._prompt_items,
@@ -416,6 +417,7 @@ class MenuMixin:
             MENTION_MENU: "files - @mention autocomplete",
             "approval": self._prompt_title,
             "question": self._prompt_title,
+            "picker": self._prompt_title,
             "rollback": self._prompt_title,
             "threads": self._prompt_title,
             "fork": self._prompt_title,
@@ -559,6 +561,6 @@ class MenuMixin:
             self._apply_approval_selection(item.key)
         elif self._menu_kind == "question":
             self._submit_question()
-        elif self._menu_kind in {"rollback", "threads", "fork"}:
+        elif self._menu_kind in {"picker", "rollback", "threads", "fork"}:
             if self._prompt_future is not None and not self._prompt_future.done():
                 self._prompt_future.set_result(item.key)

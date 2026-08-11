@@ -10,7 +10,7 @@ import pytest
 
 from ness_cli.config import settings
 from ness_cli.config_store import load_configs, load_secrets
-from ness_cli.model_catalog import RefreshResult
+from ness_cli.provider.openrouter.catalog import RefreshResult
 from ness_cli.tui.config_flow import current_config_lines
 from ness_cli.tui.config_registry import SPEC_BY_KEY
 
@@ -113,6 +113,19 @@ def test_secret_form_masks_and_persists(make_app, config_dir, monkeypatch):
         assert load_secrets()["openai_api_key"] == "sk-new-key"
     finally:
         settings.openai_api_key = previous
+
+
+def test_login_secret_prompt_is_masked(make_app):
+    async def run():
+        app = make_app()
+        task = asyncio.create_task(app.ask_secret("OpenRouter API key"))
+        await asyncio.sleep(0)
+        assert app._form_buffer.password() is True
+        app._form_buffer.text = "sk-secret"
+        app._submit_form()
+        assert await task == "sk-secret"
+
+    asyncio.run(run())
 
 
 def test_optional_form_empty_input_clears(make_app, config_dir):

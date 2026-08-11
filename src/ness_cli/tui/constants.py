@@ -11,5 +11,12 @@ FORM_FIELD_WIDTH = 32
 INPUT_MAX_ROWS_CAP = 12
 INPUT_MAX_ROWS_FRACTION = 3
 PICKER_MODES = frozenset(
-    {"config_action", "config_section", "config_models", "config_reasoning", "config_select"}
+    {
+        "config_action",
+        "config_section",
+        "config_models",
+        "config_reasoning",
+        "config_select",
+        "picker",
+    }
 )

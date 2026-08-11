@@ -1,6 +1,6 @@
 # Ness CLI
 
-**Ness** is the interactive coding-agent CLI shipped with Ness Agent. It uses OpenRouter-compatible chat models, plan/act modes, filesystem-driven extension points under `.ness/`, and a full TUI for approvals, thread history, and configuration.
+**Ness** is the interactive coding-agent CLI shipped with Ness Agent. It supports Codex subscription and OpenRouter models, plan/act modes, filesystem-driven extension points under `.ness/`, and a full TUI for approvals, thread history, and configuration.
 
 See also: [Configuration](configuration.md) · [Architecture](architecture.md) · [SDK](sdk.md)
 
@@ -11,7 +11,7 @@ See also: [Configuration](configuration.md) · [Architecture](architecture.md) �
 ```bash
 pip install ness-agent
 ness --version               # verify the install
-export OPENAI_API_KEY=...    # or set via /config on first launch
+export OPENAI_API_KEY=...    # optional; or connect via /login
 ness
 ```
 
@@ -24,7 +24,16 @@ ness
 
 `/init` creates project `.ness/` (dirs, permissions, hooks, mcp, default agent profiles, empty `NESS.md`) and ensures global config (`USER.md`, `instructions/`, `plans/<slug>/`).
 
-Or skip the env var and set the key in-session: `/config` → Provider → Provider API key.
+Or skip the env var and run `/login`. Choose Codex subscription for managed
+browser/device authentication, or OpenRouter for a masked API-key prompt. Device-code
+login must first be enabled in ChatGPT **Settings > Security** by turning on
+**Device code authorization for Codex**; browser login does not require that setting.
+Selecting a connected provider makes it active and exposes only **Reconnect** and
+**Log out**. A disconnected provider starts its login flow immediately—there is
+no separate Connect step.
+On WSL, Ness prints the authentication URL without launching a browser; copy it
+into the browser of your choice. While any Codex login is pending, use the visible
+**Cancel pending login** action (or press Esc/Ctrl+C) to return to the session.
 
 ---
 
@@ -236,12 +245,13 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **General**
 
 - `/help`: show the command reference.
+- `/login`: authenticate or manage model providers in a dedicated picker. Selecting a connected provider activates it and offers Reconnect/Log out; selecting a disconnected provider starts authentication immediately. Provider changes rebuild the model while preserving the thread.
 - `/config`: edit provider keys/endpoints, model/reasoning, behavior toggles, compaction budgets, and advanced options (persisted to global `configs.json` / `secrets.json`).
 - `/exit` or `/quit`: end the session.
 
 **Session**
 
-- `/status`: show session, model, token, cost, and cache stats.
+- `/status`: show provider authentication, account email/tier, every available usage-limit window (including weekly), reset times/credits, and session token/cache/cost stats. Subscription calls are labeled `subscription` rather than estimated as API spend.
 - `/threads`: open a scrollable saved-thread picker and switch the transcript in place.
 - `/fork`: choose a human message, copy the conversation state before it into a child thread, and prefill that message for editing. Forking copies session memory/checkpoints but leaves current working-tree files unchanged.
 - `/goal <objective>`: run up to three worker attempts, each followed by an isolated read-only judge. Failed verdicts become repair instructions for the next attempt.

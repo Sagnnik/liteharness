@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import copy
 import unittest
 from argparse import Namespace
 from unittest import mock
@@ -13,10 +14,19 @@ from ness_cli.config import settings
 
 class ModelFactoryTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._previous_provider = settings.model_provider
+        self._previous_profiles = copy.deepcopy(settings.provider_profiles)
+        self._previous_api_key = settings.openai_api_key
+        settings.model_provider = "openrouter"
+        settings.provider_profiles["openrouter"] = {}
+        settings.openai_api_key = "test"
         model.configure_model(None)
 
     def tearDown(self) -> None:
         model.configure_model(None)
+        settings.provider_profiles = self._previous_profiles
+        settings.openai_api_key = self._previous_api_key
+        settings.model_provider = self._previous_provider
 
     @mock.patch("ness_cli.chat_model.ChatOpenRouter")
     def test_create_model_uses_settings(self, chat_openrouter) -> None:

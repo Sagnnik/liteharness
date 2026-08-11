@@ -183,7 +183,17 @@ SECRET_FORM_KINDS: frozenset[str] = frozenset(
 
 
 def specs_for_section(section: str) -> list[ConfigSpec]:
-    return [spec for spec in CONFIG_SPECS if spec.section == section]
+    specs = [spec for spec in CONFIG_SPECS if spec.section == section]
+    if settings.model_provider == "codex":
+        openrouter_only = {
+            "openai_api_key",
+            "openai_base_url",
+            "openrouter_session_id",
+            "openrouter_cache_ttl",
+            "openrouter_anthropic_messages",
+        }
+        specs = [spec for spec in specs if spec.key not in openrouter_only]
+    return specs
 
 
 def format_current(spec: ConfigSpec) -> str:

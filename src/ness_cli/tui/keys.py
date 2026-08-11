@@ -78,7 +78,12 @@ def build_key_bindings(ui) -> KeyBindings:
             else:
                 ui._cancel_menu()
         elif ui._form_kind:
-            ui._finish_config()
+            if ui._prompt_kind == "secret":
+                if ui._prompt_future is not None and not ui._prompt_future.done():
+                    ui._prompt_future.set_result("")
+                ui._close_form(reset_buffer=False)
+            else:
+                ui._finish_config()
         event.app.invalidate()
 
     @kb.add("escape", filter=ui._menu_open, eager=True)
@@ -175,7 +180,7 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
-        if ui._menu_kind in {"rollback", "threads", "fork"} and ui._visible_menu_items():
+        if ui._menu_kind in {"picker", "rollback", "threads", "fork"} and ui._visible_menu_items():
             ui._apply_picker_selection()
             event.app.invalidate()
             return

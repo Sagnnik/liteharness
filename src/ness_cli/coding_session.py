@@ -218,7 +218,7 @@ class CodingSession:
             create_reflection_model,
         )
         from ness_cli.config import context_window_for, settings
-        from ness_cli.model_catalog import model_record
+        from ness_cli.provider.openrouter.catalog import model_record
 
         self.cfg.model = create_model(self.thread_id)
         self.cfg.reflection_model = create_reflection_model(self.thread_id)

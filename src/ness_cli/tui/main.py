@@ -326,7 +326,7 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
         render.render_warning(warning)
     if provider_key_missing():
         render.render_warning(
-            "No provider API key configured — open /config > Provider to set one."
+            f"{settings.model_provider} is not authenticated — use /login to connect."
         )
     budget_warning = _check_prompt_budget(coding, git_available)
     if budget_warning:
@@ -350,6 +350,9 @@ async def _main(*, resume_thread_id: str | None = None, yolo: bool = False) -> N
         except Exception as exc:
             render.render_warning(f"Archive skipped: {exc}")
         await mcp.stop()
+        from ness_cli.provider.registry import close_providers
+
+        await close_providers()
         render.set_sink(None)
         # The fullscreen Textual TUI has exited, so the transcript sink is no
         # longer on screen. Print the session summary straight to stdout via

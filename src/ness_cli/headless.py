@@ -114,8 +114,8 @@ async def run_headless(
 
     if provider_key_missing():
         print(
-            "error: no provider API key configured — set OPENAI_API_KEY or add it "
-            "via /config (Provider section); stored globally in secrets.json",
+            f"error: no provider API key configured or {settings.model_provider} is not "
+            "authenticated — run interactive Ness and use /login",
             file=sys.stderr,
         )
         return 1
@@ -197,5 +197,8 @@ async def run_headless(
         except Exception as exc:
             print(f"warning: archive skipped: {exc}", file=sys.stderr)
         await mcp.stop()
+        from ness_cli.provider.registry import close_providers
+
+        await close_providers()
         if saved_id:
             print(f"Resume: ness --resume {saved_id}", file=sys.stderr)

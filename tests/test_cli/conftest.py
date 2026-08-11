@@ -19,7 +19,19 @@ import pytest
 
 from ness_agent.types import SessionEvent
 
+from ness_cli.config import settings
 from ness_cli.tui.app import TuiApp
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_provider():
+    """TUI tests must not inherit the developer's persisted provider login."""
+    previous = settings.model_provider
+    settings.model_provider = "openrouter"
+    try:
+        yield
+    finally:
+        settings.model_provider = previous
 
 
 class _FakeThreadStore:

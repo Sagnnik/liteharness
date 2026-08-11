@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 
-from ness_cli.model_catalog import catalog_cache_path, fetch_catalog
+from ness_cli.provider.openrouter.catalog import catalog_cache_path, fetch_catalog
 
 
 def main() -> None:
