@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Any
 
 from ness_cli.tui.models import MenuItem
@@ -15,6 +16,17 @@ def default_question_index(options: list[dict]) -> int:
         if option.get("recommended"):
             return index
     return 0
+
+
+def format_thread_updated_at(value: object) -> str:
+    """Format a stored UTC ISO timestamp in the machine's local timezone."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            return ""
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return ""
 
 
 class PromptMixin:
@@ -114,7 +126,11 @@ class PromptMixin:
         self._prompt_future = asyncio.get_running_loop().create_future()
         self._prompt_kind = "question"
         self._prompt_title = f"question {index}: {question.get('prompt', '')}"
-        self._prompt_hint = "↑/↓ option · Tab note · Enter submit · Esc cancel"
+        self._prompt_hint = (
+            "↑/↓ option · Tab note · Enter submit · Esc cancel"
+            if question.get("allow_note", True)
+            else "↑/↓ option · Enter submit · Esc cancel"
+        )
         self._prompt_items = [
             MenuItem(str(i), str(option.get("label", "")), "(recommended)" if option.get("recommended") else "")
             for i, option in enumerate(options)
@@ -216,7 +232,15 @@ class PromptMixin:
         current_index = 0
         for index, thread in enumerate(threads):
             thread_id = str(thread.get("thread_id") or "")
-            label = str(thread.get("label") or thread.get("summary") or "(no messages)")
+            label = str(
+                thread.get("label")
+                or thread.get("name")
+                or thread.get("summary")
+                or "(no messages)"
+            )
+            updated_at = format_thread_updated_at(thread.get("updated_at"))
+            if updated_at:
+                label = f"{updated_at}  {label}"
             suffixes: list[str] = []
             if thread_id == current_thread_id:
                 suffixes.append("(current)")

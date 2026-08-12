@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,6 +30,12 @@ def _agent(**kwargs):
         return "pong"
 
     tools = kwargs.pop("tools", [ping])
+    if "options" not in kwargs:
+        root = Path(tempfile.mkdtemp(prefix="ness-sdk-parity-"))
+        kwargs["options"] = NessAgentOptions(
+            project_root=root,
+            ness_dir=root / ".ness",
+        )
     return NessAgent(
         model=model,
         tools=tools,

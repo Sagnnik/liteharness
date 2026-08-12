@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
-
+from dataclasses import dataclass
+import time
 from langchain_core.language_models import BaseChatModel
 
 from ness_cli.config import settings
@@ -21,6 +22,10 @@ from ness_cli.provider.codex.browser import open_auth_url
 from ness_cli.provider.codex.catalog import load_models
 from ness_cli.provider.codex.chat_model import CodexSubscriptionChatModel
 
+@dataclass
+class StatusCache:
+    data: ProviderStatus
+    fetched_at: float
 
 class CodexProviderAdapter(ProviderAdapter):
     id = "codex"
@@ -39,6 +44,7 @@ class CodexProviderAdapter(ProviderAdapter):
         self.server = CodexAppServer(codex_home())
         self.auth = CodexAuth(self.server)
         self._models: tuple[ModelInfo, ...] = ()
+        self._status_cache: StatusCache | None = None
 
     def is_authenticated(self) -> bool:
         return self.auth.is_authenticated()
@@ -130,6 +136,7 @@ class CodexProviderAdapter(ProviderAdapter):
             # The completion notification may arrive just before account/read
             # and auth.json converge. Do not force-refresh a brand-new token.
             await self.auth.wait_until_ready()
+            self._status_cache = None
             return LoginResult("complete", "Signed in with your Codex subscription.")
         return LoginResult("error", self._login_error(params.get("error")))
 
@@ -148,15 +155,28 @@ class CodexProviderAdapter(ProviderAdapter):
     async def status(self, *, refresh: bool = False) -> ProviderStatus:
         if not self.is_authenticated():
             return ProviderStatus(self.display_name, AuthState(False, "ChatGPT", "signed out"))
+        
+        # return cached status if not expired (60s)
+        now = time.monotonic()
+        if (
+            not refresh
+            and self._status_cache is not None
+            and now - self._status_cache.fetched_at < 60
+        ):
+            return self._status_cache.data
+        
+        # fetch new status
         await self.server.start()
         account_response = await self.server.request("account/read", {"refreshToken": refresh})
         account = account_response.get("account") or {}
         warning: str | None = None
+        
         try:
             limits_response = await self.server.request("account/rateLimits/read", {})
         except Exception as exc:
             limits_response = {}
             warning = f"Usage limits unavailable: {exc}"
+        
         snapshots: list[tuple[str, dict[str, Any]]] = []
         by_id = limits_response.get("rateLimitsByLimitId")
         if isinstance(by_id, dict):
@@ -197,7 +217,8 @@ class CodexProviderAdapter(ProviderAdapter):
         credits_text = None
         if isinstance(credits, dict):
             credits_text = f"{int(credits.get('availableCount') or 0)} available"
-        return ProviderStatus(
+
+        status = ProviderStatus(
             provider=self.display_name,
             auth=AuthState(True, "ChatGPT", "managed by Codex CLI"),
             account=AccountDetails(
@@ -209,5 +230,10 @@ class CodexProviderAdapter(ProviderAdapter):
             warning=warning,
         )
 
+        # update cache
+        self._status_cache = StatusCache(data=status, fetched_at=time.monotonic())
+        return status
+
     async def close(self) -> None:
+        self._status_cache = None
         await self.server.close()

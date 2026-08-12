@@ -33,6 +33,7 @@ def test_help_command_lists_supported_commands(make_app):
     assert "commands" in text
     assert "/config" in text
     assert "/status" in text
+    assert "/clear" in text
     assert "/menu" not in text
     assert "/cost" not in text
     assert "/cache" not in text
@@ -76,12 +77,49 @@ def test_dispatch_exit_sets_session_flag(make_app):
     assert app.should_exit is True
 
 
+def test_clear_command_only_clears_rendered_transcript(make_app):
+    app = make_app()
+    app.coding.turn_count = 2
+    app.coding.thread_store.events[app.thread_id] = [
+        {"kind": "user", "content": "remember this"}
+    ]
+    app.assistant_history.append("remembered answer")
+    app.append_user("visible question")
+    app.append_assistant("visible answer")
+
+    asyncio.run(_dispatch_with_sink(app, "/clear"))
+
+    assert app._lines == []
+    assert app.coding.turn_count == 2
+    assert app.coding.thread_store.events[app.thread_id] == [
+        {"kind": "user", "content": "remember this"}
+    ]
+    assert app.assistant_history == ["remembered answer"]
+
+
 def test_status_command_shows_session_summary(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/status"))
     text = "\n".join(line.text for line in app._lines)
     assert "session status" in text
     assert "cache read" in text
+
+
+def test_rename_command_sets_normalized_session_name(make_app):
+    app = make_app()
+    asyncio.run(_dispatch_with_sink(app, "/rename   Release   prep  "))
+
+    assert app.coding.thread_store.names[app.thread_id] == "Release prep"
+    assert "Session renamed to Release prep" in "\n".join(line.text for line in app._lines)
+
+
+def test_rename_command_requires_name_and_is_busy_safe(make_app):
+    app = make_app()
+    asyncio.run(_dispatch_with_sink(app, "/rename"))
+    assert "Usage: /rename <name>" in "\n".join(line.text for line in app._lines)
+
+    asyncio.run(_dispatch_busy(app, "/rename Busy name"))
+    assert app.coding.thread_store.names[app.thread_id] == "Busy name"
 
 
 def test_login_uses_native_picker_without_question_chrome(make_app):

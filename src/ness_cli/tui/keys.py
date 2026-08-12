@@ -53,6 +53,8 @@ def build_key_bindings(ui) -> KeyBindings:
 
     @kb.add("tab", filter=ui._question_prompt_open)
     def _toggle_question_note(event) -> None:
+        if not ui._question_note_allowed():
+            return
         ui._prompt_note_active = not ui._prompt_note_active
         if ui._prompt_note_active:
             ui._focus_form_field()
@@ -298,8 +300,8 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
         _path, data_url = result
-        ui._pending_images.append(data_url)
         ui._image_counter += 1
+        ui._pending_images[ui._image_counter] = data_url
         buff = event.app.current_buffer
         buff.insert_text(f"[Image #{ui._image_counter}] ")
         event.app.invalidate()

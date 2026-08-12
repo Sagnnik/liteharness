@@ -184,6 +184,10 @@ class CodingSession:
     def toggle_mode(self) -> str:
         return self._session.toggle_mode()
 
+    def set_name(self, name: str) -> bool:
+        """Set the persistent display name for the active session."""
+        return self._session.set_name(name)
+
     def active_skills(self, names: list[str]) -> None:
         self._session.active_skills(names)
 
@@ -520,7 +524,8 @@ class CodingSession:
         truncated messages and duplicate the replayed prefix.
         """
         events = self.thread_store.load_thread_events(thread_id)
-        if not events and thread_id != self.thread_id and not allow_empty:
+        exists = self.thread_store.thread_exists(thread_id)
+        if not events and not exists and thread_id != self.thread_id and not allow_empty:
             return False
         if thread_id != self.thread_id:
             await self.finalize_reflection()

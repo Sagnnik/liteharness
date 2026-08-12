@@ -472,7 +472,7 @@ def _reset_label(timestamp: int | None) -> str:
 async def cmd_status(app: "TuiApp", args: str) -> None:
     provider = get_provider(active_provider_id())
     try:
-        provider_status = await provider.status(refresh=True)
+        provider_status = await provider.status(refresh=False)
     except Exception as exc:
         provider_status = None
         render.render_warning(f"Provider status unavailable: {exc}")
@@ -698,7 +698,12 @@ def _thread_rows(threads: list[dict], store) -> list[list[str]]:
         input_tokens = int(item.get("input_tokens", 0) or 0)
         cached = int(item.get("cached_input_tokens", 0) or 0)
         cache_hit = cached / input_tokens if input_tokens else 0.0
-        label = item.get("summary") or store.first_user_message(item.get("thread_id", "")) or "(no messages)"
+        label = (
+            item.get("name")
+            or item.get("summary")
+            or store.first_user_message(item.get("thread_id", ""))
+            or "(no messages)"
+        )
         if "archived_at" not in item:
             label = f"{label} (active)"
         rows.append(
@@ -725,7 +730,8 @@ async def cmd_threads(app: "TuiApp", args: str) -> None:
         return
     for item in threads:
         item["label"] = (
-            item.get("summary")
+            item.get("name")
+            or item.get("summary")
             or store.first_user_message(item.get("thread_id", ""))
             or "(no messages)"
         )
@@ -735,6 +741,23 @@ async def cmd_threads(app: "TuiApp", args: str) -> None:
     )
     if target and target != app.thread_id:
         await app.resume_thread(target)
+
+
+async def cmd_rename(app: "TuiApp", args: str) -> None:
+    name = args.strip()
+    if not name:
+        render.render_error("Usage: /rename <name>")
+        return
+    try:
+        saved = app.coding.set_name(name)
+    except ValueError as exc:
+        render.render_error(str(exc))
+        return
+    if not saved:
+        render.render_warning("Thread autosave is disabled; session name was not saved.")
+        return
+    normalized = " ".join(name.split())
+    render.render_notice(f"Session renamed to {normalized}", title="rename")
 
 
 async def cmd_save(app: "TuiApp", args: str) -> None:
@@ -749,6 +772,11 @@ async def cmd_new(app: "TuiApp", args: str) -> None:
 async def cmd_compact(app: "TuiApp", args: str) -> None:
     app.request_compact()
     render.render_notice("Compaction will run on the next model turn.")
+
+
+async def cmd_clear(app: "TuiApp", args: str) -> None:
+    """Clear only the rendered transcript; preserve the live conversation."""
+    app.clear_transcript()
 
 
 async def cmd_copy(app: "TuiApp", args: str) -> None:
@@ -854,11 +882,13 @@ HANDLERS: dict[str, CommandHandler] = {
     "hooks": cmd_hooks,
     "mcp": cmd_mcp,
     "threads": cmd_threads,
+    "rename": cmd_rename,
     "fork": cmd_fork,
     "goal": cmd_goal,
     "save": cmd_save,
     "new": cmd_new,
     "compact": cmd_compact,
+    "clear": cmd_clear,
     "copy": cmd_copy,
     "rollback": cmd_rollback,
 }
@@ -878,6 +908,7 @@ BUSY_SAFE_COMMANDS: frozenset[str] = frozenset(
         "memory",
         "user",
         "skill",
+        "rename",
     }
 )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import sqlite3
 from pathlib import Path
 
 from ness_agent.persistence import ThreadStore
@@ -111,6 +112,59 @@ class SessionStorageTests(unittest.TestCase):
         self.assertIn("Archived thread", first)
         self.assertIn("already archived", second)
 
+    def test_set_thread_name_before_first_turn_and_preserve_on_archive(self) -> None:
+        self.assertTrue(self.store.set_thread_name("session-named", "  Release   prep  "))
+
+        row = self.store.list_threads(5)[0]
+        self.assertEqual(row["name"], "Release prep")
+        self.assertEqual(row["summary"], "")
+        self.assertTrue(self.store.thread_exists("session-named"))
+
+        self.store.append_event(
+            "session-named", {"kind": "user", "content": "original first message"}
+        )
+        self.store.archive_thread("session-named")
+        row = self.store.list_threads(5)[0]
+        self.assertEqual(row["name"], "Release prep")
+        self.assertEqual(row["summary"], "original first message")
+
+    def test_named_empty_thread_can_be_archived(self) -> None:
+        self.store.set_thread_name("session-empty", "Empty but named")
+        result = self.store.archive_thread("session-empty")
+
+        self.assertIn("Archived thread", result)
+        row = self.store.list_threads(5)[0]
+        self.assertEqual(row["name"], "Empty but named")
+        self.assertIn("archived_at", row)
+
+    def test_set_thread_name_validates_length_and_empty_input(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be empty"):
+            self.store.set_thread_name("session-empty-name", "  \n  ")
+        with self.assertRaisesRegex(ValueError, "80 characters"):
+            self.store.set_thread_name("session-long-name", "x" * 81)
+
+    def test_set_thread_name_is_disabled_with_autosave(self) -> None:
+        store = ThreadStore(
+            threads_dir=self.ness_dir / "threads-name-off", auto_save=False
+        )
+        self.assertFalse(store.set_thread_name("session-off", "Not persisted"))
+        self.assertFalse(store.threads_db.exists())
+
+    def test_old_thread_schema_fails_without_migrating(self) -> None:
+        threads_dir = self.ness_dir / "threads-old"
+        threads_dir.mkdir(parents=True)
+        db = threads_dir / "threads.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE threads (thread_id TEXT PRIMARY KEY)")
+            conn.commit()
+
+        with self.assertRaisesRegex(RuntimeError, "Incompatible thread database schema"):
+            ThreadStore(threads_dir=threads_dir)
+
+        with sqlite3.connect(db) as conn:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(threads)")]
+        self.assertEqual(columns, ["thread_id"])
+
     def test_subagent_registration(self) -> None:
         self.store.append_event("session-parent", {"kind": "user", "content": "run subagents"})
         self.store.register_subagent(
@@ -163,8 +217,6 @@ class SessionStorageTests(unittest.TestCase):
         self.assertAlmostEqual(parent["total_cost_usd"], 0.005)
 
     def _thread_row(self, thread_id: str) -> dict | None:
-        import sqlite3
-
         with sqlite3.connect(self.store.threads_db) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
