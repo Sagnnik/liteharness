@@ -10,6 +10,7 @@ from ness_cli.provider.base import LoginMethod, LoginResult
 from ness_cli.tui import render
 from ness_cli.tui.commands import (
     _logout_with_fallback,
+    _provider_picker_items,
     _wait_for_provider_login,
     cmd_login,
     dispatch,
@@ -140,6 +141,9 @@ def test_login_uses_native_picker_without_question_chrome(make_app):
         assert app._prompt_title == "/login — model providers"
         assert app._prompt_hint == "↑/↓ select · Enter confirm · Esc back"
         assert app._buffer.text == "/login"
+        prefix_text = "".join(text for _, text in app._input_prefix_fragments())
+        assert prefix_text == "act > "
+        assert prefix_text + app._buffer.text == "act > /login"
         assert "question" not in app._prompt_title
         assert "note" not in app._prompt_hint.lower()
         app._apply_picker_selection()
@@ -147,6 +151,30 @@ def test_login_uses_native_picker_without_question_chrome(make_app):
 
     assert asyncio.run(exercise()) == "codex"
     assert app._prompt_kind is None
+
+
+def test_login_provider_picker_keeps_full_provider_name(make_app):
+    app = make_app()
+    provider = SimpleNamespace(
+        id="codex",
+        display_name="Codex subscription",
+        login_description="ChatGPT subscription",
+        is_authenticated=lambda: True,
+    )
+
+    with (
+        patch("ness_cli.tui.commands.provider_ids", return_value=("codex",)),
+        patch("ness_cli.tui.commands.get_provider", return_value=provider),
+        patch("ness_cli.tui.commands.active_provider_id", return_value="codex"),
+    ):
+        item = _provider_picker_items()[0]
+
+    assert item.label == "Codex subscription"
+    assert item.suffix == ""
+    assert item.description == "ChatGPT subscription · active · connected"
+    row_text = "".join(text for _, text in app._menu_row_fragments(item, selected=True))
+    assert "Codex subscription" in row_text
+    assert "Code…" not in row_text
 
 
 def test_signed_out_codex_skips_connect_and_goes_to_methods(make_app):

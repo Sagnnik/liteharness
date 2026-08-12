@@ -7,13 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-12 — Released
+
 ### Added
 
+- Codex subscription provider with browser and device-code authentication via `/login`, using the installed `codex` CLI app-server and isolated Ness global credentials (never reads or writes `~/.codex`).
+- Pluggable model provider layer (`ness_cli/provider/`) with shared registry, profile selection, and separate Codex and OpenRouter adapters/chat models.
+- Install scripts at `https://nessagent.dev/install.sh` (macOS/Linux) and `install.ps1` (Windows).
 - Persistent session names through the SDK `Session.set_name()` / `ThreadStore.set_thread_name()` APIs and the interactive `/rename <name>` command.
 - Local `YYYY-MM-DD HH:mm` update timestamps in the `/threads` picker.
+- `/clear` to wipe the visible transcript without resetting the conversation.
+- Cached Codex subscription status in `/status`, including account email/tier and every available usage-limit window (including weekly).
+- Subscription-aware cost accounting in `CostTracker` / `TokenUsage`: provider `billing_mode` metadata keeps subscription-backed turns out of API cost estimation, and `cost_source` distinguishes provider-reported from estimated spend.
 
 ### Changed
 
+- `/login` is the primary provider onboarding path: choose Codex subscription or OpenRouter API key, switch active providers mid-session, and reconnect or log out from a dedicated picker.
+- `/status` labels subscription usage as `subscription` rather than estimating it as API spend.
 - TUI pickers now expand responsively to show up to 12 choices while retaining transcript space, with improved approval and question layouts.
 - **Breaking:** the SQLite `threads` table now requires a `name` column. Automatic database migrations are intentionally unsupported; back up or remove `.ness/threads/threads.db` before using this version. Removing it permanently discards saved threads unless they were backed up externally.
 
@@ -58,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK: LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, and tracing.
 - CLI: interactive TUI (`ness`), headless print mode (`-p`), plan/act modes, git worktrees, global config, and `.ness/` project layout.
 
-[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Sagnnik/ness-agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Sagnnik/ness-agent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Sagnnik/ness-agent/releases/tag/v0.1.0

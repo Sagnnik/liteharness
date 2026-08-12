@@ -13,6 +13,15 @@ class CodexUnavailable(RuntimeError):
     pass
 
 
+def _package_version() -> str:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version("ness-agent")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
 class CodexAppServer:
     """Small JSONL/JSON-RPC client for the system Codex app-server."""
 
@@ -69,7 +78,11 @@ class CodexAppServer:
         await self._request_once(
             "initialize",
             {
-                "clientInfo": {"name": "ness-agent", "title": "Ness Agent", "version": "0.2.0"},
+                "clientInfo": {
+                    "name": "ness-agent",
+                    "title": "Ness Agent",
+                    "version": _package_version(),
+                },
                 "capabilities": {"experimentalApi": True},
             },
         )

@@ -114,8 +114,7 @@ def _provider_picker_items() -> list[MenuItem]:
             MenuItem(
                 provider_id,
                 provider.display_name,
-                description=provider.login_description,
-                suffix=suffix,
+                description=f"{provider.login_description} · {suffix}",
             )
         )
     return items

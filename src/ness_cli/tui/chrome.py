@@ -212,8 +212,6 @@ class ChromeMixin:
     def _input_prefix_fragments(self):
         if self._prompt_kind == "line":
             return [("class:prompt", f"{self._prompt_title} ")]
-        if self._form_kind or self._prompt_kind:
-            return self._prompt_prefix() + [("class:transcript.muted", self._buffer.text or "/config")]
         return self._prompt_prefix()
 
     def _input_max_rows(self) -> int:

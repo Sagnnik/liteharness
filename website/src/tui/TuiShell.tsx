@@ -573,7 +573,7 @@ export function TuiShell({ variant }: TuiShellProps) {
             <div className="tui__chrome-main">
               <div className="tui__brandline">
                 <strong>NessAgent</strong>
-                <span>v0.2.0</span>
+                <span>v0.2.1</span>
                 <span className="tui__brandline-status" title="Press Esc to open Home">
                   <kbd>Esc</kbd> Home
                 </span>

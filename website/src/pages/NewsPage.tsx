@@ -22,6 +22,39 @@ type Release = {
 
 const RELEASES: readonly Release[] = [
   {
+    slug: 'codex-provider-and-login',
+    title: 'Codex subscription, /login, and install scripts',
+    date: '2026-08-12',
+    version: 'v0.2.1',
+    summary:
+      'Sign in with a Codex subscription or OpenRouter key, switch providers in-session, and install Ness from curl or PowerShell.',
+    sectionLabel: '00.2.1 // ADDED',
+    intro:
+      '0.2.1 adds a pluggable provider layer with first-class Codex subscription auth, refreshes the TUI around /login and /status, and ships cross-platform install scripts. One database schema change requires action before upgrading.',
+    highlights: [
+      [
+        'Codex provider',
+        '/login connects a Codex subscription through the installed codex CLI app-server; credentials stay in Ness global config and never touch ~/.codex.',
+      ],
+      [
+        'Provider picker',
+        'Switch between Codex and OpenRouter mid-session, reconnect, or log out from a dedicated /login picker that rebuilds the model while preserving the thread.',
+      ],
+      [
+        'Subscription cost tracking',
+        'CostTracker and TokenUsage now record billing_mode and cost_source so subscription-backed turns are labeled separately from API-estimated spend.',
+      ],
+      [
+        'Session naming',
+        'Session.set_name(), /rename <name>, and local timestamps in /threads for saved conversations.',
+      ],
+      [
+        'Breaking threads.db',
+        'The threads table now requires a name column. Back up or remove .ness/threads/threads.db before upgrading; no automatic migration.',
+      ],
+    ],
+  },
+  {
     slug: 'mcp-runtime-and-skills',
     title: 'MCP runtime, skills roots, and cache-safe compaction',
     date: '2026-08-07',

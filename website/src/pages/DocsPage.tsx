@@ -15,7 +15,7 @@ const OVERVIEW = `# Ness Agent documentation
 
 Ness Agent is an experimental, hackable coding-agent harness for engineers who want to **own the loop**. One package contains the Python SDK for embedding the loop and **Ness**, the terminal operator surface for coding sessions.
 
-> **0.x experimental** — public APIs may change until 1.0. Pin versions in production and follow the changelog when upgrading. Current release: **0.2.0**.
+> **0.x experimental** — public APIs may change until 1.0. Pin versions in production and follow the changelog when upgrading. Current release: **0.2.1**.
 
 ## Two surfaces, one harness
 
@@ -34,14 +34,15 @@ pip install ness-agent                              # SDK in a project environme
 ness --version                                      # verify the install
 \`\`\`
 
-## What's new in 0.2.0
+## What's new in 0.2.1
 
-- **MCPRuntime** — adapter-neutral MCP connections for SDK hosts; Ness owns \`.ness/mcp.json\`, trust, and OAuth via \`ness mcp\`.
-- **Multi-root skills** — \`skills_dirs\` plus \`merge_skill_dirs()\`; the CLI also loads well-known agent skill roots.
-- **Cache-safe compaction** — \`summarize()\`, main-model compaction, and durable summary checkpoints.
-- **Breaking** — \`RunResult.usage\` → \`usage_total\`; \`MCPManager\` removed; no automatic \`.env\` → global JSON migration.
+- **Codex subscription** — \`/login\` authenticates via the installed \`codex\` CLI; credentials stay in Ness global config, not \`~/.codex\`.
+- **Provider layer** — pluggable Codex and OpenRouter adapters; switch providers mid-session from the \`/login\` picker.
+- **Install scripts** — \`curl -fsSL https://nessagent.dev/install.sh | sh\` and a matching PowerShell installer for Windows.
+- **Session naming** — \`/rename <name>\`, SDK \`Session.set_name()\`, and local timestamps in \`/threads\`.
+- **Breaking** — \`.ness/threads/threads.db\` requires a \`name\` column; back up or remove the file before upgrading.
 
-Full notes: [release dispatch](/news/mcp-runtime-and-skills) · [changelog](../CHANGELOG.md).
+Full notes: [release dispatch](/news/codex-provider-and-login) · [changelog](../CHANGELOG.md).
 
 The guides below keep the repository documentation close to the product source.`
 
