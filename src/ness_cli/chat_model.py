@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -95,9 +96,25 @@ def _resolved_setting(field: str) -> str | int | bool | None:
     return getattr(settings, field)
 
 
+def _environment_setting(field: str) -> str | None:
+    """Return a process-environment value using Pydantic's field alias."""
+    field_info = type(settings).model_fields[field]
+    alias = field_info.validation_alias or field_info.alias or field
+    if not isinstance(alias, str):
+        return None
+    expected = alias.casefold()
+    return next(
+        (value for key, value in os.environ.items() if key.casefold() == expected),
+        None,
+    )
+
+
 def active_model_name() -> str:
     if _overrides is not None and _overrides.model_name is not None:
         return _overrides.model_name
+    environment = _environment_setting("model_name")
+    if environment is not None:
+        return environment
     profile = settings.provider_profiles.get(settings.model_provider, {})
     return cast(str, profile.get("model_name") or _resolved_setting("model_name"))
 
@@ -105,6 +122,9 @@ def active_model_name() -> str:
 def active_reasoning_effort() -> ReasoningEffort:
     if _overrides is not None and _overrides.reasoning_effort is not None:
         return _overrides.reasoning_effort
+    environment = _environment_setting("reasoning_effort")
+    if environment is not None:
+        return cast(ReasoningEffort, environment)
     profile = settings.provider_profiles.get(settings.model_provider, {})
     return cast(ReasoningEffort, profile.get("reasoning_effort") or _resolved_setting("reasoning_effort"))
 
@@ -168,10 +188,17 @@ def create_model(thread_id: str) -> BaseChatModel:
 
 def create_reflection_model(thread_id: str) -> BaseChatModel:
     profile = settings.provider_profiles.get(settings.model_provider, {})
-    reflection_model = (
-        profile.get("reflection_model_name")
-        or (active_model_name() if settings.model_provider == "codex" else _resolved_setting("reflection_model_name"))
-    )
+    environment = _environment_setting("reflection_model_name")
+    if _overrides is not None and _overrides.reflection_model_name is not None:
+        reflection_model = _overrides.reflection_model_name
+    elif environment is not None:
+        reflection_model = environment
+    else:
+        reflection_model = profile.get("reflection_model_name") or (
+            active_model_name()
+            if settings.model_provider == "codex"
+            else _resolved_setting("reflection_model_name")
+        )
     return build_chat_model(
         thread_id,
         model_name=cast(str, reflection_model),

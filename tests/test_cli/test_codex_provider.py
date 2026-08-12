@@ -8,7 +8,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from ness_cli.config import settings
+from ness_cli.config import AVAILABLE_MODELS, settings
 from ness_cli.provider.codex.adapter import CodexProviderAdapter
 from ness_cli.provider.codex.auth import CodexAuth, _jwt_expiry
 from ness_cli.provider.codex.chat_model import CodexSubscriptionChatModel
@@ -98,6 +98,49 @@ def test_codex_response_maps_usage_tools_and_subscription_billing():
     assert message.tool_calls[0]["args"] == {"path": "a.py"}
     assert message.usage_metadata["input_token_details"]["cache_read"] == 3
     assert message.response_metadata["billing_mode"] == "subscription"
+
+
+def _function_tool(name: str) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": "test tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
+def test_codex_payload_normalizes_langchain_any_tool_choice():
+    model = CodexSubscriptionChatModel(model="gpt-test")
+
+    payload = model._payload(
+        [HumanMessage(content="return structured output")],
+        tools=[_function_tool("structured_output")],
+        tool_choice="any",
+    )
+
+    assert payload["tool_choice"] == "required"
+
+
+def test_codex_registry_binding_exposes_only_active_tools():
+    model = CodexSubscriptionChatModel(model="gpt-test")
+    registry = type(
+        "Registry",
+        (),
+        {
+            "active_tools": [_function_tool("active")],
+            "all_tools": lambda self: [
+                _function_tool("active"),
+                _function_tool("deferred"),
+            ],
+        },
+    )()
+
+    bound = model.bind_tool_registry(registry)
+    payload = bound._payload([HumanMessage(content="use a tool")])  # type: ignore[attr-defined]
+
+    assert [tool["name"] for tool in payload["tools"]] == ["active"]
 
 
 def test_sparse_completed_response_keeps_streamed_assistant_text():
@@ -222,6 +265,17 @@ def test_openrouter_adapter_owns_masked_key_login(tmp_path: Path, monkeypatch):
         assert (tmp_path / "secrets.json").exists()
     finally:
         settings.openai_api_key = previous
+
+
+def test_openrouter_models_use_packaged_fallback_when_cache_is_cold(monkeypatch):
+    monkeypatch.setattr(
+        "ness_cli.provider.openrouter.adapter.cached_models",
+        lambda: (),
+    )
+
+    models = asyncio.run(OpenRouterProviderAdapter().models(refresh=False))
+
+    assert tuple(model.id for model in models) == AVAILABLE_MODELS
 
 
 def test_subscription_metadata_disables_api_price_estimate():

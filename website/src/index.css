@@ -1252,7 +1252,7 @@ input:focus-visible {
   background: var(--ness-panel);
 }
 
-.home-hero__cta .site-install {
+.home-hero__cta .site-install-options {
   width: 100%;
   margin-top: 4px;
 }
@@ -1279,19 +1279,66 @@ input:focus-visible {
   color: var(--ness-cyan);
 }
 
-.site-install {
-  display: flex;
-  align-items: stretch;
-  width: min(540px, 100%);
+.site-install-options {
+  width: 100%;
+  min-width: 0;
+  max-width: 540px;
   margin-top: 27px;
+  box-sizing: border-box;
+}
+
+.site-install-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--ness-border);
+  border-bottom: 0;
+}
+
+.site-install-tabs button {
+  min-width: 0;
+  padding: 9px 12px;
+  border: 0;
+  border-right: 1px solid var(--ness-border);
+  background: transparent;
+  color: var(--ness-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.site-install-tabs button:last-child {
+  border-right: 0;
+}
+
+.site-install-tabs button[aria-selected='true'] {
+  background: var(--ness-code-bg);
+  color: var(--ness-bright);
+  box-shadow: inset 0 -2px var(--ness-cyan);
+}
+
+.site-install-tabs button:hover {
+  color: var(--ness-cyan);
+}
+
+.site-install {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--ness-border);
   background: var(--ness-code-bg);
 }
 
 .site-install code {
-  flex: 1;
+  display: block;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
+  box-sizing: border-box;
   padding: 11px 14px;
   color: var(--ness-bright);
   font-size: 13px;
@@ -1306,9 +1353,12 @@ input:focus-visible {
 .site-install button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 0 13px;
-  border-left: 1px solid var(--ness-border);
+  min-height: 38px;
+  padding: 9px 13px;
+  border: 0;
+  border-top: 1px solid var(--ness-border);
   background: transparent;
   color: var(--ness-dim);
   cursor: pointer;

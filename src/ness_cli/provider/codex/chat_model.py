@@ -50,7 +50,7 @@ class CodexSubscriptionChatModel(BaseChatModel):
         clone = self.model_copy() # this is shallow copy
         clone._auth = self._auth
         clone._transport = self._transport
-        clone._tool_snapshot = [self._format_tool(tool) for tool in registry.all_tools()]
+        clone._tool_snapshot = [self._format_tool(tool) for tool in registry.active_tools]
         return clone
 
     def bind_tools(
@@ -148,7 +148,10 @@ class CodexSubscriptionChatModel(BaseChatModel):
         }
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = kwargs.pop("tool_choice", "auto")
+            tool_choice = kwargs.pop("tool_choice", "auto")
+            # LangChain uses ``any`` for "at least one tool" while the
+            # Responses API names the same mode ``required``.
+            payload["tool_choice"] = "required" if tool_choice == "any" else tool_choice
         if self.reasoning_effort and self.reasoning_effort != "none":
             payload["reasoning"] = {"effort": self.reasoning_effort, "summary": "auto"}
         max_tokens = kwargs.pop("max_tokens", None)

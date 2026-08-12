@@ -16,6 +16,7 @@ import {
   blocksThroughGroup,
   INSTALL_COMMAND,
   KNOWN_COMMANDS,
+  POWERSHELL_INSTALL_COMMAND,
   type MergedTranscriptGroup,
   transcriptDisplayItems,
   TRANSCRIPT_CONTAINER_LAST,
@@ -105,27 +106,32 @@ function BootOverlay({ variant, onComplete }: BootOverlayProps) {
 function StepLines({
   step,
   onCopy,
-  copied,
+  copiedCommand,
 }: {
   step: (typeof TUI_STEPS)[number]
-  onCopy: () => void
-  copied: boolean
+  onCopy: (command: string) => void
+  copiedCommand: string | null
 }) {
   return step.lines.map((line, lineIndex) => {
-    if (step.kind === 'install' && line === INSTALL_COMMAND) {
+    if (
+      step.kind === 'install' &&
+      (line === INSTALL_COMMAND || line === POWERSHELL_INSTALL_COMMAND)
+    ) {
+      const isCopied = copiedCommand === line
+      const isWindows = line === POWERSHELL_INSTALL_COMMAND
       return (
         <div className="install-row" key={line}>
           <code>
-            <span aria-hidden="true">$</span> {line}
+            <span aria-hidden="true">{isWindows ? 'PS>' : '$'}</span> {line}
           </code>
           <button
             type="button"
-            onClick={onCopy}
-            aria-label="Copy install command"
-            title="Copy install command"
+            onClick={() => onCopy(line)}
+            aria-label={`Copy ${isWindows ? 'Windows' : 'macOS and Linux'} install command`}
+            title={`Copy ${isWindows ? 'Windows' : 'macOS and Linux'} install command`}
           >
-            {copied ? <Check size={14} /> : <Clipboard size={14} />}
-            <span>{copied ? 'copied' : 'copy'}</span>
+            {isCopied ? <Check size={14} /> : <Clipboard size={14} />}
+            <span>{isCopied ? 'copied' : 'copy'}</span>
           </button>
         </div>
       )
@@ -169,12 +175,12 @@ function MergedTranscriptStep({
   group,
   appearDelay = 0,
   onCopy,
-  copied,
+  copiedCommand,
 }: {
   group: MergedTranscriptGroup
   appearDelay?: number
-  onCopy: () => void
-  copied: boolean
+  onCopy: (command: string) => void
+  copiedCommand: string | null
 }) {
   const mergedSteps = group.blockIds.map((index) => TUI_STEPS[index])
 
@@ -203,7 +209,11 @@ function MergedTranscriptStep({
           >
             <span className="transcript-step__eyebrow">{step.eyebrow}</span>
             <h2>{step.heading}</h2>
-            <StepLines step={step} onCopy={onCopy} copied={copied} />
+            <StepLines
+              step={step}
+              onCopy={onCopy}
+              copiedCommand={copiedCommand}
+            />
           </div>
         ))}
       </div>
@@ -215,12 +225,12 @@ function TranscriptStep({
   index,
   appearDelay = 0,
   onCopy,
-  copied,
+  copiedCommand,
 }: {
   index: number
   appearDelay?: number
-  onCopy: () => void
-  copied: boolean
+  onCopy: (command: string) => void
+  copiedCommand: string | null
 }) {
   const step = TUI_STEPS[index]
   const displayIndex = TRANSCRIPT_CONTAINER_LAST
@@ -242,7 +252,11 @@ function TranscriptStep({
       </div>
       <div className="transcript-step__content">
         <h2>{step.heading}</h2>
-        <StepLines step={step} onCopy={onCopy} copied={copied} />
+        <StepLines
+          step={step}
+          onCopy={onCopy}
+          copiedCommand={copiedCommand}
+        />
       </div>
     </motion.section>
   )
@@ -299,7 +313,7 @@ export function TuiShell({ variant }: TuiShellProps) {
   const [visibleStep, setVisibleStep] = useState(-1)
   const [command, setCommand] = useState('')
   const [outputs, setOutputs] = useState<CommandOutput[]>([])
-  const [copied, setCopied] = useState(false)
+  const [copiedCommand, setCopiedCommand] = useState<string | null>(null)
   const [mode, setMode] = useState<TuiMode>('act')
 
   const activeGroup = TUI_STEP_GROUPS[Math.max(0, stepIndex)] ?? TUI_STEP_GROUPS[0]
@@ -349,12 +363,12 @@ export function TuiShell({ variant }: TuiShellProps) {
     [],
   )
 
-  const copyInstall = useCallback(async () => {
+  const copyInstall = useCallback(async (installCommand = INSTALL_COMMAND) => {
     try {
-      await navigator.clipboard.writeText(INSTALL_COMMAND)
-      setCopied(true)
-      addOutput('success', '/copy', ['copied: uv tool install ness-agent'])
-      window.setTimeout(() => setCopied(false), 1800)
+      await navigator.clipboard.writeText(installCommand)
+      setCopiedCommand(installCommand)
+      addOutput('success', '/copy', [`copied: ${installCommand}`])
+      window.setTimeout(() => setCopiedCommand(null), 1800)
     } catch {
       addOutput('error', '/copy', [
         'clipboard unavailable; select the install row manually',
@@ -625,8 +639,8 @@ export function TuiShell({ variant }: TuiShellProps) {
                       key={item.group.key}
                       group={item.group}
                       appearDelay={0}
-                      onCopy={() => void copyInstall()}
-                      copied={copied}
+                      onCopy={(installCommand) => void copyInstall(installCommand)}
+                      copiedCommand={copiedCommand}
                     />
                   )
                 }
@@ -638,8 +652,8 @@ export function TuiShell({ variant }: TuiShellProps) {
                     key={TUI_STEPS[item.index].id}
                     index={item.index}
                     appearDelay={withinGroup >= 0 ? withinGroup * 0.05 : itemIndex * 0.05}
-                    onCopy={() => void copyInstall()}
-                    copied={copied}
+                    onCopy={(installCommand) => void copyInstall(installCommand)}
+                    copiedCommand={copiedCommand}
                   />
                 )
               })}

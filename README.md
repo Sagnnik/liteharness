@@ -43,10 +43,21 @@ Requires **Python 3.12+**.
 
 ### CLI — global install (recommended)
 
-Install `ness` on your PATH with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
+On Linux/Mac Os:
+```bash
+curl -fsSL https://nessagent.dev/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+powershell -c "irm https://nessagent.dev/install.ps1 | iex"
+```
+
+Or install it directly with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
 
 ```bash
-uv tool install ness-agent
+uv tool install --upgrade ness-agent
 # or: pipx install ness-agent
 ```
 
@@ -72,7 +83,6 @@ Optional tracing support:
 
 ```bash
 uv tool install 'ness-agent[tracing]'
-# or: pipx install 'ness-agent[tracing]'
 ```
 
 Ensure `~/.local/bin` (uv) or pipx's bin directory is on your `PATH`.

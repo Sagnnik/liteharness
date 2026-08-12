@@ -10,7 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from ness_cli.chat_model import build_chat_model
+from ness_cli.chat_model import build_chat_model, create_reflection_model
 from ness_cli.config import settings
 from ness_cli.instructions import load_instruction
 
@@ -189,10 +189,11 @@ class GoalCoordinator:
 
     def _build_judge_model(self) -> BaseChatModel:
         judge_id = f"judge-{uuid.uuid4().hex[:8]}"
-        judge_model_name = settings.goal_judge_model or settings.reflection_model_name
+        if not settings.goal_judge_model:
+            return create_reflection_model(judge_id)
         return build_chat_model(
             judge_id,
-            model_name=judge_model_name,
+            model_name=settings.goal_judge_model,
             session_suffix="goal-judge",
         )
 

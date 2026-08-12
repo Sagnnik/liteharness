@@ -6,7 +6,13 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 from langchain_openrouter import ChatOpenRouter
 
-from ness_cli.config import coerce_reasoning_effort, model_supports_reasoning, reasoning_efforts_for_model, settings
+from ness_cli.config import (
+    AVAILABLE_MODELS,
+    coerce_reasoning_effort,
+    model_supports_reasoning,
+    reasoning_efforts_for_model,
+    settings,
+)
 from ness_cli.provider.openrouter.catalog import cached_models, refresh_catalog
 from ness_cli.provider.base import (
     AuthState,
@@ -92,7 +98,7 @@ class OpenRouterProviderAdapter(ProviderAdapter):
     async def models(self, *, refresh: bool = False) -> tuple[ModelInfo, ...]:
         if refresh:
             await refresh_catalog()
-        return tuple(
+        cached = tuple(
             ModelInfo(
                 id=item.id,
                 name=item.name,
@@ -100,6 +106,20 @@ class OpenRouterProviderAdapter(ProviderAdapter):
                 supports_vision=item.supports_vision,
             )
             for item in cached_models()
+        )
+        if cached:
+            return cached
+        # Authentication must remain usable before the optional network
+        # catalog has been fetched. The packaged list is also what the model
+        # switcher uses when offline.
+        return tuple(
+            ModelInfo(
+                id=model_id,
+                name=model_id,
+                reasoning_efforts=reasoning_efforts_for_model(model_id),
+                is_default=model_id == settings.model_name,
+            )
+            for model_id in AVAILABLE_MODELS
         )
 
     async def status(self, *, refresh: bool = False) -> ProviderStatus:
