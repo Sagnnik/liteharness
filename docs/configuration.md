@@ -65,7 +65,19 @@ MCP trust fingerprints and non-secret import provenance also live in `configs.js
 
 Project `.env` files are not loaded or migrated for Ness application settings. Existing users should move those values to the process environment or enter them through `/config`; secret values are stored in `secrets.json` and other settings in `configs.json`. An MCP server may still opt into a dotenv file explicitly with its `envFile` field.
 
-You can set the API key in-session through `/config` → Provider → Provider API key.
+Use `/login` to authenticate, activate, reconnect, or log out of a model provider.
+Selecting a connected provider activates it and opens its Reconnect/Log out menu;
+selecting a disconnected provider starts authentication without an extra Connect step.
+OpenRouter keys are stored in `secrets.json`. Codex subscription credentials
+are managed by the system `codex` CLI under `<NESS_AGENT_CONFIG_DIR>/codex/`
+with file credential storage forced; Ness does not reuse `~/.codex`.
+Codex device-code login additionally requires **Device code authorization for
+Codex** to be enabled in ChatGPT **Settings > Security**. Use browser login if
+that account setting is unavailable.
+
+Provider-specific model and reasoning choices are nested under
+`provider_profiles` in `configs.json`, so switching providers restores each
+provider's last selection. Legacy top-level OpenRouter settings remain valid.
 
 ---
 
@@ -75,6 +87,7 @@ All except `NESS_DIR` are also editable via `/config` in the Ness TUI.
 
 | Variable | Description |
 |----------|-------------|
+| `MODEL_PROVIDER` | Active provider (`openrouter` by default, or `codex`) |
 | `MODEL_NAME` | Model passed to `ChatOpenRouter` (`deepseek/deepseek-v4-flash` by default) |
 | `REFLECTION_MODEL_NAME` | Model for background session-memory reflection (defaults to `MODEL_NAME`) |
 | `ENABLE_APPROVAL` | Require approval for destructive tools |
@@ -104,6 +117,15 @@ Flags override env for a single run: `--model`, `--reflection-model`, `--api-key
 
 `--yolo` is session-only and bypasses approval prompts and persisted permission denials in act mode; hook vetoes and plan-mode read-only rules still apply.
 
-Use `/config` in-session to edit provider keys/endpoints, model and reasoning, approval/autosave/reflection behavior, compaction budgets, and more.
+Use `/login` for provider authentication and switching. Use `/config` for the
+active provider's model and reasoning settings, behavior, compaction, and
+advanced options; provider-only fields are hidden when they do not apply.
 
-The `/config` model picker lazily refreshes text-output, tool-capable LLMs and VLMs from OpenRouter. Its global disk cache is reused for 24 hours, stale data remains available while refreshing, and the packaged model list is the offline fallback.
+The `/config` model picker reads the active provider's catalog. OpenRouter's
+global disk cache is reused for 24 hours with a packaged offline fallback;
+Codex models are supplied by `codex app-server` for the signed-in account.
+
+Codex access tokens are refreshed through `account/read` shortly before JWT
+expiry and once after an HTTP 401. Network, rate-limit, and server failures do
+not trigger credential refresh. The subscription Responses transport is kept
+inside `src/ness_cli/provider/codex/` because that endpoint is experimental.

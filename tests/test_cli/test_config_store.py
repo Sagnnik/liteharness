@@ -17,6 +17,7 @@ from ness_cli.config_store import (
     write_config,
     write_secret,
 )
+from ness_cli.provider.profile import provider_profile, update_provider_profile
 
 
 @pytest.fixture
@@ -42,6 +43,14 @@ def test_write_secret_permissions(config_dir: Path):
     path = config_dir / "secrets.json"
     assert load_secrets() == {"openai_api_key": "sk-test"}
     assert _mode(path) == 0o600
+
+
+def test_provider_profiles_are_nested_and_preserve_other_config(config_dir: Path):
+    write_config("enable_approval", False)
+    update_provider_profile("codex", {"model_name": "gpt-test"})
+    update_provider_profile("openrouter", {"model_name": "openai/gpt-test"})
+    assert provider_profile("codex") == {"model_name": "gpt-test"}
+    assert load_configs()["enable_approval"] is False
 
 
 def test_write_none_deletes_key(config_dir: Path):

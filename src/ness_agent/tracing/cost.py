@@ -149,8 +149,13 @@ class CostTracker:
         cache_read = _detail_value(usage, "input_token_details", "cache_read", "cached_tokens")
         uncached_input = max(input_tokens - cache_read, 0)
 
-        provider_cost = _provider_cost(response_metadata or {})
-        estimated_cost = self._estimate(model, uncached_input, cache_read, output_tokens)
+        metadata = response_metadata or {}
+        provider_cost = _provider_cost(metadata)
+        estimated_cost = (
+            None
+            if metadata.get("billing_mode") == "subscription"
+            else self._estimate(model, uncached_input, cache_read, output_tokens)
+        )
         cost_usd = provider_cost if provider_cost is not None else estimated_cost
         if provider_cost is not None:
             cost_source: str | None = "provider"

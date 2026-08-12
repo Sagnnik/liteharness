@@ -1,6 +1,9 @@
 import type { TuiStep } from './types'
 
-export const INSTALL_COMMAND = 'uv tool install ness-agent'
+export const INSTALL_COMMAND = 'curl -fsSL https://nessagent.dev/install.sh | sh'
+export const POWERSHELL_INSTALL_COMMAND =
+  'powershell -c "irm https://nessagent.dev/install.ps1 | iex"'
+export const UV_INSTALL_COMMAND = 'uv tool install --upgrade ness-agent'
 
 /**
  * Navigation groups for wheel/arrow replay.
@@ -119,7 +122,10 @@ export const TUI_STEPS: readonly TuiStep[] = [
     kind: 'install',
     lines: [
       'Python 3.12+ · SDK and interactive CLI ship in one package.',
+      'macOS / Linux',
       INSTALL_COMMAND,
+      'Windows PowerShell',
+      POWERSHELL_INSTALL_COMMAND,
     ],
   },
   {

@@ -135,14 +135,15 @@ def atomic_write_json(path: Path, data: dict[str, Any], *, secret: bool = False)
 
 
 def _write_value(path: Path, key: str, value: Any, *, secret: bool) -> None:
-    data = _read_json(path)
-    if value is None:
-        if key not in data:
-            return
-        del data[key]
-    else:
-        data[key] = value
-    _atomic_write(path, data, secret=secret)
+    with locked_path(path, secret=secret):
+        data = _read_json(path)
+        if value is None:
+            if key not in data:
+                return
+            del data[key]
+        else:
+            data[key] = value
+        _atomic_write(path, data, secret=secret)
 
 
 def write_config(key: str, value: Any, config_dir: Path | None = None) -> None:

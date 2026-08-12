@@ -6,7 +6,7 @@ import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
-from ness_cli.anthropic_messages import OpenRouterAnthropicMessages
+from ness_cli.provider.openrouter.chat_model import OpenRouterAnthropicMessages
 
 
 @tool
@@ -136,10 +136,10 @@ def test_sync_transport_retries_transient_failure() -> None:
     )
     with (
         patch(
-            "ness_cli.anthropic_messages.httpx.post",
+            "ness_cli.provider.openrouter.chat_model.httpx.post",
             side_effect=[httpx.ConnectError("temporary", request=request), response],
         ) as post,
-        patch("ness_cli.anthropic_messages.time.sleep"),
+        patch("ness_cli.provider.openrouter.chat_model.time.sleep"),
     ):
         result = model._generate([HumanMessage(content="hello")])
 

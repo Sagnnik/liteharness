@@ -19,13 +19,26 @@ import pytest
 
 from ness_agent.types import SessionEvent
 
+from ness_cli.config import settings
 from ness_cli.tui.app import TuiApp
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_provider():
+    """TUI tests must not inherit the developer's persisted provider login."""
+    previous = settings.model_provider
+    settings.model_provider = "openrouter"
+    try:
+        yield
+    finally:
+        settings.model_provider = previous
 
 
 class _FakeThreadStore:
     def __init__(self) -> None:
         self.events: dict[str, list[dict]] = {}
         self.archived: list[str] = []
+        self.names: dict[str, str] = {}
 
     def load_thread_events(self, thread_id: str) -> list[dict]:
         return list(self.events.get(thread_id, []))
@@ -35,6 +48,13 @@ class _FakeThreadStore:
 
     def first_user_message(self, thread_id: str) -> str | None:
         return None
+
+    def thread_exists(self, thread_id: str) -> bool:
+        return thread_id in self.events or thread_id in self.names
+
+    def set_thread_name(self, thread_id: str, name: str) -> bool:
+        self.names[thread_id] = " ".join(name.split())
+        return True
 
     def list_user_turns(self, thread_id: str) -> list[dict]:
         return []
@@ -219,6 +239,9 @@ class FakeCoding:
 
     def request_compact(self) -> None:
         self.compact_requested = True
+
+    def set_name(self, name: str) -> bool:
+        return self.thread_store.set_thread_name(self.thread_id, name)
 
     def active_skills(self, names: list[str]) -> None:
         self._pending_skills = list(names)

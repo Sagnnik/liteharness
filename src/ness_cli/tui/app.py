@@ -118,8 +118,15 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         self._ignore_buffer_menu = False
         self._pending_paste: str | None = None
         self._collapsing_paste: bool = False
-        self._pending_images: list[str] = []
+        # Keep the displayed image number attached to its payload.  A plain
+        # list cannot tell which payload to discard when (for example)
+        # ``[Image #1]`` is deleted while ``[Image #2]`` remains.
+        self._pending_images: dict[int, str] = {}
         self._image_counter: int = 0
+        # ``Buffer.on_text_changed`` only provides the new document.  Retain
+        # the previous visible value so multiline paste collapsing can replace
+        # just the inserted span instead of replacing the user's whole prompt.
+        self._buffer_text_before_change = ""
         self._follow_transcript = True
         self._transcript_revision = 0
         self._slash_menu_cache_query: str | None = None
@@ -239,7 +246,15 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         return False
 
     def _form_visible(self) -> bool:
-        return self._form_kind is not None or self._prompt_kind == "question"
+        return self._form_kind is not None or (
+            self._prompt_kind == "question" and self._question_note_allowed()
+        )
+
+    def _question_note_allowed(self) -> bool:
+        if self._prompt_kind != "question":
+            return False
+        question = self._prompt_question or {}
+        return bool(question.get("allow_note", True))
 
     def invalidate(self) -> None:
         with suppress(Exception):
@@ -385,7 +400,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             elif is_shell:
                 await self._run_shell(text[1:])
             else:
-                await self._run_turn(text, list(self._pending_images))
+                await self._run_turn(text, self._images_for_text(text))
             while not self.should_exit:
                 queued = self.dequeue_prompt()
                 if queued is None:
@@ -635,7 +650,7 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         adapter then rebuilds the live graph from the same events.
         """
         events = self.coding.thread_store.load_thread_events(thread_id)
-        if not events:
+        if not events and not self.coding.thread_store.thread_exists(thread_id):
             render.render_error(f"No saved thread: {thread_id}")
             return
         if not await self.coding.resume(thread_id):

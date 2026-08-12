@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 
@@ -18,20 +20,22 @@ from ness_cli.tui.constants import (
     MENU_MAX_ROWS,
     MENTION_MAX_ROWS,
     MENTION_MENU,
+    MIN_TRANSCRIPT_ROWS,
     PICKER_MODES,
 )
 from ness_cli.tui.models import MenuItem
-from ness_cli.tui.utils import term_width
+from ness_cli.tui.utils import term_height, term_width
 from ness_cli.chat_model import active_model_name, active_reasoning_effort
 from ness_cli.config import (
     available_model_ids,
     reasoning_efforts_for_model,
     settings,
 )
-from ness_cli.model_catalog import model_record
+from ness_cli.provider.openrouter.catalog import model_record
 
 # Characters allowed inside an @mention token after the `@`.
 _PATH_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./_-")
+_IMAGE_MARKER_RE = re.compile(r"\[Image #(\d+)\]")
 
 
 class MenuMixin:
@@ -42,10 +46,13 @@ class MenuMixin:
         return text[1:] if text.startswith("/") else ""
 
     def _on_buffer_changed(self, buffer: Buffer) -> None:
+        text_before_change = self._buffer_text_before_change
+        self._buffer_text_before_change = buffer.text
         if self._collapsing_paste:
             return
         if self._ignore_buffer_menu or self._form_kind or self._prompt_kind:
             return
+        self._sync_pending_images(buffer.text)
         if self._menu_kind == "config_models":
             self._menu_index = 0
             self._menu_scroll = 0
@@ -54,7 +61,7 @@ class MenuMixin:
             return
         if self._menu_kind in PICKER_MODES:
             return
-        if self._maybe_collapse_paste(buffer):
+        if self._maybe_collapse_paste(buffer, text_before_change):
             self.invalidate()
             return
         text = buffer.text
@@ -85,16 +92,25 @@ class MenuMixin:
                 self._invalidate_mention_cache()
                 self._clamp_menu_index()
 
-    def _maybe_collapse_paste(self, buffer: Buffer) -> bool:
+    def _maybe_collapse_paste(self, buffer: Buffer, text_before_change: str) -> bool:
         text = buffer.text
         if self._pending_paste is None:
             if "\n" not in text:
                 return False
-            self._pending_paste = text
-            self._write_paste_placeholder()
+            start, end = self._changed_span(text_before_change, text)
+            pasted = text[start:end]
+            if "\n" not in pasted:
+                return False
+            self._pending_paste = pasted
+            marker = self._paste_marker()
+            visible = text[:start] + marker + text[end:]
+            # prompt_toolkit leaves the cursor immediately after an inserted
+            # paste.  Preserve that position when the inserted span shrinks to
+            # its marker, including when text already follows the cursor.
+            cursor = start + len(marker)
+            self._write_paste_placeholder(visible, cursor_position=cursor)
             return True
-        n = self._pending_paste.count("\n") + 1
-        expected = f"[pasted {n} lines]"
+        expected = self._paste_marker()
         if text == expected:
             return True
         if expected not in text:
@@ -115,6 +131,33 @@ class MenuMixin:
         # marker can be expanded back into the real content at submit time.
         return True
 
+    @staticmethod
+    def _changed_span(before: str, after: str) -> tuple[int, int]:
+        """Return the span in *after* introduced by one buffer edit."""
+
+        start = 0
+        prefix_limit = min(len(before), len(after))
+        while start < prefix_limit and before[start] == after[start]:
+            start += 1
+
+        suffix = 0
+        before_remaining = len(before) - start
+        after_remaining = len(after) - start
+        while (
+            suffix < before_remaining
+            and suffix < after_remaining
+            and before[len(before) - suffix - 1] == after[len(after) - suffix - 1]
+        ):
+            suffix += 1
+        end = len(after) - suffix
+        return start, end
+
+    def _paste_marker(self) -> str:
+        if self._pending_paste is None:
+            return ""
+        n = self._pending_paste.count("\n") + 1
+        return f"[pasted {n} lines]"
+
     def _expand_paste(self, text: str) -> str:
         """Replace the ``[pasted N lines]`` marker with the stashed content.
 
@@ -125,22 +168,51 @@ class MenuMixin:
         """
         if self._pending_paste is None:
             return text
-        n = self._pending_paste.count("\n") + 1
-        marker = f"[pasted {n} lines]"
+        marker = self._paste_marker()
         if marker in text:
             return text.replace(marker, self._pending_paste, 1)
         return text
 
-    def _write_paste_placeholder(self) -> None:
+    def _write_paste_placeholder(
+        self,
+        text: str | None = None,
+        *,
+        cursor_position: int | None = None,
+    ) -> None:
         if self._pending_paste is None:
             return
-        n = self._pending_paste.count("\n") + 1
-        placeholder = f"[pasted {n} lines]"
+        placeholder = self._paste_marker()
         self._collapsing_paste = True
         try:
-            self._write_buffer_text(placeholder)
+            self._write_buffer_text(
+                placeholder if text is None else text,
+                cursor_position=cursor_position,
+            )
         finally:
             self._collapsing_paste = False
+
+    def _sync_pending_images(self, text: str) -> None:
+        """Drop image payloads whose visible marker was deleted by the user."""
+
+        visible = {int(match.group(1)) for match in _IMAGE_MARKER_RE.finditer(text)}
+        for image_number in tuple(self._pending_images):
+            if image_number not in visible:
+                del self._pending_images[image_number]
+
+    def _images_for_text(self, text: str) -> list[str]:
+        """Return still-visible image payloads in marker order."""
+
+        images: list[str] = []
+        seen: set[int] = set()
+        for match in _IMAGE_MARKER_RE.finditer(text):
+            image_number = int(match.group(1))
+            if image_number in seen:
+                continue
+            payload = self._pending_images.get(image_number)
+            if payload is not None:
+                images.append(payload)
+                seen.add(image_number)
+        return images
 
     def _sync_slash_index(self) -> None:
         query = self._slash_filter().lower()
@@ -359,6 +431,7 @@ class MenuMixin:
             MENTION_MENU: self._mention_items,
             "approval": lambda: self._prompt_items,
             "question": lambda: self._prompt_items,
+            "picker": lambda: self._prompt_items,
             "rollback": lambda: self._prompt_items,
             "threads": lambda: self._prompt_items,
             "fork": lambda: self._prompt_items,
@@ -369,20 +442,58 @@ class MenuMixin:
     def _menu_body_height(self) -> int:
         if not self._menu_kind:
             return 0
-        max_rows = MENTION_MAX_ROWS if self._menu_kind == MENTION_MENU else MENU_MAX_ROWS
-        rows = min(max_rows, max(1, len(self._visible_menu_items())))
-        if self._prompt_summary_lines:
-            rows += min(3, len(self._prompt_summary_lines)) + 1
-        if self._prompt_detail_lines:
-            rows += min(5, len(self._prompt_detail_lines))
+        option_rows, summary_lines, detail_lines = self._menu_layout_rows()
+        rows = min(option_rows, max(1, len(self._visible_menu_items())))
+        if summary_lines:
+            rows += len(summary_lines) + 1
+        if detail_lines:
+            rows += len(detail_lines) + 1
         return rows
+
+    def _menu_layout_rows(self) -> tuple[int, list[str], list[str]]:
+        """Allocate prompt rows while preserving transcript and choice space."""
+        items = self._visible_menu_items()
+        option_cap = MENTION_MAX_ROWS if self._menu_kind == MENTION_MENU else MENU_MAX_ROWS
+        minimum_options = min(3, max(1, len(items)))
+
+        fixed_rows = 4 + self._input_row_count()
+        if self._working_status_visible():
+            fixed_rows += 1
+        if self._queue_line_visible():
+            fixed_rows += 1
+        if self._form_visible():
+            fixed_rows += 2
+            if self._form_example:
+                fixed_rows += 1
+        if self._menu_kind:
+            fixed_rows += 1
+
+        body_budget = max(
+            minimum_options,
+            term_height() - MIN_TRANSCRIPT_ROWS - fixed_rows,
+        )
+        summary_lines = list(self._prompt_summary_lines[:3])
+        summary_rows = len(summary_lines) + (1 if summary_lines else 0)
+
+        detail_capacity = max(
+            0,
+            body_budget - summary_rows - minimum_options - 1,
+        )
+        detail_lines = list(self._prompt_detail_lines[: min(5, detail_capacity)])
+        detail_rows = len(detail_lines) + (1 if detail_lines else 0)
+
+        option_budget = max(
+            minimum_options,
+            body_budget - summary_rows - detail_rows,
+        )
+        return min(option_cap, option_budget), summary_lines, detail_lines
 
     def _clamp_menu_scroll(self) -> None:
         items = self._visible_menu_items()
         if not items:
             self._menu_scroll = 0
             return
-        max_rows = MENTION_MAX_ROWS if self._menu_kind == MENTION_MENU else MENU_MAX_ROWS
+        max_rows, _, _ = self._menu_layout_rows()
         if self._menu_index < self._menu_scroll:
             self._menu_scroll = self._menu_index
         elif self._menu_index >= self._menu_scroll + max_rows:
@@ -416,6 +527,7 @@ class MenuMixin:
             MENTION_MENU: "files - @mention autocomplete",
             "approval": self._prompt_title,
             "question": self._prompt_title,
+            "picker": self._prompt_title,
             "rollback": self._prompt_title,
             "threads": self._prompt_title,
             "fork": self._prompt_title,
@@ -423,14 +535,30 @@ class MenuMixin:
         title = headers.get(self._menu_kind or "")
         if not title:
             return []
+        width = term_width()
         right = self._prompt_hint or "↑/↓ scroll"
+        right_limit = max(12, width // 2)
+        if len(right) > right_limit:
+            right = right[: max(1, right_limit - 1)] + "…"
+        title_limit = max(8, width - len(right) - 1)
+        if len(title) > title_limit:
+            title = title[: max(1, title_limit - 1)] + "…"
         gap = max(1, term_width() - len(title) - len(right))
         return [("class:chrome.menu.header", title), ("class:chrome.menu.hint", (" " * gap) + right)]
 
     def _menu_row_fragments(self, item: MenuItem, *, selected: bool) -> list[tuple[str, str]]:
         width = term_width()
         prefix = "-> " if selected else "   "
-        left = f"{prefix}{item.label}"
+        suffix_width = len(item.suffix) + 2 if item.suffix else 0
+        label_limit = (
+            MENU_DESC_COL - len(prefix) - suffix_width
+            if item.description
+            else width - len(prefix) - suffix_width
+        )
+        label = item.label
+        if len(label) > max(1, label_limit):
+            label = label[: max(1, label_limit - 1)] + "…"
+        left = f"{prefix}{label}"
         if item.suffix:
             left = f"{left}  {item.suffix}"
         if not selected:
@@ -439,12 +567,12 @@ class MenuMixin:
         frags: list[tuple[str, str]] = [
             ("class:chrome.menu.row.current", prefix[:1]),
             ("class:chrome.menu.arrow", prefix[1:]),
-            ("class:chrome.menu.label.current", item.label),
+            ("class:chrome.menu.label.current", label),
         ]
         if item.suffix:
             frags.extend([("class:chrome.menu.row.current", "  "), ("class:chrome.menu.suffix", item.suffix)])
         if item.description:
-            used = len(prefix) + len(item.label) + (len(item.suffix) + 2 if item.suffix else 0)
+            used = len(prefix) + len(label) + suffix_width
             frags.append(("class:chrome.menu.row.current", " " * max(1, MENU_DESC_COL - used)))
             desc = item.description[: max(0, width - MENU_DESC_COL)]
             frags.extend(
@@ -464,19 +592,22 @@ class MenuMixin:
         if not items:
             return [("class:chrome.menu.row", "   no options")]
         self._clamp_menu_index()
-        visible = items[self._menu_scroll : self._menu_scroll + MENU_MAX_ROWS]
+        option_rows, summary_lines, detail_lines = self._menu_layout_rows()
+        visible = items[self._menu_scroll : self._menu_scroll + option_rows]
         fragments: list[tuple[str, str]] = []
-        for line in self._prompt_summary_lines[:3]:
+        for line in summary_lines:
             fragments.append(
                 ("class:chrome.approval.command", f"   {line[:term_width() - 3]}\n")
             )
-        if self._prompt_summary_lines:
+        if summary_lines:
             fragments.append(("class:chrome.menu.row", "\n"))
         for offset, item in enumerate(visible):
             index = self._menu_scroll + offset
             fragments.extend(self._menu_row_fragments(item, selected=index == self._menu_index and not self._prompt_note_active))
             fragments.append(("class:chrome.menu.row", "\n"))
-        for line in self._prompt_detail_lines[:5]:
+        if detail_lines:
+            fragments.append(("class:chrome.menu.row", "\n"))
+        for line in detail_lines:
             fragments.append(("class:chrome.menu.hint", f"   {line[:term_width() - 3]}\n"))
         return fragments
 
@@ -495,8 +626,13 @@ class MenuMixin:
         self._close_menu()
         self._reset_buffer()
 
-    def _write_buffer_text(self, text: str) -> None:
-        self._buffer.set_document(Document(text, cursor_position=len(text)), bypass_readonly=True)
+    def _write_buffer_text(self, text: str, *, cursor_position: int | None = None) -> None:
+        if cursor_position is None:
+            cursor_position = len(text)
+        self._buffer.set_document(
+            Document(text, cursor_position=cursor_position),
+            bypass_readonly=True,
+        )
 
     def _complete_slash_selection(self) -> None:
         items = self._visible_menu_items()
@@ -559,6 +695,6 @@ class MenuMixin:
             self._apply_approval_selection(item.key)
         elif self._menu_kind == "question":
             self._submit_question()
-        elif self._menu_kind in {"rollback", "threads", "fork"}:
+        elif self._menu_kind in {"picker", "rollback", "threads", "fork"}:
             if self._prompt_future is not None and not self._prompt_future.done():
                 self._prompt_future.set_result(item.key)

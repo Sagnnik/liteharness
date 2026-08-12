@@ -83,6 +83,7 @@ Important control and inspection methods:
 | Method | Purpose |
 | --- | --- |
 | `set_mode(mode)` / `toggle_mode() -> str` | Change between `"act"` and `"plan"`; a plan → act switch schedules the context checkpoint. |
+| `set_name(name) -> bool` | Persist a 1–80 character display name for this session; returns `False` when thread autosave is disabled. |
 | `bootstrap(messages)` | Seed prior messages into the next turn once; use for resume or rollback replay. |
 | `cancel()` / `is_cancelled()` | Request and inspect cooperative cancellation of the active stream. |
 | `request_compact()` | Request compaction on the next turn. |
@@ -279,7 +280,9 @@ ThreadStore(threads_dir: Path | None = None, *, auto_save: bool = True,
             default_model: str = "")
 ```
 
-SQLite persistence for session-thread events, subagent records, and rollback checkpoints. Key operations are `append_event()`, `list_threads()`, `load_thread_events()` (or `load_thread_events_since()`), `copy_thread_prefix()`, `archive_thread()`, `register_subagent()`, `complete_subagent()`, `list_subagents()`, `save_checkpoint()`, `add_modified_path()`, `get_checkpoint()`, `list_user_turns()`, and `truncate_after()`. When `auto_save=False`, writes no-op. The SDK excludes ordinary event rows for subagent thread ids and rolls their usage into the parent.
+SQLite persistence for named session-thread events, subagent records, and rollback checkpoints. Key operations are `set_thread_name()`, `thread_exists()`, `append_event()`, `list_threads()`, `load_thread_events()` (or `load_thread_events_since()`), `copy_thread_prefix()`, `archive_thread()`, `register_subagent()`, `complete_subagent()`, `list_subagents()`, `save_checkpoint()`, `add_modified_path()`, `get_checkpoint()`, `list_user_turns()`, and `truncate_after()`. `list_threads()` returns both the explicit `name` and generated `summary`. When `auto_save=False`, writes no-op. The SDK excludes ordinary event rows for subagent thread ids and rolls their usage into the parent.
+
+The current `threads` schema is intentionally not migrated from older releases. Constructing `ThreadStore` against a database without the required `name` column raises an actionable compatibility error without modifying or deleting the database.
 
 Sources: `src/ness_agent/memory.py` and `persistence.py`.
 

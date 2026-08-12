@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Any
 
 from ness_cli.tui.models import MenuItem
@@ -17,8 +18,44 @@ def default_question_index(options: list[dict]) -> int:
     return 0
 
 
+def format_thread_updated_at(value: object) -> str:
+    """Format a stored UTC ISO timestamp in the machine's local timezone."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            return ""
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
 class PromptMixin:
     """Approval, question, and line prompts."""
+
+    async def ask_picker(
+        self,
+        title: str,
+        items: list[MenuItem],
+        *,
+        initial_key: str | None = None,
+        hint: str = "↑/↓ select · Enter confirm · Esc back",
+    ) -> str | None:
+        """Show a compact native picker without question/note affordances."""
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "picker"
+        self._prompt_title = title
+        self._prompt_hint = hint
+        self._prompt_items = list(items)
+        self._prompt_summary_lines = []
+        self._prompt_detail_lines = []
+        index = next(
+            (i for i, item in enumerate(items) if item.key == initial_key),
+            0,
+        )
+        self._open_picker("picker", "/login", index=index)
+        result = await self._prompt_future
+        self._clear_prompt()
+        return str(result) if result else None
 
     async def ask_approval(self, name: str, args: dict) -> str:
         self._prompt_future = asyncio.get_running_loop().create_future()
@@ -89,7 +126,11 @@ class PromptMixin:
         self._prompt_future = asyncio.get_running_loop().create_future()
         self._prompt_kind = "question"
         self._prompt_title = f"question {index}: {question.get('prompt', '')}"
-        self._prompt_hint = "↑/↓ option · Tab note · Enter submit · Esc cancel"
+        self._prompt_hint = (
+            "↑/↓ option · Tab note · Enter submit · Esc cancel"
+            if question.get("allow_note", True)
+            else "↑/↓ option · Enter submit · Esc cancel"
+        )
         self._prompt_items = [
             MenuItem(str(i), str(option.get("label", "")), "(recommended)" if option.get("recommended") else "")
             for i, option in enumerate(options)
@@ -130,6 +171,22 @@ class PromptMixin:
         self._focus_command_input()
         self.invalidate()
         result = await self._prompt_future
+        self._clear_prompt()
+        return str(result or "")
+
+    async def ask_secret(self, label: str, *, example: str = "") -> str:
+        """Prompt in the password-masked form field and return the value."""
+        self._prompt_future = asyncio.get_running_loop().create_future()
+        self._prompt_kind = "secret"
+        self._form_kind = "openai_api_key"  # registered masked form kind
+        self._form_label = label
+        self._form_example = example
+        self._form_buffer.text = ""
+        self._set_buffer_text("/login")
+        self._focus_form_field()
+        self.invalidate()
+        result = await self._prompt_future
+        self._form_kind = None
         self._clear_prompt()
         return str(result or "")
 
@@ -175,7 +232,15 @@ class PromptMixin:
         current_index = 0
         for index, thread in enumerate(threads):
             thread_id = str(thread.get("thread_id") or "")
-            label = str(thread.get("label") or thread.get("summary") or "(no messages)")
+            label = str(
+                thread.get("label")
+                or thread.get("name")
+                or thread.get("summary")
+                or "(no messages)"
+            )
+            updated_at = format_thread_updated_at(thread.get("updated_at"))
+            if updated_at:
+                label = f"{updated_at}  {label}"
             suffixes: list[str] = []
             if thread_id == current_thread_id:
                 suffixes.append("(current)")

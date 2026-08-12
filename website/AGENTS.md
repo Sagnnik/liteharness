@@ -6,7 +6,6 @@ Landing experience is a **full-viewport TUI** inspired by the real Ness CLI, not
 - Screenshot: `website/assets/viewport.png`
 - Product README: repo root `README.md`
 - Tagline: **own the loop**
-- Install CTA: `uv tool install ness-agent`
 
 ## Tokens
 | Role | Value |

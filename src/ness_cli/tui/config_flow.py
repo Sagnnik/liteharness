@@ -22,7 +22,9 @@ from ness_cli.chat_model import (
     set_active_reasoning_effort,
 )
 from ness_cli.config import reasoning_efforts_for_model, reload_settings, settings
-from ness_cli.model_catalog import refresh_catalog
+from ness_cli.provider.openrouter.catalog import refresh_catalog
+from ness_cli.provider.profile import update_provider_profile
+from ness_cli.provider.registry import active_provider
 
 
 # --- shared /config data + delegator ---------------------------------------
@@ -198,11 +200,19 @@ class ConfigFlowMixin:
             items = self._visible_menu_items()
             if 0 <= self._menu_index < len(items):
                 selected_model = items[self._menu_index].key
-        result = await refresh_catalog()
-        if result.error and not self._catalog_refresh_warned:
+        error: str | None = None
+        if settings.model_provider == "openrouter":
+            result = await refresh_catalog()
+            error = result.error
+        else:
+            try:
+                await active_provider().models(refresh=True)
+            except Exception as exc:
+                error = str(exc)
+        if error and not self._catalog_refresh_warned:
             self._catalog_refresh_warned = True
             self.append_warning(
-                f"Model catalog refresh failed; using cached fallback: {result.error}"
+                f"Model catalog refresh failed; using cached fallback: {error}"
             )
         if self._menu_kind == "config_models":
             if selected_model is not None:
@@ -236,10 +246,12 @@ class ConfigFlowMixin:
             spec = SPEC_BY_KEY[target]
             if model_name == "":
                 self._persist_spec(spec, None)
+                update_provider_profile(settings.model_provider, {target: None})
                 reload_settings()
                 self._config_note(f"{spec.label} cleared.")
             else:
                 self._persist_spec(spec, model_name)
+                update_provider_profile(settings.model_provider, {target: model_name})
                 reload_settings()
                 self._config_note(f"{spec.label} set to {model_name}.")
             self._apply_spec_flags(spec)
@@ -253,6 +265,13 @@ class ConfigFlowMixin:
         if self._model_pick_changed:
             coerced = set_active_model(model_name)
             write_config("model_name", model_name)
+            update_provider_profile(
+                settings.model_provider,
+                {
+                    "model_name": model_name,
+                    "reasoning_effort": coerced or active_reasoning_effort(),
+                },
+            )
             if coerced:
                 write_config("reasoning_effort", coerced)
             self._config_rebuild()
@@ -277,6 +296,7 @@ class ConfigFlowMixin:
         if reasoning_changed:
             set_active_reasoning_effort(effort)  # type: ignore[arg-type]
             write_config("reasoning_effort", effort)
+            update_provider_profile(settings.model_provider, {"reasoning_effort": effort})
             self._config_rebuild()
         if self._config_result is not None:
             note_model_reasoning_changes(
@@ -326,6 +346,12 @@ class ConfigFlowMixin:
     def _submit_form(self) -> None:
         kind = self._form_kind
         if kind is None:
+            return
+        if getattr(self, "_prompt_kind", None) == "secret":
+            value = self._form_buffer.text.strip()
+            if self._prompt_future is not None and not self._prompt_future.done():
+                self._prompt_future.set_result(value)
+            self._close_form(reset_buffer=False)
             return
         spec = SPEC_BY_KEY.get(kind)
         if spec is None:

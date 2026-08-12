@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from ness_cli.config import settings
+from ness_cli.provider.base import LoginMethod, LoginResult
 
 from ness_cli.tui import render
-from ness_cli.tui.commands import dispatch
+from ness_cli.tui.commands import (
+    _logout_with_fallback,
+    _wait_for_provider_login,
+    cmd_login,
+    dispatch,
+)
 from ness_cli.tui.config_flow import ConfigResult
+from ness_cli.tui.models import MenuItem
 
 
 async def _dispatch_with_sink(app, command: str) -> None:
@@ -26,6 +33,7 @@ def test_help_command_lists_supported_commands(make_app):
     assert "commands" in text
     assert "/config" in text
     assert "/status" in text
+    assert "/clear" in text
     assert "/menu" not in text
     assert "/cost" not in text
     assert "/cache" not in text
@@ -69,12 +77,294 @@ def test_dispatch_exit_sets_session_flag(make_app):
     assert app.should_exit is True
 
 
+def test_clear_command_only_clears_rendered_transcript(make_app):
+    app = make_app()
+    app.coding.turn_count = 2
+    app.coding.thread_store.events[app.thread_id] = [
+        {"kind": "user", "content": "remember this"}
+    ]
+    app.assistant_history.append("remembered answer")
+    app.append_user("visible question")
+    app.append_assistant("visible answer")
+
+    asyncio.run(_dispatch_with_sink(app, "/clear"))
+
+    assert app._lines == []
+    assert app.coding.turn_count == 2
+    assert app.coding.thread_store.events[app.thread_id] == [
+        {"kind": "user", "content": "remember this"}
+    ]
+    assert app.assistant_history == ["remembered answer"]
+
+
 def test_status_command_shows_session_summary(make_app):
     app = make_app()
     asyncio.run(_dispatch_with_sink(app, "/status"))
     text = "\n".join(line.text for line in app._lines)
     assert "session status" in text
     assert "cache read" in text
+
+
+def test_rename_command_sets_normalized_session_name(make_app):
+    app = make_app()
+    asyncio.run(_dispatch_with_sink(app, "/rename   Release   prep  "))
+
+    assert app.coding.thread_store.names[app.thread_id] == "Release prep"
+    assert "Session renamed to Release prep" in "\n".join(line.text for line in app._lines)
+
+
+def test_rename_command_requires_name_and_is_busy_safe(make_app):
+    app = make_app()
+    asyncio.run(_dispatch_with_sink(app, "/rename"))
+    assert "Usage: /rename <name>" in "\n".join(line.text for line in app._lines)
+
+    asyncio.run(_dispatch_busy(app, "/rename Busy name"))
+    assert app.coding.thread_store.names[app.thread_id] == "Busy name"
+
+
+def test_login_uses_native_picker_without_question_chrome(make_app):
+    app = make_app()
+
+    async def exercise():
+        task = asyncio.create_task(
+            app.ask_picker(
+                "/login — model providers",
+                [MenuItem("codex", "Codex")],
+                initial_key="codex",
+            )
+        )
+        await asyncio.sleep(0)
+        assert app._prompt_kind == "picker"
+        assert app._menu_kind == "picker"
+        assert app._form_visible() is False
+        assert app._prompt_title == "/login — model providers"
+        assert app._prompt_hint == "↑/↓ select · Enter confirm · Esc back"
+        assert app._buffer.text == "/login"
+        assert "question" not in app._prompt_title
+        assert "note" not in app._prompt_hint.lower()
+        app._apply_picker_selection()
+        return await task
+
+    assert asyncio.run(exercise()) == "codex"
+    assert app._prompt_kind is None
+
+
+def test_signed_out_codex_skips_connect_and_goes_to_methods(make_app):
+    app = make_app()
+    provider = SimpleNamespace(
+        id="codex",
+        display_name="Codex subscription",
+        login_description="ChatGPT subscription",
+        is_authenticated=lambda: False,
+        login_methods=lambda: (
+            LoginMethod("browser", "Browser sign-in", default=True),
+            LoginMethod("device", "Device code"),
+        ),
+        login=AsyncMock(return_value=LoginResult("complete", "signed in")),
+    )
+    picker = AsyncMock(side_effect=["codex", "browser"])
+    app.ask_picker = picker
+
+    with (
+        patch("ness_cli.tui.commands.provider_ids", return_value=("codex",)),
+        patch("ness_cli.tui.commands.get_provider", return_value=provider),
+        patch("ness_cli.tui.commands.active_provider_id", return_value="openrouter"),
+        patch(
+            "ness_cli.tui.commands._activate_login_provider",
+            new_callable=AsyncMock,
+            return_value="gpt-test",
+        ),
+    ):
+        asyncio.run(cmd_login(app, ""))
+
+    assert picker.await_count == 2
+    method_items = picker.await_args_list[1].args[1]
+    assert [item.key for item in method_items] == ["browser", "device"]
+    assert all(item.key != "connect" for item in method_items)
+    provider.login.assert_awaited_once_with(method="browser", secret=None)
+
+
+def test_signed_out_openrouter_goes_directly_to_masked_key(make_app):
+    app = make_app()
+    provider = SimpleNamespace(
+        id="openrouter",
+        display_name="OpenRouter",
+        login_description="API key",
+        is_authenticated=lambda: False,
+        login_methods=lambda: (
+            LoginMethod(
+                "api_key",
+                "API key",
+                input_kind="secret",
+                input_label="OpenRouter API key",
+                input_example="sk-or-v1-...",
+            ),
+        ),
+        login=AsyncMock(return_value=LoginResult("complete", "saved")),
+    )
+    app.ask_picker = AsyncMock(return_value="openrouter")
+    app.ask_secret = AsyncMock(return_value="sk-or-test")
+
+    with (
+        patch("ness_cli.tui.commands.provider_ids", return_value=("openrouter",)),
+        patch("ness_cli.tui.commands.get_provider", return_value=provider),
+        patch("ness_cli.tui.commands.active_provider_id", return_value="codex"),
+        patch(
+            "ness_cli.tui.commands._activate_login_provider",
+            new_callable=AsyncMock,
+            return_value="openai/test",
+        ),
+    ):
+        asyncio.run(cmd_login(app, ""))
+
+    app.ask_picker.assert_awaited_once()
+    app.ask_secret.assert_awaited_once_with(
+        "OpenRouter API key", example="sk-or-v1-..."
+    )
+    provider.login.assert_awaited_once_with(
+        method="api_key", secret="sk-or-test"
+    )
+
+
+def test_connected_provider_only_offers_reconnect_and_logout(make_app):
+    app = make_app()
+    provider = SimpleNamespace(
+        id="codex",
+        display_name="Codex subscription",
+        login_description="ChatGPT subscription",
+        is_authenticated=lambda: True,
+    )
+    picker = AsyncMock(side_effect=["codex", None, None])
+    app.ask_picker = picker
+
+    with (
+        patch("ness_cli.tui.commands.provider_ids", return_value=("codex",)),
+        patch("ness_cli.tui.commands.get_provider", return_value=provider),
+        patch("ness_cli.tui.commands.active_provider_id", return_value="codex"),
+    ):
+        asyncio.run(cmd_login(app, ""))
+
+    action_items = picker.await_args_list[1].args[1]
+    assert [item.key for item in action_items] == ["reconnect", "logout"]
+    assert all(item.key not in {"connect", "use"} for item in action_items)
+
+
+def test_active_logout_prefers_previously_active_connected_provider(make_app):
+    app = make_app()
+    selected = SimpleNamespace(
+        display_name="Codex subscription",
+        logout=AsyncMock(return_value="signed out"),
+    )
+    previous = SimpleNamespace(
+        display_name="OpenRouter",
+        is_authenticated=lambda: True,
+    )
+    activate = AsyncMock(return_value="openai/test")
+
+    with (
+        patch(
+            "ness_cli.tui.commands.get_provider",
+            side_effect=lambda provider_id: {
+                "codex": selected,
+                "openrouter": previous,
+            }[provider_id],
+        ),
+        patch(
+            "ness_cli.tui.commands.provider_ids",
+            return_value=("codex", "openrouter"),
+        ),
+        patch(
+            "ness_cli.tui.commands._activate_login_provider",
+            activate,
+        ),
+    ):
+        asyncio.run(_logout_with_fallback(app, "codex", "openrouter"))
+
+    selected.logout.assert_awaited_once()
+    activate.assert_awaited_once_with(app, "openrouter", force_rebuild=True)
+
+
+def test_active_logout_without_fallback_preserves_thread_but_rebuilds(make_app):
+    app = make_app()
+    selected = SimpleNamespace(
+        display_name="Codex subscription",
+        logout=AsyncMock(return_value="signed out"),
+    )
+    app.rebuild_graph = Mock()
+    app.refresh_context_snapshot = AsyncMock()
+    app.render_header = Mock()
+
+    with (
+        patch("ness_cli.tui.commands.get_provider", return_value=selected),
+        patch("ness_cli.tui.commands.provider_ids", return_value=("codex",)),
+    ):
+        asyncio.run(_logout_with_fallback(app, "codex", "codex"))
+
+    app.rebuild_graph.assert_called_once_with()
+    app.refresh_context_snapshot.assert_awaited_once_with()
+    app.render_header.assert_called_once_with()
+
+
+def test_pending_provider_login_can_be_cancelled_immediately(make_app):
+    app = make_app()
+
+    class PendingProvider:
+        display_name = "Test subscription"
+
+        def __init__(self):
+            self.cancelled = False
+            self.wait_cancelled = False
+
+        async def wait_for_login(self, login_id):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.wait_cancelled = True
+                raise
+
+        async def cancel_login(self, login_id):
+            self.cancelled = True
+
+    async def exercise():
+        provider = PendingProvider()
+        task = asyncio.create_task(
+            _wait_for_provider_login(app, provider, "login-1")  # type: ignore[arg-type]
+        )
+        for _ in range(10):
+            if app._prompt_future is not None:
+                break
+            await asyncio.sleep(0)
+        assert app._cancel_open_prompt() is True
+        result = await task
+        return provider, result
+
+    provider, result = asyncio.run(exercise())
+
+    assert result is None
+    assert provider.cancelled is True
+    assert provider.wait_cancelled is True
+    assert app._prompt_kind is None
+
+
+def test_completed_provider_login_dismisses_cancel_prompt(make_app):
+    app = make_app()
+
+    class CompletedProvider:
+        display_name = "Test subscription"
+
+        async def wait_for_login(self, login_id):
+            await asyncio.sleep(0)
+            return LoginResult("error", "sign-in was rejected")
+
+        async def cancel_login(self, login_id):
+            raise AssertionError("completed login must not be cancelled")
+
+    result = asyncio.run(
+        _wait_for_provider_login(app, CompletedProvider(), "login-1")  # type: ignore[arg-type]
+    )
+
+    assert result == LoginResult("error", "sign-in was rejected")
+    assert app._prompt_kind is None
 
 
 def test_config_session_toggles_update_active_runtime(make_app):

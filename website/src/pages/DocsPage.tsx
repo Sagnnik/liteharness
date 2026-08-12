@@ -27,9 +27,11 @@ Ness Agent is an experimental, hackable coding-agent harness for engineers who w
 ## Install
 
 \`\`\`bash
-uv tool install ness-agent     # CLI
-pip install ness-agent         # SDK in a project environment
-ness --version                 # verify the install
+curl -fsSL https://nessagent.dev/install.sh | sh  # CLI (macOS/Linux)
+powershell -c "irm https://nessagent.dev/install.ps1 | iex"  # CLI (Windows)
+uv tool install --upgrade ness-agent               # CLI install or update with uv
+pip install ness-agent                              # SDK in a project environment
+ness --version                                      # verify the install
 \`\`\`
 
 ## What's new in 0.2.0

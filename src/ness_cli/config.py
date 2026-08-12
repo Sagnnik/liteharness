@@ -7,7 +7,7 @@ from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from ness_cli.config_store import load_configs, load_secrets
-from ness_cli.model_catalog import cached_models, model_record
+from ness_cli.provider.openrouter.catalog import cached_models, model_record
 
 
 # USD per 1M tokens: (input, output, cache_read_ratio)
@@ -213,6 +213,8 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (init_settings, env_settings, _JsonDirSource(settings_cls))
 
+    model_provider: str = Field(default="openrouter", alias="MODEL_PROVIDER")
+    provider_profiles: dict[str, Any] = Field(default_factory=dict, alias="PROVIDER_PROFILES")
     model_name: str = Field(default="deepseek/deepseek-v4-flash", alias="MODEL_NAME")
     reflection_model_name: str = Field(default="deepseek/deepseek-v4-flash", alias="REFLECTION_MODEL_NAME")
     reasoning_effort: ReasoningEffort = Field(default="xhigh", alias="REASONING_EFFORT")
@@ -313,6 +315,12 @@ def _reasoning_entry(model_name: str) -> dict[str, Any] | None:
 
 
 def model_supports_reasoning(model_name: str) -> bool:
+    if settings.model_provider == "codex":
+        from ness_cli.provider.registry import get_provider
+
+        for item in getattr(get_provider("codex"), "_models", ()):
+            if item.id == model_name:
+                return bool(item.reasoning_efforts)
     record = model_record(model_name)
     if record is not None:
         return bool(record.reasoning_efforts) or "reasoning" in record.supported_parameters
@@ -320,6 +328,12 @@ def model_supports_reasoning(model_name: str) -> bool:
 
 
 def reasoning_efforts_for_model(model_name: str) -> tuple[str, ...]:
+    if settings.model_provider == "codex":
+        from ness_cli.provider.registry import get_provider
+
+        for item in getattr(get_provider("codex"), "_models", ()):
+            if item.id == model_name:
+                return item.reasoning_efforts
     record = model_record(model_name)
     if record is not None:
         return record.reasoning_efforts
@@ -334,6 +348,12 @@ def reasoning_efforts_for_model(model_name: str) -> tuple[str, ...]:
 
 
 def default_effort(model_name: str) -> str | None:
+    if settings.model_provider == "codex":
+        from ness_cli.provider.registry import get_provider
+
+        for item in getattr(get_provider("codex"), "_models", ()):
+            if item.id == model_name and item.default_reasoning_effort:
+                return item.default_reasoning_effort
     efforts = reasoning_efforts_for_model(model_name)
     if not efforts:
         return None
@@ -355,5 +375,13 @@ def coerce_reasoning_effort(model_name: str, effort: str | None) -> str | None:
 
 def available_model_ids() -> tuple[str, ...]:
     """Return the cached dynamic catalog, or the packaged offline fallback."""
+    if settings.model_provider == "codex":
+        from ness_cli.provider.registry import get_provider
+
+        models = getattr(get_provider("codex"), "_models", ())
+        if models:
+            return tuple(item.id for item in models)
+        profile = settings.provider_profiles.get("codex", {})
+        return (str(profile.get("model_name") or settings.model_name),)
     records = cached_models()
     return tuple(record.id for record in records) if records else AVAILABLE_MODELS

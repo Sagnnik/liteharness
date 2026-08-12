@@ -10,6 +10,7 @@ and the adapter-owned rollback mutation tracking without the langgraph run.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
@@ -90,6 +91,24 @@ def test_run_turn_writes_checkpoint_and_user_event(coding):
     # The SDK emitted at least one assistant event (FakeListChatModel "ok").
     assert events, f"no SessionEvents were yielded: {events!r}"
     assert any(ev.kind in ("assistant_delta", "assistant_final", "error") for ev in events), events
+
+
+def test_set_name_delegates_to_public_session_api(coding):
+    assert coding.set_name("  Named   session ") is True
+    assert coding.thread_store.thread_exists(coding.thread_id)
+    with sqlite3.connect(coding.thread_store.threads_db) as conn:
+        name = conn.execute(
+            "SELECT name FROM threads WHERE thread_id = ?", (coding.thread_id,)
+        ).fetchone()[0]
+    assert name == "Named session"
+
+
+def test_resume_named_thread_without_events(coding):
+    coding.thread_store.set_thread_name("session-empty", "Empty session")
+
+    assert _run(coding.resume("session-empty", replay_cost=False)) is True
+    assert coding.thread_id == "session-empty"
+    assert coding.session._pending_bootstrap == []
 
 
 def test_resume_bootstraps_via_session_bootstrap(tmp_path: Path):

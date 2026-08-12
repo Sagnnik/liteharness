@@ -872,6 +872,8 @@ class TranscriptMixin:
             lines += 1
         if self._form_visible():
             lines += 2
+            if self._form_example:
+                lines += 1
         if self._menu_header_fragments():
             lines += 1
         lines += self._menu_body_height()

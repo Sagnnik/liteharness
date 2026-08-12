@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Persistent session names through the SDK `Session.set_name()` / `ThreadStore.set_thread_name()` APIs and the interactive `/rename <name>` command.
+- Local `YYYY-MM-DD HH:mm` update timestamps in the `/threads` picker.
+
+### Changed
+
+- TUI pickers now expand responsively to show up to 12 choices while retaining transcript space, with improved approval and question layouts.
+- **Breaking:** the SQLite `threads` table now requires a `name` column. Automatic database migrations are intentionally unsupported; back up or remove `.ness/threads/threads.db` before using this version. Removing it permanently discards saved threads unless they were backed up externally.
+
 ## [0.2.0] - 2026-08-07 — Released
 
 ### Added

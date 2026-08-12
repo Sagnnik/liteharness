@@ -318,3 +318,21 @@ def test_judge_structured_output_failure_is_fail_verdict() -> None:
     )
     assert verdict.passed is False
     assert "structured output failed" in verdict.unmet[0]
+
+
+def test_unset_goal_judge_uses_active_provider_reflection_model(monkeypatch) -> None:
+    coding = SimpleNamespace(thread_store=_Store(), thread_id="session-test")
+    expected = SimpleNamespace()
+    calls: list[str] = []
+
+    def create_reflection(thread_id: str):
+        calls.append(thread_id)
+        return expected
+
+    monkeypatch.setattr("ness_cli.goal.create_reflection_model", create_reflection)
+    monkeypatch.setattr("ness_cli.goal.settings.goal_judge_model", None)
+
+    result = GoalCoordinator(coding, max_attempts=1)._build_judge_model()
+
+    assert result is expected
+    assert calls[0].startswith("judge-")

@@ -14,6 +14,7 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Iterable, Protocol
 
 from ness_agent import ApprovalHandler
+from ness_cli.tui.models import MenuItem
 
 # ``AssistantStream`` lives in ness_cli.tui.stream next to ``TuiAssistantStream`` (the
 # live assistant-stream class it coordinates reasoning with). Re-exported here so
@@ -65,8 +66,17 @@ class RenderSink(Protocol):
     def finish_turn(self) -> None: ...
     def clear_transcript(self) -> None: ...
     async def ask_approval(self, name: str, args: dict) -> str: ...
+    async def ask_picker(
+        self,
+        title: str,
+        items: list[MenuItem],
+        *,
+        initial_key: str | None = None,
+        hint: str = "↑/↓ select · Enter confirm · Esc back",
+    ) -> str | None: ...
     async def ask_questions(self, questions: list[dict]) -> list[dict]: ...
     async def ask_line(self, message: str) -> str: ...
+    async def ask_secret(self, label: str, *, example: str = "") -> str: ...
     async def run_config(self) -> Any: ...
 
 
@@ -162,10 +172,23 @@ class _NullSink:
     async def ask_approval(self, name: str, args: dict) -> str:
         return "no"
 
+    async def ask_picker(
+        self,
+        title: str,
+        items: list[MenuItem],
+        *,
+        initial_key: str | None = None,
+        hint: str = "↑/↓ select · Enter confirm · Esc back",
+    ) -> str | None:
+        return None
+
     async def ask_questions(self, questions: list[dict]) -> list[dict]:
         return []
 
     async def ask_line(self, message: str) -> str:
+        return ""
+
+    async def ask_secret(self, label: str, *, example: str = "") -> str:
         return ""
 
     async def run_config(self) -> Any:
@@ -309,3 +332,7 @@ async def ask_questions(questions: list[dict]) -> list[dict]:
 
 async def ask_line(message: str) -> str:
     return await _sink().ask_line(message)
+
+
+async def ask_secret(label: str, *, example: str = "") -> str:
+    return await _sink().ask_secret(label, example=example)

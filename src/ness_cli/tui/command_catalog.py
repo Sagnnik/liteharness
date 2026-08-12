@@ -20,12 +20,14 @@ class CommandSpec:
 # Order matters for /help grouping and slash menu display.
 COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("help", "Show the command reference", "General", "/help"),
+    CommandSpec("login", "Connect or switch a model provider", "General", "/login"),
     CommandSpec("config", "Edit provider, model, and behavior settings", "General", "/config"),
-    CommandSpec("status", "Show session status and cache stats", "Session", "/status"),
+    CommandSpec("status", "Show provider, account, limits, and session usage", "Session", "/status"),
     CommandSpec("skill", "List or load skill instructions", "Context", "/skill [<name>]"),
     CommandSpec("memory", "Read, append, or draft project memory", "Context", "/memory [add <note>|create [force]]"),
     CommandSpec("user", "Read or append user preferences", "Context", "/user [add <note>]"),
     CommandSpec("threads", "Select and switch saved sessions", "Session", "/threads"),
+    CommandSpec("rename", "Set the current session name", "Session", "/rename <name>"),
     CommandSpec("fork", "Fork before a prior user message", "Session", "/fork"),
     CommandSpec("goal", "Run a bounded worker–judge objective loop", "Session", "/goal <objective>"),
     CommandSpec("save", "Archive the current thread", "Session", "/save"),
@@ -36,6 +38,7 @@ COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("permissions", "View or edit permission rules", "Tools", "/permissions"),
     CommandSpec("hooks", "List configured hooks", "Tools", "/hooks"),
     CommandSpec("mcp", "Show MCP server and tool status", "Tools", "/mcp"),
+    CommandSpec("clear", "Clear the transcript display", "Input", "/clear"),
     CommandSpec("copy", "Copy assistant output", "Input", "/copy [code|<n>]"),
     CommandSpec("exit", "End the session", "General", "/exit"),
 )

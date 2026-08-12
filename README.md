@@ -11,6 +11,11 @@
 
 Ness Agent is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
 
+<p align="center">
+  <img src="assets/ness_agent_sc.png" alt="NessAgent terminal UI showing project context, tool execution, and Act mode" width="100%">
+</p>
+<p align="center"><em>NessAgent TUI in Act mode.</em></p>
+
 > **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md).
 
 ## Table of contents
@@ -38,21 +43,37 @@ Requires **Python 3.12+**.
 
 ### CLI — global install (recommended)
 
-Install `ness` on your PATH with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
+On Linux/Mac Os:
+```bash
+curl -fsSL https://nessagent.dev/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+powershell -c "irm https://nessagent.dev/install.ps1 | iex"
+```
+
+Or install it directly with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):
 
 ```bash
-uv tool install ness-agent
+uv tool install --upgrade ness-agent
 # or: pipx install ness-agent
 ```
 
-Then set your provider API key and base URL. OpenRouter example:
+Launch `ness` and run `/login` to use either a Codex subscription or an
+OpenRouter API key. Codex sign-in uses the installed `codex` CLI's managed
+browser/device flow and stores credentials in Ness's isolated global config
+directory; it never reads or changes `~/.codex`.
+
+For environment-based OpenRouter setup:
 
 ```bash
 export OPENAI_API_KEY=your-openrouter-api-key
 export OPENAI_BASE_URL=https://openrouter.ai/api/v1
 ```
 
-Add those lines to `~/.bashrc` or `~/.zshrc` to persist across sessions. Alternatively, launch `ness` and set them via `/config` → **Provider** (stored in global `secrets.json` / `configs.json`).
+Add those lines to `~/.bashrc` or `~/.zshrc` to persist across sessions. Alternatively, `/login` accepts and masks the key (stored in global `secrets.json`).
 
 Ness does not automatically read or migrate a project `.env` file. You may
 still keep local values in `.env`, but load them into the process explicitly
@@ -62,7 +83,6 @@ Optional tracing support:
 
 ```bash
 uv tool install 'ness-agent[tracing]'
-# or: pipx install 'ness-agent[tracing]'
 ```
 
 Ensure `~/.local/bin` (uv) or pipx's bin directory is on your `PATH`.

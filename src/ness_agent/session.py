@@ -359,6 +359,10 @@ class Session:
             self.set_mode("act")
         return self.mode
 
+    def set_name(self, name: str) -> bool:
+        """Set this session's persistent display name."""
+        return self._cfg.thread_store.set_thread_name(self.thread_id, name)
+
     def active_skills(self, names: Sequence[str]) -> None:
         """Replace the pending skill list for the next turn (replace-all)."""
         self._pending_skills = list(names)

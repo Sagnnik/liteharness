@@ -53,6 +53,8 @@ def build_key_bindings(ui) -> KeyBindings:
 
     @kb.add("tab", filter=ui._question_prompt_open)
     def _toggle_question_note(event) -> None:
+        if not ui._question_note_allowed():
+            return
         ui._prompt_note_active = not ui._prompt_note_active
         if ui._prompt_note_active:
             ui._focus_form_field()
@@ -78,7 +80,12 @@ def build_key_bindings(ui) -> KeyBindings:
             else:
                 ui._cancel_menu()
         elif ui._form_kind:
-            ui._finish_config()
+            if ui._prompt_kind == "secret":
+                if ui._prompt_future is not None and not ui._prompt_future.done():
+                    ui._prompt_future.set_result("")
+                ui._close_form(reset_buffer=False)
+            else:
+                ui._finish_config()
         event.app.invalidate()
 
     @kb.add("escape", filter=ui._menu_open, eager=True)
@@ -175,7 +182,7 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
 
-        if ui._menu_kind in {"rollback", "threads", "fork"} and ui._visible_menu_items():
+        if ui._menu_kind in {"picker", "rollback", "threads", "fork"} and ui._visible_menu_items():
             ui._apply_picker_selection()
             event.app.invalidate()
             return
@@ -293,8 +300,8 @@ def build_key_bindings(ui) -> KeyBindings:
             event.app.invalidate()
             return
         _path, data_url = result
-        ui._pending_images.append(data_url)
         ui._image_counter += 1
+        ui._pending_images[ui._image_counter] = data_url
         buff = event.app.current_buffer
         buff.insert_text(f"[Image #{ui._image_counter}] ")
         event.app.invalidate()

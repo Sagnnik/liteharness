@@ -1,6 +1,6 @@
 # Ness CLI
 
-**Ness** is the interactive coding-agent CLI shipped with Ness Agent. It uses OpenRouter-compatible chat models, plan/act modes, filesystem-driven extension points under `.ness/`, and a full TUI for approvals, thread history, and configuration.
+**Ness** is the interactive coding-agent CLI shipped with Ness Agent. It supports Codex subscription and OpenRouter models, plan/act modes, filesystem-driven extension points under `.ness/`, and a full TUI for approvals, thread history, and configuration.
 
 See also: [Configuration](configuration.md) · [Architecture](architecture.md) · [SDK](sdk.md)
 
@@ -11,7 +11,7 @@ See also: [Configuration](configuration.md) · [Architecture](architecture.md) �
 ```bash
 pip install ness-agent
 ness --version               # verify the install
-export OPENAI_API_KEY=...    # or set via /config on first launch
+export OPENAI_API_KEY=...    # optional; or connect via /login
 ness
 ```
 
@@ -24,7 +24,16 @@ ness
 
 `/init` creates project `.ness/` (dirs, permissions, hooks, mcp, default agent profiles, empty `NESS.md`) and ensures global config (`USER.md`, `instructions/`, `plans/<slug>/`).
 
-Or skip the env var and set the key in-session: `/config` → Provider → Provider API key.
+Or skip the env var and run `/login`. Choose Codex subscription for managed
+browser/device authentication, or OpenRouter for a masked API-key prompt. Device-code
+login must first be enabled in ChatGPT **Settings > Security** by turning on
+**Device code authorization for Codex**; browser login does not require that setting.
+Selecting a connected provider makes it active and exposes only **Reconnect** and
+**Log out**. A disconnected provider starts its login flow immediately—there is
+no separate Connect step.
+On WSL, Ness prints the authentication URL without launching a browser; copy it
+into the browser of your choice. While any Codex login is pending, use the visible
+**Cancel pending login** action (or press Esc/Ctrl+C) to return to the session.
 
 ---
 
@@ -236,13 +245,15 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **General**
 
 - `/help`: show the command reference.
+- `/login`: authenticate or manage model providers in a dedicated picker. Selecting a connected provider activates it and offers Reconnect/Log out; selecting a disconnected provider starts authentication immediately. Provider changes rebuild the model while preserving the thread.
 - `/config`: edit provider keys/endpoints, model/reasoning, behavior toggles, compaction budgets, and advanced options (persisted to global `configs.json` / `secrets.json`).
 - `/exit` or `/quit`: end the session.
 
 **Session**
 
-- `/status`: show session, model, token, cost, and cache stats.
-- `/threads`: open a scrollable saved-thread picker and switch the transcript in place.
+- `/status`: show provider authentication, account email/tier, every available usage-limit window (including weekly), reset times/credits, and session token/cache/cost stats. Subscription calls are labeled `subscription` rather than estimated as API spend.
+- `/threads`: open a scrollable saved-thread picker, ordered by recent updates and prefixed with local `YYYY-MM-DD HH:mm` timestamps, and switch the transcript in place.
+- `/rename <name>`: set or update the current session's persistent display name (1–80 characters; requires thread autosave).
 - `/fork`: choose a human message, copy the conversation state before it into a child thread, and prefill that message for editing. Forking copies session memory/checkpoints but leaves current working-tree files unchanged.
 - `/goal <objective>`: run up to three worker attempts, each followed by an isolated read-only judge. Failed verdicts become repair instructions for the next attempt.
 - `/save`: archive the current thread with a headline summary.
@@ -265,6 +276,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 
 **Input**
 
+- `/clear`: clear the visible transcript without resetting the conversation.
 - `/copy`, `/copy code`, `/copy <n>`: copy assistant output.
 - `Ctrl+G`: paste an image from the clipboard into the prompt as `[Image #N]`. The image is resized (max 2000px long edge, max 5 MB) and sent to vision-capable models.
 - `@path/to/file`: attach a file's contents to the next prompt — its current contents are inlined as a `<document>` block above your text. Type `@` to see suggestions from the repo's tracked paths; ↑/↓ to pick, Enter or Tab to complete, Esc to dismiss. Mention tokens persist on resume/rollback and re-expand from disk.
@@ -277,7 +289,7 @@ Markdown files under `.ness/commands/*.md` become project-local slash commands. 
 
 When autosave is on, Ness Agent stores events in `.ness/threads/threads.db`:
 
-- **`threads`**: user `session-*` metadata (cost, turns, summaries, archive state)
+- **`threads`**: user `session-*` metadata (explicit names, cost, turns, summaries, archive state)
 - **`events`**: append-only JSON payloads for user sessions only
 - **`subagents`**: subagent run metadata (status, output, duration) linked to a parent `session-*` thread
 
@@ -294,10 +306,12 @@ Event kinds stored in `events.payload` (session threads only):
 {"kind": "compact", "content": "manual compaction requested", "t": "..."}
 ```
 
-`/threads` lists user `session-*` threads only. The original conversation shows `×N` when it has forks; each fork shows `fork #k` in creation order. Fork lineage is stored explicitly on the thread row; inherited usage remains in the copied event history but is excluded from the child thread's cost totals. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
+`/threads` lists user `session-*` threads only. Each row starts with its locally converted update datetime and uses an explicit `/rename` name when present, then falls back to the archived summary or first user message. The original conversation shows `×N` when it has forks; each fork shows `fork #k` in creation order. Fork lineage is stored explicitly on the thread row; inherited usage remains in the copied event history but is excluded from the child thread's cost totals. Subagent trajectories are not stored in `events`; subagent LLM usage rolls up into the parent session's `threads` aggregates. Subagent outputs are stored in the `subagents` table.
 
 Selecting a thread rebuilds user messages, assistant tool-call turns, and tool results from saved events. The startup `--resume <thread_id>` flag remains available for automation. `spawn_subagent` tool output is supplemented from linked subagent outputs when available.
 
 When a thread contains a successful new-format `compaction_llm` checkpoint, resume starts from its summary and replays only raw events after `source_event_seq`. Raw conversation events remain available for audit, rollback, and forks; L3 reminder messages are never written to the event log.
 
 Threads are archived on `/save`, `/new`, thread switching/forking, and session exit. Archived threads get a headline summary from the first user message.
+
+> **Breaking database change:** the current release does not migrate older thread databases. If `.ness/threads/threads.db` predates persistent session names, Ness stops with an incompatibility error. Back up or remove that file so Ness can create the current schema; removing it discards saved threads.

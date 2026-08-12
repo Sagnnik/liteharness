@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS threads (
     archived_at TEXT,
     turn_count INTEGER NOT NULL DEFAULT 0,
     model TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT '',
     total_cost_usd REAL NOT NULL DEFAULT 0.0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +83,23 @@ class ThreadStore:
         self.auto_save = auto_save
         self.default_model = default_model or ""
         self._write_lock = threading.Lock()
+        self._validate_existing_schema()
+
+    def _validate_existing_schema(self) -> None:
+        """Reject pre-name databases without changing or deleting them."""
+        if not self.threads_db.exists():
+            return
+        with sqlite3.connect(self.threads_db) as conn:
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(threads)").fetchall()
+            }
+        if columns and "name" not in columns:
+            raise RuntimeError(
+                "Incompatible thread database schema. Back up or remove "
+                f"{self.threads_db} so Ness can create the new schema; "
+                "automatic SQLite migrations are not supported."
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -213,7 +231,7 @@ class ThreadStore:
                 """
                 SELECT
                     t.thread_id, t.started_at, t.updated_at, t.archived_at,
-                    t.turn_count, t.model, t.summary,
+                    t.turn_count, t.model, t.name, t.summary,
                     t.total_cost_usd, t.input_tokens, t.cached_input_tokens,
                     t.output_tokens, t.fork_root_id, t.fork_parent_id,
                     t.forked_from_seq,
@@ -253,6 +271,7 @@ class ThreadStore:
                 "updated_at": row["updated_at"],
                 "turn_count": int(row["turn_count"]),
                 "model": row["model"],
+                "name": row["name"],
                 "summary": row["summary"],
                 "total_cost_usd": float(row["total_cost_usd"]),
                 "input_tokens": int(row["input_tokens"]),
@@ -267,6 +286,58 @@ class ThreadStore:
             }
             for row in rows
         ]
+
+    def thread_exists(self, thread_id: str) -> bool:
+        """Return whether a persisted metadata row exists for *thread_id*."""
+        if not self.threads_db.exists():
+            return False
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            row = conn.execute(
+                "SELECT 1 FROM threads WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        return row is not None
+
+    def set_thread_name(self, thread_id: str, name: str) -> bool:
+        """Set the explicit display name for a thread.
+
+        The metadata row is created when necessary so callers can name a new
+        session before its first user turn. Returns ``False`` only when thread
+        autosave is disabled.
+        """
+        if not self.auto_save:
+            return False
+        cleaned = " ".join(str(name).split()).strip()
+        if not cleaned:
+            raise ValueError("Session name cannot be empty.")
+        if len(cleaned) > 80:
+            raise ValueError("Session name must be 80 characters or fewer.")
+
+        with self._write_lock:
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+                now = self._now()
+                conn.execute(
+                    """
+                    INSERT INTO threads (
+                        thread_id, started_at, updated_at, model, name, fork_root_id
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(thread_id) DO UPDATE SET
+                        name = excluded.name,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        thread_id,
+                        now,
+                        now,
+                        self.default_model,
+                        cleaned,
+                        thread_id,
+                    ),
+                )
+                conn.commit()
+        return True
 
     def load_thread_events(self, thread_id: str) -> list[dict[str, Any]]:
         """Return every stored event for *thread_id* in sequence order, or an empty list.
@@ -410,7 +481,7 @@ class ThreadStore:
             with self._connect() as conn:
                 self._ensure_schema(conn)
                 row = conn.execute(
-                    "SELECT updated_at, archived_at FROM threads WHERE thread_id = ?",
+                    "SELECT updated_at, archived_at, name FROM threads WHERE thread_id = ?",
                     (thread_id,),
                 ).fetchone()
 
@@ -424,7 +495,7 @@ class ThreadStore:
                     "SELECT payload FROM events WHERE thread_id = ? ORDER BY seq",
                     (thread_id,),
                 ).fetchall()
-                if not event_rows:
+                if not event_rows and not str(row["name"] or "").strip():
                     return f"No events to archive: {thread_id}"
 
                 events = [json.loads(item[0]) for item in event_rows]
@@ -436,9 +507,9 @@ class ThreadStore:
                     text = content if isinstance(content, str) else str(content)
                     headline = " ".join(text.split())[:200]
                     break
-                raw = headline or f"Session {thread_id}"
+                raw = headline or ""
                 cleaned = " ".join(raw.split()).strip().strip('"').strip(".")
-                summary = cleaned[:80].strip() or "Session"
+                summary = cleaned[:80].strip()
                 archived_at = self._now()
                 conn.execute(
                     "UPDATE threads SET summary = ?, archived_at = ?, updated_at = ? WHERE thread_id = ?",

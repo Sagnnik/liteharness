@@ -8,9 +8,12 @@ facade; the dispatcher also resolves project-local disk commands
 
 from __future__ import annotations
 
+import asyncio
 import re
+from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable, Literal
 
 import yaml
 from langchain_core.messages import HumanMessage
@@ -19,18 +22,24 @@ from ness_agent.tools.discover import TOOL_COUNT_WARN_THRESHOLD
 from ness_agent.workspace import setup_ness_structure
 from ness_agent.workspace.project_context import get_project_context
 from ness_cli.chat_model import (
+    activate_provider,
     active_model_name,
+    active_provider_id,
     active_reasoning_effort,
     openrouter_session,
 )
+from ness_cli.provider.profile import provider_profile
+from ness_cli.provider.registry import get_provider, provider_ids
 from ness_cli.config import settings
 from ness_cli.prompts import build_init_memory_prompt
 
 from ness_cli.tui import render
 from ness_cli.tui.config_flow import run_config
 from ness_cli.tui.command_catalog import COMMAND_CATALOG
+from ness_cli.tui.models import MenuItem
 
 if TYPE_CHECKING:
+    from ness_cli.provider.base import LoginResult, ProviderAdapter
     from ness_cli.tui.app import TuiApp
 
 CommandHandler = Callable[["TuiApp", str], Awaitable[None]]
@@ -88,24 +97,430 @@ async def cmd_config(app: "TuiApp", args: str) -> None:
         app.render_header()
 
 
+LoginFlowResult = Literal["complete", "back", "stop"]
+
+
+def _provider_picker_items() -> list[MenuItem]:
+    active_id = active_provider_id()
+    items: list[MenuItem] = []
+    for provider_id in provider_ids():
+        provider = get_provider(provider_id)
+        connected = provider.is_authenticated()
+        if provider_id == active_id:
+            suffix = "active · connected" if connected else "active · not connected"
+        else:
+            suffix = "connected" if connected else "not connected"
+        items.append(
+            MenuItem(
+                provider_id,
+                provider.display_name,
+                description=provider.login_description,
+                suffix=suffix,
+            )
+        )
+    return items
+
+
+async def _activate_login_provider(
+    app: "TuiApp", provider_id: str, *, force_rebuild: bool = False
+) -> str:
+    provider = get_provider(provider_id)
+    models = await provider.models(refresh=False)
+    profile = provider_profile(provider_id)
+    preferred_id = str(profile.get("model_name") or "")
+    selected = next((model for model in models if model.id == preferred_id), None)
+    selected = selected or next(
+        (model for model in models if model.is_default),
+        models[0] if models else None,
+    )
+    if selected is None:
+        # API-key providers may have a valid persisted profile while their
+        # optional catalog cache is still cold/offline. Preserve that known
+        # model rather than making authentication depend on catalog refresh.
+        if not preferred_id:
+            raise RuntimeError(f"{provider.display_name} did not return any models.")
+        selected_id = preferred_id
+        reasoning_effort = str(profile.get("reasoning_effort") or "") or None
+    else:
+        selected_id = selected.id
+        preferred_effort = str(profile.get("reasoning_effort") or "")
+        allowed_efforts = selected.reasoning_efforts
+        if allowed_efforts and preferred_effort not in allowed_efforts:
+            preferred_effort = (
+                selected.default_reasoning_effort
+                or ("medium" if "medium" in allowed_efforts else allowed_efforts[0])
+            )
+        reasoning_effort = preferred_effort or selected.default_reasoning_effort
+
+    changed = active_provider_id() != provider_id
+    activate_provider(
+        provider_id,
+        model_name=selected_id,
+        reasoning_effort=reasoning_effort,
+    )
+    if changed or force_rebuild:
+        app.rebuild_graph()
+        await app.refresh_context_snapshot()
+        app.render_header()
+    return selected_id
+
+
+async def _wait_for_provider_login(
+    app: "TuiApp", provider: "ProviderAdapter", login_id: str
+) -> "LoginResult | None":
+    """Wait for provider completion while keeping an immediate TUI cancel path open."""
+    login_task = asyncio.create_task(provider.wait_for_login(login_id))
+    cancel_task = asyncio.create_task(
+        app.ask_picker(
+            f"/login > {provider.display_name} — waiting for sign-in",
+            [
+                MenuItem(
+                    "cancel",
+                    "Cancel pending login",
+                    description="Return to the current session",
+                )
+            ],
+            initial_key="cancel",
+            hint="Enter cancel · Esc cancel",
+        )
+    )
+    try:
+        done, _ = await asyncio.wait(
+            {login_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if login_task in done:
+            # The picker owns a prompt Future, so resolve it before joining the
+            # task. Cancelling _ask_question directly would strand the picker.
+            if app._cancel_open_prompt():
+                await cancel_task
+            else:
+                cancel_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await cancel_task
+            return login_task.result()
+
+        login_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await login_task
+        with suppress(Exception):
+            await asyncio.wait_for(provider.cancel_login(login_id), timeout=5)
+        return None
+    finally:
+        for task in (login_task, cancel_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(login_task, cancel_task, return_exceptions=True)
+
+
+async def _authenticate_provider(
+    app: "TuiApp", provider: "ProviderAdapter"
+) -> LoginFlowResult:
+    methods = provider.login_methods()
+    if not methods:
+        render.render_error(f"{provider.display_name} does not support interactive login.")
+        return "stop"
+
+    selected_method = methods[0]
+    if len(methods) > 1:
+        method_id = await app.ask_picker(
+            f"/login > {provider.display_name} — sign in",
+            [
+                MenuItem(
+                    method.id,
+                    method.label,
+                    description=method.description,
+                )
+                for method in methods
+            ],
+            initial_key=next(
+                (method.id for method in methods if method.default),
+                methods[0].id,
+            ),
+        )
+        if method_id is None:
+            return "back"
+        selected_method = next(method for method in methods if method.id == method_id)
+
+    secret: str | None = None
+    if selected_method.input_kind == "secret":
+        secret = (
+            await app.ask_secret(
+                selected_method.input_label or selected_method.label,
+                example=selected_method.input_example,
+            )
+        ).strip()
+        if not secret:
+            return "back"
+
+    if selected_method.guidance:
+        render.render_warning(selected_method.guidance)
+    started = await provider.login(method=selected_method.id, secret=secret)
+    if started.status == "cancelled":
+        render.render_warning(started.message)
+        return "stop"
+    if started.status == "error":
+        render.render_error(started.message)
+        return "stop"
+    if started.status == "complete":
+        render.render_notice(started.message, title="login")
+        return "complete"
+
+    url = started.auth_url or started.verification_url
+    details = [started.message]
+    if url:
+        details.append(url)
+    if started.user_code:
+        details.append(f"Code: {started.user_code}")
+    render.render_notice("\n".join(details), title=f"{provider.display_name} login")
+    if url:
+        opened = await provider.open_login_url(url)
+        if not opened:
+            render.render_warning(
+                "Automatic browser launch is unavailable. Copy the login URL above "
+                "and open it manually. You can cancel the pending login below."
+            )
+    if not started.login_id:
+        render.render_error(started.message)
+        return "stop"
+    try:
+        completed = await _wait_for_provider_login(app, provider, started.login_id)
+    except (asyncio.CancelledError, TimeoutError):
+        with suppress(Exception):
+            await provider.cancel_login(started.login_id)
+        if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+            raise
+        render.render_error(
+            f"{provider.display_name} sign-in timed out; the pending login was cancelled."
+        )
+        return "stop"
+    if completed is None:
+        render.render_warning(f"{provider.display_name} sign-in was cancelled.")
+        return "stop"
+    if completed.status != "complete":
+        render.render_error(completed.message)
+        return "stop"
+    return "complete"
+
+
+async def _logout_with_fallback(
+    app: "TuiApp", provider_id: str, previous_active_id: str
+) -> None:
+    provider = get_provider(provider_id)
+    message = await provider.logout()
+    render.render_notice(message, title="login")
+
+    candidates: list[str] = []
+    if previous_active_id != provider_id:
+        candidates.append(previous_active_id)
+    candidates.extend(
+        candidate
+        for candidate in provider_ids()
+        if candidate != provider_id and candidate not in candidates
+    )
+    for candidate in candidates:
+        fallback = get_provider(candidate)
+        if not fallback.is_authenticated():
+            continue
+        try:
+            model_name = await _activate_login_provider(
+                app, candidate, force_rebuild=True
+            )
+        except Exception as exc:
+            render.render_warning(
+                f"Could not switch to {fallback.display_name}: {exc}"
+            )
+            continue
+        render.render_notice(
+            f"Switched to {fallback.display_name} with {model_name}.",
+            title="login",
+        )
+        return
+
+    # Rebuild so a model object cannot retain credentials after logout. The
+    # thread remains intact and future calls surface the normal login-required error.
+    app.rebuild_graph()
+    await app.refresh_context_snapshot()
+    app.render_header()
+    render.render_warning(
+        "No connected model provider remains. The current thread was preserved; "
+        "run /login before sending another message."
+    )
+
+
+async def _manage_connected_provider(
+    app: "TuiApp", provider_id: str, previous_active_id: str
+) -> LoginFlowResult:
+    provider = get_provider(provider_id)
+    while True:
+        action = await app.ask_picker(
+            f"/login > {provider.display_name} — connected",
+            [
+                MenuItem(
+                    "reconnect",
+                    "Reconnect",
+                    description="Replace the current credentials",
+                ),
+                MenuItem(
+                    "logout",
+                    "Log out",
+                    description="Remove the saved credentials",
+                ),
+            ],
+            initial_key="reconnect",
+        )
+        if action is None:
+            return "back"
+        if action == "logout":
+            await _logout_with_fallback(app, provider_id, previous_active_id)
+            return "complete"
+        result = await _authenticate_provider(app, provider)
+        if result == "back":
+            continue
+        if result == "complete":
+            model_name = await _activate_login_provider(
+                app, provider_id, force_rebuild=True
+            )
+            render.render_notice(
+                f"{provider.display_name} reconnected with {model_name}. "
+                "The current thread was preserved.",
+                title="login",
+            )
+        return result
+
+
+async def cmd_login(app: "TuiApp", args: str) -> None:
+    del args
+    while True:
+        provider_id = await app.ask_picker(
+            "/login — model providers",
+            _provider_picker_items(),
+            initial_key=active_provider_id(),
+            hint="↑/↓ select · Enter open · Esc close",
+        )
+        if provider_id is None:
+            return
+        provider = get_provider(provider_id)
+        previous_active_id = active_provider_id()
+
+        if provider.is_authenticated():
+            if provider_id != previous_active_id:
+                try:
+                    await _activate_login_provider(app, provider_id)
+                except Exception as exc:
+                    render.render_error(
+                        f"Could not activate {provider.display_name}: {exc}"
+                    )
+                    continue
+            result = await _manage_connected_provider(
+                app, provider_id, previous_active_id
+            )
+            if result == "back":
+                continue
+            return
+
+        result = await _authenticate_provider(app, provider)
+        if result == "back":
+            continue
+        if result == "complete":
+            try:
+                model_name = await _activate_login_provider(
+                    app, provider_id, force_rebuild=True
+                )
+            except Exception as exc:
+                render.render_error(
+                    f"Signed in to {provider.display_name}, but could not activate it: {exc}"
+                )
+                return
+            render.render_notice(
+                f"{provider.display_name} is active with {model_name}. "
+                "The current thread was preserved.",
+                title="login",
+            )
+        return
+
+
+def _window_label(minutes: int | None) -> str:
+    if minutes == 300:
+        return "5-hour"
+    if minutes == 10_080:
+        return "weekly"
+    if minutes is None:
+        return "unknown window"
+    if minutes % 1_440 == 0:
+        return f"{minutes // 1_440}-day"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}-hour"
+    return f"{minutes}-minute"
+
+
+def _reset_label(timestamp: int | None) -> str:
+    if timestamp is None:
+        return "reset unknown"
+    reset = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone()
+    seconds = max(0, int((reset - datetime.now().astimezone()).total_seconds()))
+    if seconds < 60:
+        relative = "in under a minute"
+    elif seconds < 3_600:
+        relative = f"in {seconds // 60}m"
+    elif seconds < 86_400:
+        relative = f"in {seconds // 3_600}h {seconds % 3_600 // 60}m"
+    else:
+        relative = f"in {seconds // 86_400}d {seconds % 86_400 // 3_600}h"
+    return f"{reset.strftime('%Y-%m-%d %H:%M %Z')} ({relative})"
+
+
 async def cmd_status(app: "TuiApp", args: str) -> None:
-    session_id = openrouter_session(app.thread_id)
+    provider = get_provider(active_provider_id())
+    try:
+        provider_status = await provider.status(refresh=False)
+    except Exception as exc:
+        provider_status = None
+        render.render_warning(f"Provider status unavailable: {exc}")
     tracker = app.coding.cost_tracker
     input_tokens = int(tracker.input_tokens or 0)
     cached = int(tracker.cached_input_tokens or 0)
     cache_hit = cached / input_tokens if input_tokens else None
     lines = [
+        f"provider       {provider.display_name}",
         f"session id     {app.thread_id}",
         f"model          {active_model_name()}",
         f"reasoning      {active_reasoning_effort()}",
         f"input tokens   {input_tokens:,}",
         f"output tokens  {int(tracker.output_tokens or 0):,}",
-        f"cost           ${tracker.cost_usd:.4f}" if tracker.cost_usd > 0 else "cost           unknown",
+        (
+            "cost           subscription"
+            if provider.billing_label == "subscription"
+            else (f"cost           ${tracker.cost_usd:.4f}" if tracker.cost_usd > 0 else "cost           unknown")
+        ),
         f"turns          {int(app.turn_count or 0)}",
         f"cache read     {cached:,}",
         f"cache hit      {cache_hit:.0%}" if cache_hit is not None else "cache hit      n/a",
-        f"openrouter id  {session_id or 'not set'}",
     ]
+    if active_provider_id() == "openrouter":
+        lines.append(f"openrouter id  {openrouter_session(app.thread_id) or 'not set'}")
+    if provider_status is not None:
+        lines.extend(
+            [
+                f"auth           {'connected' if provider_status.auth.authenticated else 'signed out'} ({provider_status.auth.method})",
+                f"email          {provider_status.account.email or 'unavailable'}",
+                f"subscription   {provider_status.account.tier or 'unavailable'}",
+            ]
+        )
+        has_weekly = False
+        for bucket in provider_status.limits:
+            window = _window_label(bucket.window_minutes)
+            has_weekly = has_weekly or bucket.window_minutes == 10_080
+            state = "LIMIT REACHED" if bucket.reached else "available"
+            lines.append(
+                f"limit          {bucket.name} · {window} · {bucket.used_percent or 0:.0f}% used / {bucket.remaining_percent or 0:.0f}% remaining · {state}"
+            )
+            lines.append(f"reset          {_reset_label(bucket.resets_at)}")
+        if active_provider_id() == "codex" and not has_weekly:
+            lines.append("weekly limit   unavailable")
+        if provider_status.credits is not None:
+            lines.append(f"reset credits  {provider_status.credits}")
+        if provider_status.warning:
+            lines.append(f"provider note  {provider_status.warning}")
     render.render_panel_text("\n".join(lines), title="session status", style="usage.value")
 
 
@@ -283,7 +698,12 @@ def _thread_rows(threads: list[dict], store) -> list[list[str]]:
         input_tokens = int(item.get("input_tokens", 0) or 0)
         cached = int(item.get("cached_input_tokens", 0) or 0)
         cache_hit = cached / input_tokens if input_tokens else 0.0
-        label = item.get("summary") or store.first_user_message(item.get("thread_id", "")) or "(no messages)"
+        label = (
+            item.get("name")
+            or item.get("summary")
+            or store.first_user_message(item.get("thread_id", ""))
+            or "(no messages)"
+        )
         if "archived_at" not in item:
             label = f"{label} (active)"
         rows.append(
@@ -310,7 +730,8 @@ async def cmd_threads(app: "TuiApp", args: str) -> None:
         return
     for item in threads:
         item["label"] = (
-            item.get("summary")
+            item.get("name")
+            or item.get("summary")
             or store.first_user_message(item.get("thread_id", ""))
             or "(no messages)"
         )
@@ -320,6 +741,23 @@ async def cmd_threads(app: "TuiApp", args: str) -> None:
     )
     if target and target != app.thread_id:
         await app.resume_thread(target)
+
+
+async def cmd_rename(app: "TuiApp", args: str) -> None:
+    name = args.strip()
+    if not name:
+        render.render_error("Usage: /rename <name>")
+        return
+    try:
+        saved = app.coding.set_name(name)
+    except ValueError as exc:
+        render.render_error(str(exc))
+        return
+    if not saved:
+        render.render_warning("Thread autosave is disabled; session name was not saved.")
+        return
+    normalized = " ".join(name.split())
+    render.render_notice(f"Session renamed to {normalized}", title="rename")
 
 
 async def cmd_save(app: "TuiApp", args: str) -> None:
@@ -334,6 +772,11 @@ async def cmd_new(app: "TuiApp", args: str) -> None:
 async def cmd_compact(app: "TuiApp", args: str) -> None:
     app.request_compact()
     render.render_notice("Compaction will run on the next model turn.")
+
+
+async def cmd_clear(app: "TuiApp", args: str) -> None:
+    """Clear only the rendered transcript; preserve the live conversation."""
+    app.clear_transcript()
 
 
 async def cmd_copy(app: "TuiApp", args: str) -> None:
@@ -428,6 +871,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "exit": cmd_exit,
     "quit": cmd_exit,
     "help": cmd_help,
+    "login": cmd_login,
     "config": cmd_config,
     "status": cmd_status,
     "skill": cmd_skill,
@@ -438,11 +882,13 @@ HANDLERS: dict[str, CommandHandler] = {
     "hooks": cmd_hooks,
     "mcp": cmd_mcp,
     "threads": cmd_threads,
+    "rename": cmd_rename,
     "fork": cmd_fork,
     "goal": cmd_goal,
     "save": cmd_save,
     "new": cmd_new,
     "compact": cmd_compact,
+    "clear": cmd_clear,
     "copy": cmd_copy,
     "rollback": cmd_rollback,
 }
@@ -462,6 +908,7 @@ BUSY_SAFE_COMMANDS: frozenset[str] = frozenset(
         "memory",
         "user",
         "skill",
+        "rename",
     }
 )
 
