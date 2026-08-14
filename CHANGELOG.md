@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/export <path.html>` to write the current durable session as a self-contained, interactive HTML transcript with pre-compaction events, normalized JSONL download, image-byte omission, and overwrite protection.
+
 ## [0.2.1] - 2026-08-12 — Released
 
 ### Added

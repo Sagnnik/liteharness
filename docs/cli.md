@@ -259,6 +259,7 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 - `/save`: archive the current thread with a headline summary.
 - `/new`: archive and start a fresh thread.
 - `/compact`: request a cache-safe summary at the next model boundary; the active user/tool turn remains verbatim.
+- `/export <path.html>`: write the current durable session as a self-contained, interactive HTML transcript. The export retains events from before compactions, includes an in-page normalized JSONL download, omits pasted image bytes, and refuses to overwrite an existing file. Quote paths that contain spaces.
 
 **Context & memory**
 

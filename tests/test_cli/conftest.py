@@ -36,6 +36,7 @@ def _isolate_model_provider():
 
 class _FakeThreadStore:
     def __init__(self) -> None:
+        self.auto_save = True
         self.events: dict[str, list[dict]] = {}
         self.archived: list[str] = []
         self.names: dict[str, str] = {}
@@ -44,6 +45,20 @@ class _FakeThreadStore:
         return list(self.events.get(thread_id, []))
 
     def list_threads(self, n: int = 10) -> list[dict]:
+        rows = []
+        for thread_id, events in self.events.items():
+            rows.append(
+                {
+                    "thread_id": thread_id,
+                    "started_at": "2026-01-01T00:00:00+00:00",
+                    "model": "test-model",
+                    "name": self.names.get(thread_id, ""),
+                    "summary": "",
+                }
+            )
+        return rows[:n]
+
+    def list_subagents(self, thread_id: str) -> list[dict]:
         return []
 
     def first_user_message(self, thread_id: str) -> str | None:
