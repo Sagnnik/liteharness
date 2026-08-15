@@ -15,7 +15,7 @@ const OVERVIEW = `# Ness Agent documentation
 
 Ness Agent is an experimental, hackable coding-agent harness for engineers who want to **own the loop**. One package contains the Python SDK for embedding the loop and **Ness**, the terminal operator surface for coding sessions.
 
-> **0.x experimental** — public APIs may change until 1.0. Pin versions in production and follow the changelog when upgrading. Current release: **0.2.1**.
+> **0.x experimental** — public APIs may change until 1.0. Pin versions in production and follow the changelog when upgrading. Current release: **0.2.2**.
 
 ## Two surfaces, one harness
 
@@ -34,15 +34,15 @@ pip install ness-agent                              # SDK in a project environme
 ness --version                                      # verify the install
 \`\`\`
 
-## What's new in 0.2.1
+## What's new in 0.2.2
 
-- **Codex subscription** — \`/login\` authenticates via the installed \`codex\` CLI; credentials stay in Ness global config, not \`~/.codex\`.
-- **Provider layer** — pluggable Codex and OpenRouter adapters; switch providers mid-session from the \`/login\` picker.
-- **Install scripts** — \`curl -fsSL https://nessagent.dev/install.sh | sh\` and a matching PowerShell installer for Windows.
-- **Session naming** — \`/rename <name>\`, SDK \`Session.set_name()\`, and local timestamps in \`/threads\`.
-- **Breaking** — \`.ness/threads/threads.db\` requires a \`name\` column; back up or remove the file before upgrading.
+- **Concurrent threads** — switch between active turns in \`/threads\` without interrupting them; \`/new\` can start a fresh turn in the background.
+- **Session export** — \`/export <path.html>\` writes a self-contained HTML transcript with pre-compaction events and normalized JSONL download.
+- **On-demand reflection** — \`/reflection\` and SDK \`Session.run_reflection()\` update session memory outside automatic thresholds.
+- **Absolute reads** — the SDK \`read\` tool accepts absolute paths outside the project root; write/edit/delete paths stay project-bound.
+- **Codex resilience** — transient SSE failures retry with bounded backoff, jitter, and \`Retry-After\` support.
 
-Full notes: [release dispatch](/news/codex-provider-and-login) · [changelog](../CHANGELOG.md).
+Full notes: [release dispatch](/news/concurrent-threads-and-export) · [changelog](../CHANGELOG.md).
 
 The guides below keep the repository documentation close to the product source.`
 

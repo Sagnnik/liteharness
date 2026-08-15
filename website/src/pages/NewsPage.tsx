@@ -22,6 +22,39 @@ type Release = {
 
 const RELEASES: readonly Release[] = [
   {
+    slug: 'concurrent-threads-and-export',
+    title: 'Concurrent threads, /export, and on-demand reflection',
+    date: '2026-08-15',
+    version: 'v0.2.2',
+    summary:
+      'Run multiple CLI turns in parallel, export durable sessions to HTML, reflect on demand, and read absolute paths outside the project root.',
+    sectionLabel: '00.2.2 // ADDED',
+    intro:
+      '0.2.2 makes the Ness CLI multi-threaded at the turn level, adds session export and manual reflection, widens SDK read access for absolute paths, and hardens Codex streaming against transient overload.',
+    highlights: [
+      [
+        'Concurrent thread runtimes',
+        '/threads switches between active turns without interrupting them; /new can start a fresh turn in the background while live threads show working, waiting, and cancelling states.',
+      ],
+      [
+        'Session export',
+        '/export <path.html> writes a self-contained HTML transcript with pre-compaction events, normalized JSONL download, image-byte omission, and overwrite protection.',
+      ],
+      [
+        'On-demand reflection',
+        '/reflection and Session.run_reflection() update session memory immediately; ReflectionResult is now part of the public SDK surface.',
+      ],
+      [
+        'Absolute read paths',
+        'The SDK read tool accepts absolute file paths outside the configured project root; relative paths still resolve from the project root.',
+      ],
+      [
+        'Codex SSE retries',
+        'Transient Codex stream failures such as server_is_overloaded retry with bounded exponential backoff, jitter, and Retry-After support.',
+      ],
+    ],
+  },
+  {
     slug: 'codex-provider-and-login',
     title: 'Codex subscription, /login, and install scripts',
     date: '2026-08-12',
