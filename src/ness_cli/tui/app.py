@@ -940,7 +940,16 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
     async def fork_thread(self, user_seq: int) -> None:
         """Fork before a user event, switch sessions, and prefill its prompt."""
-        target, prompt, events = await self.coding.fork_before(user_seq)
+        source = self._current_thread_id
+        runtime = self._runtime()
+        target, prompt, events = await runtime.coding.fork_before(user_seq)
+        # ``fork_before`` resumes the existing CodingSession in-place.  Move
+        # its runtime entry to the fork ID as well, so live-turn state is
+        # associated with the session that will now receive future events.
+        self._thread_runtimes.pop(source)
+        self._thread_runtimes[target] = runtime
+        self._current_thread_id = target
+        self.coding = runtime.coding
         await self._reload_session_view(events)
         self._set_buffer_text(prompt)
         render.render_notice(f"Forked into {target}. Edit and submit the prompt.", title="fork")

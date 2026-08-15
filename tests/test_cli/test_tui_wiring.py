@@ -318,5 +318,53 @@ def test_new_thread_can_start_while_current_turn_keeps_running(make_app):
         render.set_sink(None)
 
 
+def test_fork_rekeys_live_runtime_to_fork_target(tmp_path: Path):
+    agent = _make_agent(tmp_path, _BindableFakeModel(["seed reply"]))
+    coding = CodingSession(agent, thread_id="t-source")
+    app = _make_tui(coding)
+    source_id = coding.thread_id
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_turn(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        await release.wait()
+        yield SessionEvent("assistant_final", {"content": "fork reply"})
+
+    async def exercise() -> None:
+        await app._run_turn("source question", [])
+        user_seq = app.coding.thread_store.list_user_turns(source_id)[0]["seq"]
+        fork_runtime = app._runtime()
+
+        await app.fork_thread(user_seq)
+        target_id = app.thread_id
+        assert target_id != source_id
+        assert app._runtime() is fork_runtime
+        assert set(app._thread_runtimes) == {target_id}
+
+        coding.run_turn = blocking_turn
+        task = asyncio.create_task(app._submit_async("fork question", fork_runtime))
+        fork_runtime.task = task
+        app._submit_task = task
+        await started.wait()
+
+        assert set(app.active_thread_statuses()) == {target_id}
+
+        await app.resume_thread(source_id)
+        assert app.thread_id == source_id
+        assert app._runtime(target_id) is fork_runtime
+        assert set(app.active_thread_statuses()) == {target_id}
+
+        release.set()
+        await task
+
+    render.set_sink(app)
+    try:
+        asyncio.run(exercise())
+    finally:
+        render.set_sink(None)
+
+
 async def _collect(agen) -> list:
     return [ev async for ev in agen]
