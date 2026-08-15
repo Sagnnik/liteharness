@@ -17,7 +17,13 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from ness_agent import NessAgent, NessAgentOptions, PromptLayers, PromptLayersConfig
+from ness_agent import (
+    NessAgent,
+    NessAgentOptions,
+    PromptLayers,
+    PromptLayersConfig,
+    SessionEvent,
+)
 from ness_cli import CodingSession
 
 from ness_cli.tui import render
@@ -180,6 +186,184 @@ def test_resume_replays_saved_thread(tmp_path: Path):
     assert "old reply" in text
     assert "Resumed thread" not in text
     assert app.assistant_history[-1] == "old reply"
+
+
+def test_threads_command_replays_selected_thread_without_idle_spinner(make_app):
+    app = make_app()
+    source_id = app.thread_id
+    target_id = "session-target"
+    app.coding.thread_store.events[source_id] = [
+        {"kind": "user", "content": "source question"},
+        {"kind": "assistant", "content": "source answer"},
+    ]
+    app.coding.thread_store.events[target_id] = [
+        {"kind": "user", "content": "target question"},
+        {"kind": "assistant", "content": "target answer"},
+    ]
+
+    async def select_target(threads, *, current_thread_id):
+        assert current_thread_id == source_id
+        current = next(item for item in threads if item["thread_id"] == source_id)
+        assert current["live_status"] is None
+        return target_id
+
+    app.request_threads_picker = select_target
+
+    async def exercise() -> None:
+        runtime = app._runtime()
+        task = asyncio.create_task(app._submit_async("/threads", runtime))
+        runtime.task = task
+        app._submit_task = task
+        await task
+
+    render.set_sink(app)
+    try:
+        asyncio.run(exercise())
+    finally:
+        render.set_sink(None)
+
+    assert app.thread_id == target_id
+    text = _transcript_text(app)
+    assert "target question" in text
+    assert "target answer" in text
+    assert "source question" not in text
+
+
+def test_switching_threads_does_not_stop_active_turn(make_app):
+    app = make_app()
+    source = app.coding
+    source_id = source.thread_id
+    target_id = "session-target"
+    source.thread_store.events[target_id] = [
+        {"kind": "user", "content": "target question"},
+        {"kind": "assistant", "content": "target answer"},
+    ]
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_turn(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        await release.wait()
+        yield SessionEvent("assistant_final", {"content": "source answer"})
+
+    source.run_turn = blocking_turn
+
+    async def exercise() -> None:
+        runtime = app._runtime()
+        task = asyncio.create_task(app._submit_async("source question", runtime))
+        runtime.task = task
+        app._submit_task = task
+        await started.wait()
+
+        await app.resume_thread(target_id)
+        assert app.thread_id == target_id
+        assert not task.done()
+        assert source_id in app.active_thread_statuses()
+        assert app.prompt_queue == []
+
+        await app.resume_thread(source_id)
+        assert app.thread_id == source_id
+        assert app._cancel_active_task() is True
+        assert source.cancelled is True
+
+        release.set()
+        await task
+
+    render.set_sink(app)
+    try:
+        asyncio.run(exercise())
+    finally:
+        render.set_sink(None)
+
+    assert source_id not in app.active_thread_statuses()
+
+
+def test_new_thread_can_start_while_current_turn_keeps_running(make_app):
+    app = make_app()
+    source = app.coding
+    source_id = source.thread_id
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_turn(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        await release.wait()
+        yield SessionEvent("assistant_final", {"content": "finished"})
+
+    source.run_turn = blocking_turn
+
+    async def exercise() -> None:
+        runtime = app._runtime()
+        task = asyncio.create_task(app._submit_async("keep working", runtime))
+        runtime.task = task
+        app._submit_task = task
+        await started.wait()
+
+        await app.reset_thread()
+        assert app.thread_id != source_id
+        assert not task.done()
+        assert source_id in app.active_thread_statuses()
+        assert app._busy is False
+
+        release.set()
+        await task
+        assert "finished" not in _transcript_text(app)
+
+    render.set_sink(app)
+    try:
+        asyncio.run(exercise())
+    finally:
+        render.set_sink(None)
+
+
+def test_fork_rekeys_live_runtime_to_fork_target(tmp_path: Path):
+    agent = _make_agent(tmp_path, _BindableFakeModel(["seed reply"]))
+    coding = CodingSession(agent, thread_id="t-source")
+    app = _make_tui(coding)
+    source_id = coding.thread_id
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_turn(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        await release.wait()
+        yield SessionEvent("assistant_final", {"content": "fork reply"})
+
+    async def exercise() -> None:
+        await app._run_turn("source question", [])
+        user_seq = app.coding.thread_store.list_user_turns(source_id)[0]["seq"]
+        fork_runtime = app._runtime()
+
+        await app.fork_thread(user_seq)
+        target_id = app.thread_id
+        assert target_id != source_id
+        assert app._runtime() is fork_runtime
+        assert set(app._thread_runtimes) == {target_id}
+
+        coding.run_turn = blocking_turn
+        task = asyncio.create_task(app._submit_async("fork question", fork_runtime))
+        fork_runtime.task = task
+        app._submit_task = task
+        await started.wait()
+
+        assert set(app.active_thread_statuses()) == {target_id}
+
+        await app.resume_thread(source_id)
+        assert app.thread_id == source_id
+        assert app._runtime(target_id) is fork_runtime
+        assert set(app.active_thread_statuses()) == {target_id}
+
+        release.set()
+        await task
+
+    render.set_sink(app)
+    try:
+        asyncio.run(exercise())
+    finally:
+        render.set_sink(None)
 
 
 async def _collect(agen) -> list:

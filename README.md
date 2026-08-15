@@ -51,7 +51,7 @@ curl -fsSL https://nessagent.dev/install.sh | sh
 On Windows:
 
 ```powershell
-powershell -c "irm https://nessagent.dev/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://nessagent.dev/install.ps1 | iex"
 ```
 
 Or install it directly with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/):

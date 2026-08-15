@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/export <path.html>` to write the current durable session as a self-contained, interactive HTML transcript with pre-compaction events, normalized JSONL download, image-byte omission, and overwrite protection.
+- Concurrent CLI thread runtimes: `/threads` can switch between active turns without interrupting them, `/new` can start a fresh turn in the background, and live threads display animated working, waiting-for-input, and cancelling states.
+
+### Changed
+
+- The SDK `read` tool can now read absolute file paths outside the configured project root; relative paths still resolve from the project root, while write, edit, and delete paths remain project-bound.
+- The TUI footer now labels Codex plan-backed usage as `subscription` instead of displaying the misleading `$0.0000`, while retaining dollar totals for usage-based providers.
+- Codex subscription requests now retry transient SSE failures such as `server_is_overloaded`, service-unavailable, server, and rate-limit errors with bounded exponential backoff, jitter, and `Retry-After` support; non-transient stream errors still fail immediately.
+
 ## [0.2.1] - 2026-08-12 — Released
 
 ### Added

@@ -90,6 +90,7 @@ Important control and inspection methods:
 | `active_skills(names)` / `stage_skills(names)` | Replace or append one-shot skills for the next turn. |
 | `get_state()`, `get_messages()`, `get_todos()` | Async snapshots of the checkpointed state. |
 | `preview_context(mode=None) -> ContextPreview` | Assemble L0–L3 for debugging without running the model. |
+| `run_reflection()` | Immediately reflect on the unreflected conversation tail and return a `ReflectionResult`, regardless of automatic-reflection settings. |
 | `refresh_context_snapshot()` / `finalize_reflection()` | Refresh pressure metrics or run end-of-session reflection when enabled. |
 | `rebuild_graph()` / `reset_checkpointer()` | Recompile the graph; the latter swaps in a fresh checkpointer before replay. |
 
@@ -104,6 +105,7 @@ Source: `src/ness_agent/session.py`.
 | `SessionEvent` | Frozen `{kind, data}` record. Kinds include assistant deltas/final output, tool start/end, usage, approvals, questions, compaction, errors, warnings, interruptions, and plan turns. |
 | `RunResult` | Frozen result from `run()`: `assistant_message`, `usage_total` (aggregate of every model call in the turn), `todos`, and `events`. The former single-call `usage` field was removed in 0.2.0. |
 | `ContextPreview` | Frozen debug snapshot: stable `system_message`, raw overlay, named `overlay_sections`, wrapped reminder, and active `mode`. |
+| `ReflectionResult` | Frozen result from `run_reflection()`: whether memory changed, new bullets, any error, and the reflected message index. |
 | `ApprovalHandler` | Abstract async callable `(tool: str, args: dict) -> str`; return `yes`, `no`, `always`, `session`, or `never`. |
 | `QuestionHandler` | `Callable[[list[dict]], Awaitable[list[dict]]]` for model-originated choice questions. |
 | `PlanTurnHandler` | `Callable[[str], None]`, called after a successful plan-mode turn. |

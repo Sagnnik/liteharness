@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ness_agent.types import SessionEvent
+from ness_agent.reflection import ReflectionResult
 
 from ness_cli.events import (
     events_to_messages,
@@ -69,6 +70,8 @@ class CodingSession:
         self.cfg = agent.config
         self.thread_id = thread_id
         self._vision = vision
+        self._git_available = git_available
+        self._metadata = dict(metadata or {})
 
         self.ness_dir = Path(self.cfg.options.ness_dir or Path.cwd() / ".ness")
         self.project_root = Path(self.cfg.options.project_root or Path.cwd())
@@ -105,6 +108,46 @@ class CodingSession:
         # This tracker is process-wide for the coding agent. Durable usage is
         # replayed once per thread, never on every A→B→A switch.
         self._restored_cost_threads: set[str] = {thread_id}
+
+    def new_for_thread(self, thread_id: str) -> "CodingSession":
+        """Create an independent blank session without mutating this one.
+        
+        This is used to create a new session for a new thread during an active turn.
+        """
+        clone = type(self)(
+            self.agent,
+            thread_id=thread_id,
+            mode=self.mode,
+            vision=self._vision,
+            git_available=self._git_available,
+            metadata=self._metadata,
+            instructions_dir=self.instructions_dir,
+        )
+        # Cost restoration is process-wide.  Share the existing guard set so
+        # loading A -> B -> A through separate live sessions cannot replay the
+        # same durable usage more than once.
+        clone._restored_cost_threads = self._restored_cost_threads
+        clone._restored_cost_threads.add(thread_id)
+        return clone
+
+    async def clone_for_thread(self, thread_id: str) -> "CodingSession":
+        """Create an independent live session for an existing thread.
+
+        The clone shares agent-level services (tools, persistence, permissions,
+        and aggregate cost tracking) but owns its graph, checkpointer, event
+        queue, cancellation token, and per-turn hooks.  Unlike ``resume()``, it
+        never archives or mutates this session, so both threads may keep
+        running concurrently.
+
+        new session + hydrate from disk (for thread switch during an active turn).
+        """
+        already_restored = thread_id in self._restored_cost_threads
+        clone = self.new_for_thread(thread_id)
+        if not already_restored:
+            self._restored_cost_threads.discard(thread_id)
+        if not await clone.resume(thread_id):
+            raise ValueError(f"No saved thread: {thread_id}")
+        return clone
 
     # ----------------------------------------------------------------------
     # Properties delegating to the underlying SDK Session
@@ -256,6 +299,10 @@ class CodingSession:
     async def finalize_reflection(self) -> None:
         await self._session.finalize_reflection()
 
+    async def run_reflection(self) -> ReflectionResult:
+        """Run an explicit reflection pass for the active conversation."""
+        return await self._session.run_reflection()
+
     async def refresh_context_snapshot(self) -> dict[str, Any]:
         return await self._session.refresh_context_snapshot()
 
@@ -284,7 +331,7 @@ class CodingSession:
         except ImportError:
             return False
         try:
-            return subagent_runs_active() > 0
+            return subagent_runs_active(self.thread_id) > 0
         except Exception:
             return False
 

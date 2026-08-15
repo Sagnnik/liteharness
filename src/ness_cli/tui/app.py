@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import nullcontext, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +18,7 @@ from prompt_toolkit.layout import VSplit, Window
 from prompt_toolkit.styles import Style
 
 from ness_agent.types import SessionEvent
+from ness_agent.reflection import ReflectionResult
 from ness_cli.chat_model import active_model_name
 from ness_cli.config import settings
 
@@ -32,7 +35,11 @@ from ness_cli.tui.pickers import MenuMixin
 from ness_cli.tui.models import MenuItem, TranscriptLine
 from ness_cli.tui.prompts import PromptMixin
 from ness_cli.tui.transcript import TranscriptMixin
-from ness_cli.tui.turn_renderer import TurnRenderer, render_persisted_tool_result
+from ness_cli.tui.turn_renderer import (
+    INTERRUPTED_SUFFIX,
+    TurnRenderer,
+    render_persisted_tool_result,
+)
 from ness_cli.tui.utils import display_cwd
 from ness_cli.tui.widgets import (
     TranscriptBlock,
@@ -49,6 +56,112 @@ CommandDispatcher = Callable[["TuiApp", str], Awaitable[None]]
 
 def _new_thread_id() -> str:
     return f"session-{uuid.uuid4().hex[:8]}"
+
+
+class _NullThreadStream:
+    def feed(self, chunk: str) -> None:
+        del chunk
+
+    def stop(self) -> None:
+        return None
+
+
+@dataclass
+class ThreadRuntime:
+    """Process-local ownership for one independently runnable CLI thread."""
+
+    coding: Any
+    prompt_queue: list[str] = field(default_factory=list)
+    assistant_history: list[str] = field(default_factory=list)
+    task: asyncio.Task | None = None
+    cancel_backstop: asyncio.TimerHandle | None = None
+    status: str = "idle"
+    started_at: float | None = None
+    selected: asyncio.Event = field(default_factory=asyncio.Event)
+    renderer: TurnRenderer | None = None
+    partial_text: str = ""
+    partial_reasoning: str = ""
+    active_turn: bool = False
+
+    @property
+    def working(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+
+class _ThreadRenderRouter:
+    """Task-local render sink that belongs to one ``ThreadRuntime``.
+
+    Ordinary background output stays quiet until its thread is selected.
+    Interactive SDK callbacks wait for selection rather than opening an
+    approval/question prompt over an unrelated conversation.
+    """
+
+    _ASYNC_METHODS = {
+        "ask_approval",
+        "ask_picker",
+        "ask_questions",
+        "ask_line",
+        "ask_secret",
+        "run_config",
+    }
+
+    def __init__(self, app: "TuiApp", runtime: ThreadRuntime) -> None:
+        self.app = app
+        self.runtime = runtime
+
+    def _visible(self) -> bool:
+        return self.app._runtime() is self.runtime
+
+    async def _wait_until_visible(self) -> None:
+        while True:
+            self.runtime.status = "waiting_input"
+            self.app.invalidate()
+            if not self._visible():
+                await self.runtime.selected.wait()
+                continue
+            prompt = self.app._prompt_future
+            if prompt is None or prompt.done():
+                return
+            # A /threads picker may be open while this turn reaches an
+            # approval gate.  Let that picker resolve before installing the
+            # turn-owned prompt so neither future is overwritten.
+            await asyncio.sleep(0.05)
+
+    def __getattr__(self, name: str):
+        target = getattr(self.app, name)
+        if name in self._ASYNC_METHODS:
+            async def routed_async(*args, **kwargs):
+                self.runtime.status = "waiting_input"
+                self.app.invalidate()
+                await self._wait_until_visible()
+                try:
+                    return await target(*args, **kwargs)
+                finally:
+                    if self.runtime.working:
+                        self.runtime.status = "working"
+                    self.app.invalidate()
+
+            return routed_async
+
+        if name == "start_assistant_stream":
+            return lambda: target() if self._visible() else _NullThreadStream()
+        if name == "reserve_reasoning_slot":
+            return lambda *args, **kwargs: (
+                target(*args, **kwargs)
+                if self._visible()
+                else {"start": -1, "count": 0, "text": "", "elapsed": 0.0}
+            )
+        if name == "thinking":
+            return lambda *args, **kwargs: (
+                target(*args, **kwargs) if self._visible() else nullcontext()
+            )
+
+        def routed(*args, **kwargs):
+            if self._visible():
+                return target(*args, **kwargs)
+            return None
+
+        return routed
 
 
 class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMixin):
@@ -69,14 +182,20 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         command_dispatcher: CommandDispatcher = dispatch,
     ) -> None:
         self.coding = coding
+        initial_runtime = ThreadRuntime(coding=coding)
+        initial_runtime.selected.set()
+        self._thread_runtimes: dict[str, ThreadRuntime] = {
+            coding.thread_id: initial_runtime
+        }
+        self._current_thread_id = coding.thread_id
         self.mcp = mcp
         self._dispatch = command_dispatcher
         # TUI-owned session state (formerly SessionApp): input queue, exit
         # flag, assistant text history for /copy. Skills stage via
         # coding.stage_skills → Session._pending_skills.
         self.should_exit = False
-        self.prompt_queue: list[str] = []
-        self.assistant_history: list[str] = []
+        self.prompt_queue = initial_runtime.prompt_queue
+        self.assistant_history = initial_runtime.assistant_history
         self._cwd_line = display_cwd()
         history_path.parent.mkdir(parents=True, exist_ok=True)
         # The startup header (gradient logo + dashboard panel + hints) is
@@ -305,6 +424,25 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         if self._transcript_control is not None:
             self._transcript_control.clear_selection()
 
+    def _runtime(self, thread_id: str | None = None) -> ThreadRuntime:
+        key = thread_id or self._current_thread_id
+        return self._thread_runtimes[key]
+
+    def active_thread_statuses(self) -> dict[str, dict[str, Any]]:
+        """Return live status metadata overlaid by the ``/threads`` picker."""
+        now = time.monotonic()
+        statuses: dict[str, dict[str, Any]] = {}
+        for thread_id, runtime in self._thread_runtimes.items():
+            if not runtime.active_turn:
+                continue
+            statuses[thread_id] = {
+                "status": runtime.status,
+                "elapsed": max(0.0, now - runtime.started_at)
+                if runtime.started_at is not None
+                else 0.0,
+            }
+        return statuses
+
     def _schedule_submit(self, text: str) -> None:
         if not text:
             return
@@ -321,7 +459,11 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             self._reset_buffer()
             self.invalidate()
             return
-        self._submit_task = self._app.create_background_task(self._submit_async(text))
+        runtime = self._runtime()
+        runtime.task = self._app.create_background_task(
+            self._submit_async(text, runtime)
+        )
+        self._submit_task = runtime.task
 
     async def _busy_dispatch(self, text: str) -> None:
         try:
@@ -387,26 +529,41 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         if code and code != 0:
             self.append_warning(f"shell: exit {code}")
 
-    async def _submit_async(self, text: str) -> None:
-        self._busy = True
+    async def _submit_async(
+        self,
+        text: str,
+        runtime: ThreadRuntime | None = None,
+    ) -> None:
+        runtime = runtime or self._runtime()
+        runtime.status = "working"
+        runtime.started_at = time.monotonic()
+        if self._runtime() is runtime:
+            self._busy = True
         self.invalidate()
+        sink_token = render.set_task_sink(_ThreadRenderRouter(self, runtime))
         try:
             is_slash = text.startswith("/")
             is_shell = text.startswith("!")
             if not is_slash and not is_shell:
-                self.append_user(text)
+                if self._runtime() is runtime:
+                    self.append_user(text)
             if is_slash:
                 await self._dispatch(self, text, busy=False)
             elif is_shell:
                 await self._run_shell(text[1:])
             else:
-                await self._run_turn(text, self._images_for_text(text))
+                await self._run_turn(
+                    text,
+                    self._images_for_text(text),
+                    runtime=runtime,
+                )
             while not self.should_exit:
-                queued = self.dequeue_prompt()
+                queued = self._dequeue_runtime_prompt(runtime)
                 if queued is None:
                     break
-                self.append_user(queued)
-                await self._run_turn(queued, [])
+                if self._runtime() is runtime:
+                    self.append_user(queued)
+                await self._run_turn(queued, [], runtime=runtime)
             if self.should_exit:
                 self._app.exit()
         except asyncio.CancelledError:
@@ -417,16 +574,25 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             # there's nothing to surface here — just let it propagate.
             raise
         except Exception as exc:
-            self.append_error(f"{type(exc).__name__}: {exc}")
+            if self._runtime() is runtime:
+                self.append_error(f"{type(exc).__name__}: {exc}")
+            else:
+                runtime.status = "error"
         finally:
-            self._cancel_hard_cancel_backstop()
-            self._busy = False
-            self._close_menu()
-            self._reset_buffer()
-            self._pending_images.clear()
-            self._image_counter = 0
-            self._focus_command_input()
-            self._refresh_cwd_line_if_changed()
+            render.reset_task_sink(sink_token)
+            self._cancel_hard_cancel_backstop(runtime)
+            runtime.status = "idle"
+            runtime.started_at = None
+            runtime.renderer = None
+            if self._runtime() is runtime:
+                self._busy = False
+                self._submit_task = runtime.task
+                self._close_menu()
+                self._reset_buffer()
+                self._pending_images.clear()
+                self._image_counter = 0
+                self._focus_command_input()
+                self._refresh_cwd_line_if_changed()
             self.invalidate()
 
     def _cancel_open_prompt(self) -> bool:
@@ -446,12 +612,19 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
             return True
         return False
 
-    def _cancel_hard_cancel_backstop(self) -> None:
-        if self._cancel_backstop_handle is not None:
-            self._cancel_backstop_handle.cancel()
+    def _cancel_hard_cancel_backstop(
+        self, runtime: ThreadRuntime | None = None
+    ) -> None:
+        runtime = runtime or self._runtime()
+        if runtime.cancel_backstop is not None:
+            runtime.cancel_backstop.cancel()
+            runtime.cancel_backstop = None
+        if self._runtime() is runtime:
             self._cancel_backstop_handle = None
 
-    def _schedule_hard_cancel_backstop(self) -> None:
+    def _schedule_hard_cancel_backstop(
+        self, runtime: ThreadRuntime | None = None
+    ) -> None:
         """Arm a safety net that falls back to ``asyncio.Task.cancel``.
 
         The cooperative cancel_token path is preferred because it lets
@@ -467,26 +640,36 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         so the cost of a too-long window is only a slower UX response, not
         a dirty checkpoint.
         """
-        self._cancel_hard_cancel_backstop()
+        runtime = runtime or self._runtime()
+        self._cancel_hard_cancel_backstop(runtime)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._cancel_backstop_handle = loop.call_later(10.0, self._hard_cancel)
+        runtime.cancel_backstop = loop.call_later(
+            10.0, self._hard_cancel, runtime
+        )
+        if self._runtime() is runtime:
+            self._cancel_backstop_handle = runtime.cancel_backstop
 
-    def _hard_cancel(self) -> None:
-        if self._submit_task is not None and not self._submit_task.done():
-            self._submit_task.cancel()
-        self._cancel_backstop_handle = None
+    def _hard_cancel(self, runtime: ThreadRuntime | None = None) -> None:
+        runtime = runtime or self._runtime()
+        if runtime.task is not None and not runtime.task.done():
+            runtime.task.cancel()
+        runtime.cancel_backstop = None
+        if self._runtime() is runtime:
+            self._cancel_backstop_handle = None
 
     def _cancel_active_task(self) -> bool:
-        if self._submit_task is not None and not self._submit_task.done():
+        runtime = self._runtime()
+        if runtime.task is not None and not runtime.task.done():
             cleared = self.clear_prompt_queue()
             # Cooperative cancel preferred: lets the SDK break out at the
             # next event boundary and flush partial state. A call_later
             # backstop is scheduled so a stuck call still gets hard-cancelled.
-            self.coding.cancel()
-            self._schedule_hard_cancel_backstop()
+            runtime.coding.cancel()
+            runtime.status = "cancelling"
+            self._schedule_hard_cancel_backstop(runtime)
             if cleared:
                 self.append_notice("queue", f"cleared {cleared} queued prompt(s)")
             return True
@@ -504,10 +687,16 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         finally:
             render.set_sink(None)
             self.stop_working()
-            if self._submit_task is not None and not self._submit_task.done():
-                self._submit_task.cancel()
+            pending = [
+                runtime.task
+                for runtime in self._thread_runtimes.values()
+                if runtime.task is not None and not runtime.task.done()
+            ]
+            for task in pending:
+                task.cancel()
+            for task in pending:
                 with suppress(asyncio.CancelledError):
-                    await self._submit_task
+                    await task
 
     def _start_resume_task(self, thread_id: str) -> None:
         """Replay a saved thread into the transcript after the first render.
@@ -559,10 +748,14 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
         if text:
             self.prompt_queue.append(text)
 
-    def dequeue_prompt(self) -> str | None:
-        if self.prompt_queue:
-            return self.prompt_queue.pop(0)
+    @staticmethod
+    def _dequeue_runtime_prompt(runtime: ThreadRuntime) -> str | None:
+        if runtime.prompt_queue:
+            return runtime.prompt_queue.pop(0)
         return None
+
+    def dequeue_prompt(self) -> str | None:
+        return self._dequeue_runtime_prompt(self._runtime())
 
     def clear_prompt_queue(self) -> int:
         count = len(self.prompt_queue)
@@ -635,28 +828,105 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
     def request_compact(self) -> None:
         self.coding.request_compact()
 
+    async def run_reflection(self) -> ReflectionResult:
+        return await self.coding.run_reflection()
+
     # --- thread management -------------------------------------------------
     async def reset_thread(self) -> None:
         """Archive the current thread and start a fresh one (``/new``)."""
-        await self.coding.reset(_new_thread_id())
+        runtime = self._runtime()
+        old_id = self._current_thread_id
+        new_id = _new_thread_id()
+        if runtime.working:
+            coding = runtime.coding.new_for_thread(new_id)
+            target = ThreadRuntime(coding=coding)
+            self._thread_runtimes[new_id] = target
+            await self._activate_runtime(new_id, target, [])
+            target.coding.active_skills([])
+            return
+        await runtime.coding.reset(new_id)
+        self._thread_runtimes.pop(old_id, None)
+        self._thread_runtimes[new_id] = runtime
+        self._current_thread_id = new_id
         self.coding.active_skills([])
         await self._reload_session_view([])
 
     async def resume_thread(self, thread_id: str) -> None:
-        """Resume a saved thread: replay its transcript, then rebuild state.
+        """Select ``thread_id`` without interrupting another live turn."""
+        if thread_id == self._current_thread_id:
+            return
+        store = self.coding.thread_store
+        events = store.load_thread_events(thread_id)
+        target = self._thread_runtimes.get(thread_id)
+        if target is None and not events and not store.thread_exists(thread_id):
+            render.render_error(f"No saved thread: {thread_id}")
+            return
 
-        The visible transcript is cleared and re-rendered from the durable
-        events first (no stale messages from the abandoned thread); the
-        adapter then rebuilds the live graph from the same events.
-        """
-        events = self.coding.thread_store.load_thread_events(thread_id)
-        if not events and not self.coding.thread_store.thread_exists(thread_id):
-            render.render_error(f"No saved thread: {thread_id}")
-            return
-        if not await self.coding.resume(thread_id):
-            render.render_error(f"No saved thread: {thread_id}")
-            return
-        await self._reload_session_view(events)
+        source = self._runtime()
+        rebound_from: str | None = None
+        if target is None and source.working:
+            try:
+                coding = await source.coding.clone_for_thread(thread_id)
+            except (AttributeError, ValueError):
+                render.render_error(f"No saved thread: {thread_id}")
+                return
+            target = ThreadRuntime(coding=coding)
+            self._thread_runtimes[thread_id] = target
+        elif target is None:
+            # Preserve the established low-cost path when nothing is running:
+            # the current CodingSession may be rebound safely.
+            old_id = self._current_thread_id
+            if not await source.coding.resume(thread_id):
+                render.render_error(f"No saved thread: {thread_id}")
+                return
+            self._thread_runtimes[thread_id] = source
+            target = source
+            rebound_from = old_id
+
+        await self._activate_runtime(thread_id, target, events)
+        if rebound_from is not None:
+            self._thread_runtimes.pop(rebound_from, None)
+
+    async def _activate_runtime(
+        self,
+        thread_id: str,
+        runtime: ThreadRuntime,
+        events: list[dict],
+    ) -> None:
+        previous = self._runtime()
+        previous.selected.clear()
+        previous.renderer = None
+        if self._turn_render_active:
+            render.finish_turn()
+
+        self._current_thread_id = thread_id
+        self.coding = runtime.coding
+        self.prompt_queue = runtime.prompt_queue
+        self.assistant_history = runtime.assistant_history
+        self._busy = runtime.working
+        self._submit_task = runtime.task
+        self._cancel_backstop_handle = runtime.cancel_backstop
+        runtime.selected.set()
+
+        sink_token = render.set_task_sink(_ThreadRenderRouter(self, runtime))
+        try:
+            await self._reload_session_view(events)
+            if runtime.active_turn:
+                runtime.renderer = TurnRenderer()
+                render.begin_turn()
+                if runtime.partial_reasoning or runtime.partial_text:
+                    runtime.renderer.feed(
+                        SessionEvent(
+                            "assistant_delta",
+                            {
+                                "reasoning": runtime.partial_reasoning,
+                                "text": runtime.partial_text,
+                            },
+                        )
+                    )
+        finally:
+            render.reset_task_sink(sink_token)
+        self.invalidate()
 
     async def rollback_to(self, user_seq: int) -> None:
         """Roll the thread back to checkpoint ``user_seq`` (``/rollback``)."""
@@ -670,7 +940,16 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
 
     async def fork_thread(self, user_seq: int) -> None:
         """Fork before a user event, switch sessions, and prefill its prompt."""
-        target, prompt, events = await self.coding.fork_before(user_seq)
+        source = self._current_thread_id
+        runtime = self._runtime()
+        target, prompt, events = await runtime.coding.fork_before(user_seq)
+        # ``fork_before`` resumes the existing CodingSession in-place.  Move
+        # its runtime entry to the fork ID as well, so live-turn state is
+        # associated with the session that will now receive future events.
+        self._thread_runtimes.pop(source)
+        self._thread_runtimes[target] = runtime
+        self._current_thread_id = target
+        self.coding = runtime.coding
         await self._reload_session_view(events)
         self._set_buffer_text(prompt)
         render.render_notice(f"Forked into {target}. Edit and submit the prompt.", title="fork")
@@ -719,11 +998,13 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
     async def _reload_session_view(self, events: list[dict]) -> None:
         """Atomically rebuild all transcript-derived state for one session."""
         self.clear_transcript()
-        self.assistant_history = [
+        history = [
             str(event.get("content"))
             for event in events
             if event.get("kind") == "assistant" and event.get("content")
         ]
+        self._runtime().assistant_history = history
+        self.assistant_history = history
         self.render_header()
         self._replay_events_to_transcript(events)
         render.render_todos(await self.coding.get_todos())
@@ -773,31 +1054,77 @@ class TuiApp(TranscriptMixin, ChromeMixin, MenuMixin, ConfigFlowMixin, PromptMix
                 )
 
     # --- the turn -----------------------------------------------------------
-    async def _run_turn(self, text: str, images: list[str]) -> None:
+    async def _run_turn(
+        self,
+        text: str,
+        images: list[str],
+        *,
+        runtime: ThreadRuntime | None = None,
+    ) -> None:
         """Drive one CodingSession turn, rendering its SessionEvent stream."""
+        runtime = runtime or self._runtime()
         renderer = TurnRenderer()
+        runtime.renderer = renderer
+        runtime.partial_text = ""
+        runtime.partial_reasoning = ""
+        runtime.active_turn = True
+        runtime.status = "working"
+        runtime.started_at = time.monotonic()
+        turn_assistant_texts: list[str] = []
         # Omit active_skills= so Session._pending_skills (staged via /skill →
         # coding.stage_skills) is consumed by the SDK payload builder.
-        render.begin_turn()
+        if self._runtime() is runtime:
+            render.begin_turn()
         try:
-            async for ev in self.coding.run_turn(
+            async for ev in runtime.coding.run_turn(
                 text,
                 images=images or None,
             ):
-                renderer.feed(ev)
-                if ev.kind == "tool_end" and ev.data.get("name") == "todo":
-                    render.render_todos(await self.coding.get_todos())
+                if ev.kind == "assistant_delta":
+                    runtime.partial_text += str(ev.data.get("text") or "")
+                    runtime.partial_reasoning += str(ev.data.get("reasoning") or "")
+                elif ev.kind == "assistant_final":
+                    final_text = str(ev.data.get("content") or "").strip()
+                    if final_text:
+                        turn_assistant_texts.append(final_text)
+                    runtime.partial_text = ""
+                    runtime.partial_reasoning = ""
+                elif ev.kind == "interrupted":
+                    partial = str(ev.data.get("partial_text") or "").strip()
+                    if partial:
+                        turn_assistant_texts.append(partial + INTERRUPTED_SUFFIX)
+                    runtime.partial_text = ""
+                    runtime.partial_reasoning = ""
+                if self._runtime() is runtime:
+                    active_renderer = runtime.renderer
+                    if active_renderer is None:
+                        active_renderer = TurnRenderer()
+                        runtime.renderer = active_renderer
+                    active_renderer.feed(ev)
+                    renderer = active_renderer
+                if (
+                    self._runtime() is runtime
+                    and ev.kind == "tool_end"
+                    and ev.data.get("name") == "todo"
+                ):
+                    render.render_todos(await runtime.coding.get_todos())
         except asyncio.CancelledError:
             # Hard-escalation path: the cooperative cancel didn't break the
             # stream in time and the submit task was cancelled. The SDK has
             # already finalised checkpoint state; render the interrupt UX
             # here since no ``interrupted`` event will be consumed now.
-            if not renderer.interrupted:
+            if self._runtime() is runtime and not renderer.interrupted:
                 renderer.feed(SessionEvent("interrupted", {"partial_text": ""}))
             raise
         finally:
-            render.finish_turn()
-        self.assistant_history.extend(renderer.assistant_texts)
-        if not renderer.interrupted:
+            runtime.active_turn = False
+            runtime.status = "idle"
+            runtime.started_at = None
+            if self._runtime() is runtime and self._turn_render_active:
+                render.finish_turn()
+        runtime.assistant_history.extend(turn_assistant_texts)
+        if self._runtime() is runtime:
+            self.assistant_history = runtime.assistant_history
+        if self._runtime() is runtime and not renderer.interrupted:
             render.render_usage_footer(renderer.usage)
-            render.render_todos(await self.coding.get_todos())
+            render.render_todos(await runtime.coding.get_todos())

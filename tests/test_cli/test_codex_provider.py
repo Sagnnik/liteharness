@@ -5,30 +5,47 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ness_cli.config import AVAILABLE_MODELS, settings
 from ness_cli.provider.codex.adapter import CodexProviderAdapter
 from ness_cli.provider.codex.auth import CodexAuth, _jwt_expiry
 from ness_cli.provider.codex.chat_model import CodexSubscriptionChatModel
-from ness_cli.provider.codex.transport import merge_streamed_response
+from ness_cli.provider.codex.transport import (
+    CodexResponsesTransport,
+    CodexStreamError,
+    merge_streamed_response,
+)
 from ness_cli.provider.openrouter.adapter import OpenRouterProviderAdapter
 from ness_cli.provider.profile import provider_profile, update_provider_profile
 from ness_agent.tracing.cost import CostTracker
 
 
 def _jwt(expiry: int) -> str:
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": expiry}).encode()).decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": expiry}).encode())
+        .decode()
+        .rstrip("=")
+    )
     return f"header.{payload}.signature"
 
 
 def test_provider_profile_roundtrip_is_namespaced(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path))
-    update_provider_profile("codex", {"model_name": "gpt-test", "reasoning_effort": "high"})
+    update_provider_profile(
+        "codex", {"model_name": "gpt-test", "reasoning_effort": "high"}
+    )
     update_provider_profile("openrouter", {"model_name": "openai/gpt-test"})
 
-    assert provider_profile("codex") == {"model_name": "gpt-test", "reasoning_effort": "high"}
+    assert provider_profile("codex") == {
+        "model_name": "gpt-test",
+        "reasoning_effort": "high",
+    }
     assert provider_profile("openrouter") == {"model_name": "openai/gpt-test"}
 
 
@@ -65,7 +82,14 @@ def test_codex_chat_model_preserves_function_call_history():
             HumanMessage(content="inspect"),
             AIMessage(
                 content="",
-                tool_calls=[{"name": "read", "args": {"path": "a.py"}, "id": "call-1", "type": "tool_call"}],
+                tool_calls=[
+                    {
+                        "name": "read",
+                        "args": {"path": "a.py"},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
             ),
             ToolMessage(content="contents", tool_call_id="call-1"),
         ]
@@ -87,10 +111,22 @@ def test_codex_response_maps_usage_tools_and_subscription_billing():
             "id": "resp-1",
             "model": "gpt-test",
             "output": [
-                {"type": "message", "content": [{"type": "output_text", "text": "checking"}]},
-                {"type": "function_call", "call_id": "call-1", "name": "read", "arguments": '{"path":"a.py"}'},
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "checking"}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "read",
+                    "arguments": '{"path":"a.py"}',
+                },
             ],
-            "usage": {"input_tokens": 10, "output_tokens": 4, "input_tokens_details": {"cached_tokens": 3}},
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "input_tokens_details": {"cached_tokens": 3},
+            },
         }
     )
 
@@ -177,6 +213,149 @@ def test_streamed_output_items_replace_sparse_completed_output():
     assert message.tool_calls[0]["name"] == "read"
 
 
+class _TransportAuth:
+    async def valid_credentials(self, *, force_refresh: bool = False):
+        del force_refresh
+        return SimpleNamespace(access_token="token", account_id="account")
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+
+
+def _patch_transport_client(monkeypatch, handler):
+    async_client = httpx.AsyncClient
+    mock_transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "ness_cli.provider.codex.transport.httpx.AsyncClient",
+        lambda **kwargs: async_client(transport=mock_transport, **kwargs),
+    )
+
+
+def test_codex_transport_retries_streamed_overload(monkeypatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                200,
+                headers={"Retry-After": "3"},
+                text=_sse(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "service_unavailable_error",
+                            "code": "server_is_overloaded",
+                            "message": "Our servers are currently overloaded.",
+                        },
+                    }
+                ),
+            )
+        return httpx.Response(
+            200,
+            text=_sse(
+                {
+                    "type": "response.completed",
+                    "response": {"id": "resp-ok", "output": []},
+                }
+            ),
+        )
+
+    _patch_transport_client(monkeypatch, handler)
+    sleep = AsyncMock()
+    monkeypatch.setattr("ness_cli.provider.codex.transport._sleep", sleep)
+    monkeypatch.setattr(
+        "ness_cli.provider.codex.transport.uniform", lambda start, end: 0.25
+    )
+    transport = CodexResponsesTransport(_TransportAuth(), max_retries=3)  # type: ignore[arg-type]
+
+    response = asyncio.run(transport.create({"model": "gpt-test"}))
+
+    assert response["id"] == "resp-ok"
+    assert calls == 2
+    sleep.assert_awaited_once_with(3.25)
+
+
+def test_codex_transport_retries_nested_response_failure(monkeypatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                200,
+                text=_sse(
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "error": {
+                                "type": "server_error",
+                                "code": "internal_server_error",
+                            }
+                        },
+                    }
+                ),
+            )
+        return httpx.Response(
+            200,
+            text=_sse(
+                {
+                    "type": "response.completed",
+                    "response": {"id": "resp-ok", "output": []},
+                }
+            ),
+        )
+
+    _patch_transport_client(monkeypatch, handler)
+    sleep = AsyncMock()
+    monkeypatch.setattr("ness_cli.provider.codex.transport._sleep", sleep)
+    monkeypatch.setattr(
+        "ness_cli.provider.codex.transport.uniform", lambda start, end: 0.0
+    )
+    transport = CodexResponsesTransport(_TransportAuth(), max_retries=1)  # type: ignore[arg-type]
+
+    response = asyncio.run(transport.create({"model": "gpt-test"}))
+
+    assert response["id"] == "resp-ok"
+    assert calls == 2
+    sleep.assert_awaited_once_with(1.0)
+
+
+def test_codex_transport_does_not_retry_non_transient_stream_error(monkeypatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            text=_sse(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "invalid_model",
+                        "message": "Unknown model.",
+                    },
+                }
+            ),
+        )
+
+    _patch_transport_client(monkeypatch, handler)
+    sleep = AsyncMock()
+    monkeypatch.setattr("ness_cli.provider.codex.transport._sleep", sleep)
+    transport = CodexResponsesTransport(_TransportAuth(), max_retries=3)  # type: ignore[arg-type]
+
+    with pytest.raises(CodexStreamError, match="invalid_model"):
+        asyncio.run(transport.create({"model": "missing"}))
+
+    assert calls == 1
+    sleep.assert_not_awaited()
+
+
 def test_login_readiness_waits_for_account_state(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NESS_AGENT_CONFIG_DIR", str(tmp_path))
     home = tmp_path / "codex"
@@ -254,9 +433,7 @@ def test_openrouter_adapter_owns_masked_key_login(tmp_path: Path, monkeypatch):
     adapter = OpenRouterProviderAdapter()
     try:
         method = adapter.login_methods()[0]
-        result = asyncio.run(
-            adapter.login(method=method.id, secret="  sk-or-test  ")
-        )
+        result = asyncio.run(adapter.login(method=method.id, secret="  sk-or-test  "))
 
         assert method.input_kind == "secret"
         assert method.input_label == "OpenRouter API key"
@@ -303,12 +480,26 @@ def test_codex_status_deduplicates_windows_and_exposes_weekly(monkeypatch):
 
         async def request(self, method, params):
             if method == "account/read":
-                return {"account": {"type": "chatgpt", "email": "user@example.com", "planType": "plus"}}
+                return {
+                    "account": {
+                        "type": "chatgpt",
+                        "email": "user@example.com",
+                        "planType": "plus",
+                    }
+                }
             snapshot = {
                 "limitId": "codex",
                 "limitName": "Codex",
-                "primary": {"usedPercent": 20, "windowDurationMins": 300, "resetsAt": 2_000_000_000},
-                "secondary": {"usedPercent": 40, "windowDurationMins": 10080, "resetsAt": 2_000_100_000},
+                "primary": {
+                    "usedPercent": 20,
+                    "windowDurationMins": 300,
+                    "resetsAt": 2_000_000_000,
+                },
+                "secondary": {
+                    "usedPercent": 40,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 2_000_100_000,
+                },
             }
             return {
                 "rateLimits": snapshot,

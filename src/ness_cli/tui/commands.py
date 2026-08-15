@@ -31,6 +31,7 @@ from ness_cli.chat_model import (
 from ness_cli.provider.profile import provider_profile
 from ness_cli.provider.registry import get_provider, provider_ids
 from ness_cli.config import settings
+from ness_cli.export import ExportError, export_thread_html, resolve_export_path
 from ness_cli.prompts import build_init_memory_prompt
 
 from ness_cli.tui import render
@@ -720,6 +721,11 @@ def _thread_rows(threads: list[dict], store) -> list[list[str]]:
 async def cmd_threads(app: "TuiApp", args: str) -> None:
     store = app.coding.thread_store
     threads = store.list_threads(100)
+    live_statuses = app.active_thread_statuses()
+    known_ids = {str(item.get("thread_id") or "") for item in threads}
+    for thread_id in live_statuses:
+        if thread_id not in known_ids:
+            threads.append({"thread_id": thread_id, "updated_at": ""})
     if not threads:
         render.render_notice("No saved sessions.")
         return
@@ -728,6 +734,9 @@ async def cmd_threads(app: "TuiApp", args: str) -> None:
         render.render_error("/threads requires the interactive TUI.")
         return
     for item in threads:
+        item["live_status"] = live_statuses.get(
+            str(item.get("thread_id") or "")
+        )
         item["label"] = (
             item.get("name")
             or item.get("summary")
@@ -771,6 +780,46 @@ async def cmd_new(app: "TuiApp", args: str) -> None:
 async def cmd_compact(app: "TuiApp", args: str) -> None:
     app.request_compact()
     render.render_notice("Compaction will run on the next model turn.")
+
+
+async def cmd_reflection(app: "TuiApp", args: str) -> None:
+    if args.strip():
+        render.render_error("Usage: /reflection")
+        return
+    result = await app.run_reflection()
+    if result.bullets:
+        render.render_notice(
+            "\n".join(f"- {bullet}" for bullet in result.bullets),
+            title="reflection",
+        )
+    elif not result.error:
+        message = (
+            "Reflection completed; no new memory bullets."
+            if result.message_index is not None
+            else "Nothing new to reflect on."
+        )
+        render.render_notice(message, title="reflection")
+    if result.error:
+        render.render_error(result.error)
+
+
+async def cmd_export(app: "TuiApp", args: str) -> None:
+    try:
+        destination = resolve_export_path(args, app.coding.project_root)
+        result = await asyncio.to_thread(
+            export_thread_html,
+            thread_store=app.coding.thread_store,
+            thread_id=app.thread_id,
+            project_root=app.coding.project_root,
+            destination=destination,
+        )
+    except ExportError as exc:
+        render.render_error(str(exc))
+        return
+    render.render_notice(
+        f"Exported {result.event_count} entries to {result.path}",
+        title="export",
+    )
 
 
 async def cmd_clear(app: "TuiApp", args: str) -> None:
@@ -887,6 +936,8 @@ HANDLERS: dict[str, CommandHandler] = {
     "save": cmd_save,
     "new": cmd_new,
     "compact": cmd_compact,
+    "reflection": cmd_reflection,
+    "export": cmd_export,
     "clear": cmd_clear,
     "copy": cmd_copy,
     "rollback": cmd_rollback,
@@ -908,6 +959,8 @@ BUSY_SAFE_COMMANDS: frozenset[str] = frozenset(
         "user",
         "skill",
         "rename",
+        "threads",
+        "new",
     }
 )
 

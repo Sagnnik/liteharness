@@ -47,6 +47,7 @@ class ReflectionResult:
     memory_updated: bool = False
     error: str = ""
     bullets: tuple[str, ...] = ()
+    message_index: int | None = None
 
 def consume_reflection_message_index(thread_id: str) -> int | None:
     """Pop index written by last successful reflection. Agent stores it in `last_reflection_index`"""
@@ -121,6 +122,112 @@ def _log_reflection_event(
     )
 
 
+async def _run_reflection(
+    thread_id: str,
+    messages: Iterable[BaseMessage],
+    model,
+    user_message_count: int,
+    *,
+    last_reflection_index: int = 0,
+    todos: str = "",
+    memory=None,
+    persistence=None,
+    aux_prompts=None,
+    tracer=None,
+    tracing=None,
+) -> ReflectionResult:
+    """Run semantic distillation while the caller holds the thread lock."""
+
+    if model is None:
+        return ReflectionResult()
+    msg_list = list(messages)
+    since = max(0, int(last_reflection_index or 0))
+    recent = msg_list[since:]
+
+    if not recent:
+        return ReflectionResult()
+    # load_session already returns "- bullet" lines; use as-is.
+    bullets_txt = memory.load_session(thread_id) if memory else ""
+    tmpl = (aux_prompts.reflection if aux_prompts else None)
+    todos_txt = (todos or "").strip() or "No todos"
+    
+    prompt = tmpl.format(
+        thread_id=thread_id,
+        user_message_count=user_message_count,
+        messages=_messages_for_prompt(recent),
+        current_session_bullets=bullets_txt or "(none yet)",
+        todos=todos_txt,
+    ) if tmpl else _messages_for_prompt(recent)
+
+    try:
+        structured_model = model.with_structured_output(ReflectionStructuredOutput)
+        capture_msgs = bool(tracing and getattr(tracing, "capture_messages", False))
+        if tracer is None:
+            out: ReflectionStructuredOutput = await structured_model.ainvoke(
+                [HumanMessage(content=prompt)]
+            )
+        else:
+            refl_attrs = {
+                THREAD_ID: thread_id,
+                GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
+                GEN_AI_OPERATION_NAME: "chat",
+            }
+            with tracer.start_span(
+                REFLECTION, attributes=refl_attrs, kind=KIND_CLIENT
+            ) as span:
+                if capture_msgs:
+                    span.set_attribute(
+                        GEN_AI_PROMPT,
+                        serialize_messages([HumanMessage(content=prompt)]),
+                    )
+                out: ReflectionStructuredOutput = await structured_model.ainvoke(
+                    [HumanMessage(content=prompt)]
+                )
+                if out is not None:
+                    span.set_attribute(
+                        "reflection.bullets", len(out.new_bullet_points or [])
+                    )
+                    if capture_msgs:
+                        # Reflection uses with_structured_output, so the
+                        # completion is a parsed pydantic model (not an
+                        # AIMessage) — serialise via the dict helper.
+                        span.set_attribute(
+                            GEN_AI_COMPLETION,
+                            serialize_completion_dict(out),
+                        )
+    except Exception as exc:
+        res = ReflectionResult(error=str(exc))
+        _log_reflection_event(
+            persistence,
+            thread_id,
+            prompt=prompt,
+            response={"new_bullet_points": []},
+            message_index=len(msg_list),
+            memory_updated=False,
+            error=res.error,
+        )
+        return res
+
+    bullets = _normalize_bullets(out.new_bullet_points)
+    updated = memory.append_session_bullets(thread_id, bullets) if bullets and memory else False
+    idx = len(msg_list)
+
+    _log_reflection_event(
+        persistence,
+        thread_id,
+        prompt=prompt,
+        response=out.model_dump(),
+        message_index=idx,
+        memory_updated=updated,
+        error="",
+    )
+    return ReflectionResult(
+        memory_updated=updated,
+        bullets=tuple(bullets),
+        message_index=idx,
+    )
+
+
 async def run_reflection_gate(
     thread_id: str,
     messages: Iterable[BaseMessage],
@@ -135,101 +242,95 @@ async def run_reflection_gate(
     tracer=None,
     tracing=None,
 ) -> ReflectionResult:
-    """Run semantic distillation via structured output."""
-
-    if model is None: 
+    """Run automatic reflection, skipping when another pass is active."""
+    if model is None:
         return ReflectionResult()
-    
-    # get the lock for the thread_id
     lock = reflection_lock(thread_id)
-    if lock.locked(): 
+    if lock.locked():
         return ReflectionResult()
-    
-    # if the lock is not held, acquire it
     async with lock:
-        msg_list = list(messages)
-        since = max(0, int(last_reflection_index or 0))
-        recent = msg_list[since:]
+        result = await _run_reflection(
+            thread_id,
+            messages,
+            model,
+            user_message_count,
+            last_reflection_index=last_reflection_index,
+            todos=todos,
+            memory=memory,
+            persistence=persistence,
+            aux_prompts=aux_prompts,
+            tracer=tracer,
+            tracing=tracing,
+        )
+        if result.message_index is not None:
+            mark_reflection_complete(thread_id, result.message_index)
+        return result
 
-        if not recent: 
-            return ReflectionResult()
-        # load_session already returns "- bullet" lines; use as-is.
-        bullets_txt = memory.load_session(thread_id) if memory else ""
-        tmpl = (aux_prompts.reflection if aux_prompts else None)
-        todos_txt = (todos or "").strip() or "No todos"
-        
-        prompt = tmpl.format(
-            thread_id=thread_id, 
-            user_message_count=user_message_count,
-            messages=_messages_for_prompt(recent), 
-            current_session_bullets=bullets_txt or "(none yet)",
-            todos=todos_txt,
-        ) if tmpl else _messages_for_prompt(recent)
-        
+
+async def run_session_reflection(
+    app,
+    thread_id: str,
+    model,
+    *,
+    memory=None,
+    persistence=None,
+    aux_prompts=None,
+    tracer=None,
+    tracing=None,
+) -> ReflectionResult:
+    """Run an explicit reflection pass and persist its graph-state cursor."""
+    lock = reflection_lock(thread_id)
+    async with lock:
+        cfg = {"configurable": {"thread_id": thread_id}}
         try:
-            structured_model = model.with_structured_output(ReflectionStructuredOutput)
-            capture_msgs = bool(tracing and getattr(tracing, "capture_messages", False))
-            if tracer is None:
-                out: ReflectionStructuredOutput = await structured_model.ainvoke(
-                    [HumanMessage(content=prompt)]
-                )
-            else:
-                refl_attrs = {
-                    THREAD_ID: thread_id,
-                    GEN_AI_SYSTEM: GEN_AI_SYSTEM_VALUE,
-                    GEN_AI_OPERATION_NAME: "chat",
-                }
-                with tracer.start_span(
-                    REFLECTION, attributes=refl_attrs, kind=KIND_CLIENT
-                ) as span:
-                    if capture_msgs:
-                        span.set_attribute(
-                            GEN_AI_PROMPT,
-                            serialize_messages([HumanMessage(content=prompt)]),
-                        )
-                    out: ReflectionStructuredOutput = await structured_model.ainvoke(
-                        [HumanMessage(content=prompt)]
-                    )
-                    if out is not None:
-                        span.set_attribute(
-                            "reflection.bullets", len(out.new_bullet_points or [])
-                        )
-                        if capture_msgs:
-                            # Reflection uses with_structured_output, so the
-                            # completion is a parsed pydantic model (not an
-                            # AIMessage) — serialise via the dict helper.
-                            span.set_attribute(
-                                GEN_AI_COMPLETION,
-                                serialize_completion_dict(out),
-                            )
+            snapshot = await app.aget_state(cfg)
         except Exception as exc:
-            res = ReflectionResult(error=str(exc))
+            result = ReflectionResult(error=str(exc))
             _log_reflection_event(
                 persistence,
                 thread_id,
-                prompt=prompt,
+                prompt="",
                 response={"new_bullet_points": []},
-                message_index=len(msg_list),
+                message_index=0,
                 memory_updated=False,
-                error=res.error,
+                error=result.error,
             )
-            return res
+            return result
 
-        bullets = _normalize_bullets(out.new_bullet_points)
-        updated = memory.append_session_bullets(thread_id, bullets) if bullets and memory else False
-        idx = len(msg_list)
-        mark_reflection_complete(thread_id, idx)
-
-        _log_reflection_event(
-            persistence,
+        completed_index = consume_reflection_message_index(thread_id)
+        state = dict(snapshot.values or {})
+        messages = list(state.get("messages", []))
+        state_index = int(state.get("last_reflection_index", 0) or 0)
+        since = max(state_index, int(completed_index or 0))
+        result = await _run_reflection(
             thread_id,
-            prompt=prompt,
-            response=out.model_dump(),
-            message_index=idx,
-            memory_updated=updated,
-            error="",
+            messages,
+            model,
+            sum(1 for message in messages if message.type == "human"),
+            last_reflection_index=since,
+            todos=render_todos(state.get("todos", [])),
+            memory=memory,
+            persistence=persistence,
+            aux_prompts=aux_prompts,
+            tracer=tracer,
+            tracing=tracing,
         )
-        return ReflectionResult(memory_updated=updated, bullets=tuple(bullets))
+
+        cursor = result.message_index
+        if cursor is None and completed_index is not None:
+            cursor = completed_index
+        if cursor is not None and cursor != state_index:
+            try:
+                await app.aupdate_state(cfg, {"last_reflection_index": cursor})
+            except Exception as exc:
+                mark_reflection_complete(thread_id, cursor)
+                return ReflectionResult(
+                    memory_updated=result.memory_updated,
+                    bullets=result.bullets,
+                    message_index=result.message_index,
+                    error=f"reflection completed but cursor update failed: {exc}",
+                )
+        return result
 
 # --- finalize session reflection ---
 async def finalize_session_reflection(
@@ -243,36 +344,10 @@ async def finalize_session_reflection(
     tracing=None,
 ) -> ReflectionResult:
     """Final synchronous reflection pass before session archive (option on)."""
-    # get the snapshot of the thread
-    try:
-        snapshot = await app.aget_state({"configurable": {"thread_id": thread_id}})
-    except Exception as exc:
-        result = ReflectionResult(error=str(exc))
-        _log_reflection_event(
-            persistence,
-            thread_id,
-            prompt="",
-            response={"new_bullet_points": []},
-            message_index=0,
-            memory_updated=False,
-            error=str(exc),
-        )
-        return result
-
-    # get the state of the thread
-    state = dict(snapshot.values or {})
-    messages = list(state.get("messages", []))
-    if not messages: 
-        return ReflectionResult()
-    
-    user_count = sum(1 for m in messages if m.type == "human")
-    return await run_reflection_gate(
+    return await run_session_reflection(
+        app,
         thread_id,
-        messages,
         model,
-        user_count,
-        last_reflection_index=int(state.get("last_reflection_index", 0) or 0),
-        todos=render_todos(state.get("todos", [])),
         memory=memory,
         persistence=persistence,
         aux_prompts=aux_prompts,

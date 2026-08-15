@@ -34,12 +34,38 @@ def test_help_command_lists_supported_commands(make_app):
     assert "commands" in text
     assert "/config" in text
     assert "/status" in text
+    assert "/reflection" in text
     assert "/clear" in text
     assert "/menu" not in text
     assert "/cost" not in text
     assert "/cache" not in text
     assert "/skills" not in text
     assert "/image" not in text
+
+
+def test_reflection_command_runs_and_displays_new_bullets(make_app):
+    app = make_app()
+
+    asyncio.run(_dispatch_with_sink(app, "/reflection"))
+
+    assert app.coding.reflection_runs == 1
+    text = "\n".join(line.text for line in app._lines)
+    assert "Captured the latest work" in text
+
+
+def test_reflection_command_is_not_available_while_busy(make_app):
+    app = make_app()
+
+    render.set_sink(app)
+    try:
+        asyncio.run(dispatch(app, "/reflection", busy=True))
+    finally:
+        render.set_sink(None)
+
+    assert app.coding.reflection_runs == 0
+    assert "not available while a task is running" in "\n".join(
+        line.text for line in app._lines
+    )
 
 
 def test_skill_catalog_uses_compact_sources_and_wrapped_table(
@@ -96,6 +122,60 @@ def test_clear_command_only_clears_rendered_transcript(make_app):
         {"kind": "user", "content": "remember this"}
     ]
     assert app.assistant_history == ["remembered answer"]
+
+
+def test_export_command_writes_html_and_refuses_overwrite(make_app, tmp_path):
+    app = make_app()
+    app.coding.project_root = tmp_path
+    app.coding.thread_store.events[app.thread_id] = [
+        {"kind": "user", "content": "export this", "t": "2026-01-01T00:00:00+00:00"},
+        {"kind": "assistant", "content": "exported", "t": "2026-01-01T00:00:01+00:00"},
+    ]
+    destination = tmp_path / "nested" / "My export.html"
+
+    asyncio.run(_dispatch_with_sink(app, f'/export "{destination}"'))
+
+    assert destination.is_file()
+    transcript = destination.read_text(encoding="utf-8")
+    assert "export this" in transcript
+    text = "\n".join(line.text for line in app._lines)
+    assert "Exported 2 entries" in text
+
+    asyncio.run(_dispatch_with_sink(app, f'/export "{destination}"'))
+    text = "\n".join(line.text for line in app._lines)
+    assert "Refusing to overwrite" in text
+
+
+def test_export_command_validates_persistence_and_usage(make_app, tmp_path):
+    app = make_app()
+    app.coding.project_root = tmp_path
+
+    asyncio.run(_dispatch_with_sink(app, "/export"))
+    assert "Usage: /export <path.html>" in "\n".join(line.text for line in app._lines)
+
+    app._lines.clear()
+    asyncio.run(_dispatch_with_sink(app, "/export transcript.html"))
+    assert "no durable events" in "\n".join(line.text for line in app._lines)
+
+    app._lines.clear()
+    app.coding.thread_store.auto_save = False
+    asyncio.run(_dispatch_with_sink(app, "/export transcript.html"))
+    assert "autosave is disabled" in "\n".join(line.text for line in app._lines)
+
+
+def test_export_command_is_not_available_while_busy(make_app, tmp_path):
+    app = make_app()
+    app.coding.project_root = tmp_path
+    app.coding.thread_store.events[app.thread_id] = [
+        {"kind": "user", "content": "still running"}
+    ]
+
+    asyncio.run(_dispatch_busy(app, "/export busy.html"))
+
+    assert not (tmp_path / "busy.html").exists()
+    assert "/export is not available while a task is running" in "\n".join(
+        line.text for line in app._lines
+    )
 
 
 def test_status_command_shows_session_summary(make_app):

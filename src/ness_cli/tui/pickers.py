@@ -549,7 +549,11 @@ class MenuMixin:
     def _menu_row_fragments(self, item: MenuItem, *, selected: bool) -> list[tuple[str, str]]:
         width = term_width()
         prefix = "-> " if selected else "   "
-        suffix_width = len(item.suffix) + 2 if item.suffix else 0
+        suffix = item.suffix
+        if self._menu_kind == "threads" and suffix.startswith("⠋"):
+            frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            suffix = frames[self._working_frame % len(frames)] + suffix[1:]
+        suffix_width = len(suffix) + 2 if suffix else 0
         label_limit = (
             MENU_DESC_COL - len(prefix) - suffix_width
             if item.description
@@ -559,8 +563,8 @@ class MenuMixin:
         if len(label) > max(1, label_limit):
             label = label[: max(1, label_limit - 1)] + "…"
         left = f"{prefix}{label}"
-        if item.suffix:
-            left = f"{left}  {item.suffix}"
+        if suffix:
+            left = f"{left}  {suffix}"
         if not selected:
             row = left.ljust(MENU_DESC_COL) + item.description if item.description else left
             return [("class:chrome.menu.row", row[:width].ljust(width))]
@@ -569,8 +573,8 @@ class MenuMixin:
             ("class:chrome.menu.arrow", prefix[1:]),
             ("class:chrome.menu.label.current", label),
         ]
-        if item.suffix:
-            frags.extend([("class:chrome.menu.row.current", "  "), ("class:chrome.menu.suffix", item.suffix)])
+        if suffix:
+            frags.extend([("class:chrome.menu.row.current", "  "), ("class:chrome.menu.suffix", suffix)])
         if item.description:
             used = len(prefix) + len(label) + suffix_width
             frags.append(("class:chrome.menu.row.current", " " * max(1, MENU_DESC_COL - used)))

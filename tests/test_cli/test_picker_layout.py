@@ -106,3 +106,67 @@ def test_thread_picker_prefixes_local_updated_datetime(make_app) -> None:
 
     assert asyncio.run(exercise()) == f"{expected}  Release prep"
     assert format_thread_updated_at("not-a-date") == ""
+
+
+def test_thread_picker_marks_live_turns_as_working(make_app) -> None:
+    app = make_app()
+
+    async def exercise() -> str:
+        task = asyncio.create_task(
+            app.request_threads_picker(
+                [
+                    {
+                        "thread_id": "session-working",
+                        "name": "Background task",
+                        "live_status": {"status": "working", "elapsed": 2.0},
+                    }
+                ],
+                current_thread_id="session-other",
+            )
+        )
+        await asyncio.sleep(0)
+        suffix = app._prompt_items[0].suffix
+        app._cancel_menu()
+        await task
+        return suffix
+
+    suffix = asyncio.run(exercise())
+    assert "working" in suffix
+    assert suffix.startswith("⠋")
+
+
+def test_thread_picker_clears_spinner_when_turn_finishes(make_app) -> None:
+    app = make_app()
+
+    async def exercise() -> str:
+        release = asyncio.Event()
+
+        async def working() -> None:
+            await release.wait()
+
+        runtime = app._runtime()
+        runtime.task = asyncio.create_task(working())
+        runtime.status = "working"
+        runtime.started_at = 0.0
+        picker = asyncio.create_task(
+            app.request_threads_picker(
+                [
+                    {
+                        "thread_id": app.thread_id,
+                        "name": "Finishing task",
+                        "live_status": {"status": "working", "elapsed": 1.0},
+                    }
+                ],
+                current_thread_id=app.thread_id,
+            )
+        )
+        await asyncio.sleep(0)
+        release.set()
+        await runtime.task
+        await asyncio.sleep(0.1)
+        suffix = app._prompt_items[0].suffix
+        app._cancel_menu()
+        await picker
+        return suffix
+
+    assert "working" not in asyncio.run(exercise())

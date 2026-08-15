@@ -28,6 +28,14 @@ def _relative_to_root(path: str) -> str:
 def _project_root() -> Path:
     return get_session_context().project_root
 
+
+def _resolve_read_path(path: str) -> str:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = _project_root() / candidate
+    return str(candidate.resolve())
+
+
 @tool
 def read(path: str, offset: int = 1, limit: int | None = None) -> str:
     """Read a file from the local filesystem.
@@ -36,7 +44,7 @@ def read(path: str, offset: int = 1, limit: int | None = None) -> str:
     Pass ``limit`` to request fewer or more lines (still capped at 2000).
     """
     try:
-        abs_path = _validate_path(path)
+        abs_path = _resolve_read_path(path)
         lines = Path(abs_path).read_text(encoding="utf-8").splitlines()
         start = max(0, int(offset) - 1)
         requested_limit = READ_FILE_DEFAULT_LIMIT if limit is None else max(0, int(limit))

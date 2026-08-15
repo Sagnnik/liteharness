@@ -252,13 +252,15 @@ Shift+Tab toggles plan/act mode without rebuilding the graph or invalidating the
 **Session**
 
 - `/status`: show provider authentication, account email/tier, every available usage-limit window (including weekly), reset times/credits, and session token/cache/cost stats. Subscription calls are labeled `subscription` rather than estimated as API spend.
-- `/threads`: open a scrollable saved-thread picker, ordered by recent updates and prefixed with local `YYYY-MM-DD HH:mm` timestamps, and switch the transcript in place.
+- `/threads`: open a scrollable saved-thread picker, ordered by recent updates and prefixed with local `YYYY-MM-DD HH:mm` timestamps. Threads with active turns show an animated working indicator; switching away does not interrupt them.
 - `/rename <name>`: set or update the current session's persistent display name (1–80 characters; requires thread autosave).
 - `/fork`: choose a human message, copy the conversation state before it into a child thread, and prefill that message for editing. Forking copies session memory/checkpoints but leaves current working-tree files unchanged.
 - `/goal <objective>`: run up to three worker attempts, each followed by an isolated read-only judge. Failed verdicts become repair instructions for the next attempt.
 - `/save`: archive the current thread with a headline summary.
-- `/new`: archive and start a fresh thread.
+- `/new`: archive and start a fresh thread. During an active turn, the running thread stays in the background and the new thread starts independently.
 - `/compact`: request a cache-safe summary at the next model boundary; the active user/tool turn remains verbatim.
+- `/reflection`: immediately reflect on conversation messages added since the last successful reflection and update session memory.
+- `/export <path.html>`: write the current durable session as a self-contained, interactive HTML transcript. The export retains events from before compactions, includes an in-page normalized JSONL download, omits pasted image bytes, and refuses to overwrite an existing file. Quote paths that contain spaces.
 
 **Context & memory**
 
@@ -312,6 +314,6 @@ Selecting a thread rebuilds user messages, assistant tool-call turns, and tool r
 
 When a thread contains a successful new-format `compaction_llm` checkpoint, resume starts from its summary and replays only raw events after `source_event_seq`. Raw conversation events remain available for audit, rollback, and forks; L3 reminder messages are never written to the event log.
 
-Threads are archived on `/save`, `/new`, thread switching/forking, and session exit. Archived threads get a headline summary from the first user message.
+Idle threads are archived on `/save`, `/new`, thread switching/forking, and session exit. Switching or using `/new` during an active turn leaves that live thread unarchived until it finishes. Archived threads get a headline summary from the first user message.
 
 > **Breaking database change:** the current release does not migrate older thread databases. If `.ness/threads/threads.db` predates persistent session names, Ness stops with an incompatibility error. Back up or remove that file so Ness can create the current schema; removing it discards saved threads.

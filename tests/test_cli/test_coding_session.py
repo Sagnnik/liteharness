@@ -138,6 +138,23 @@ def test_resume_bootstraps_via_session_bootstrap(tmp_path: Path):
     )
 
 
+def test_clone_for_thread_keeps_source_session_independent(coding):
+    target = "session-cloned"
+    coding.thread_store.append_event(
+        target, {"kind": "user", "content": "background work"}
+    )
+    source_id = coding.thread_id
+
+    clone = _run(coding.clone_for_thread(target))
+
+    assert coding.thread_id == source_id
+    assert clone.thread_id == target
+    assert clone is not coding
+    assert clone.session is not coding.session
+    assert clone.session.checkpointer is not coding.session.checkpointer
+    assert clone.session._pending_bootstrap
+
+
 def test_resume_replays_each_threads_cost_only_once(coding):
     for thread_id in ("t-cost-a", "t-cost-b"):
         coding.thread_store.append_event(

@@ -11,6 +11,7 @@ against a missing sink.
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
+from contextvars import ContextVar, Token
 from typing import Any, Iterable, Protocol
 
 from ness_agent import ApprovalHandler
@@ -82,6 +83,9 @@ class RenderSink(Protocol):
 
 # --- sink registry ---------------------------------------------------------
 _ACTIVE_SINK: RenderSink | None = None
+_TASK_SINK: ContextVar[RenderSink | None] = ContextVar(
+    "ness_cli_task_render_sink", default=None
+)
 
 
 def set_sink(sink: RenderSink | None) -> None:
@@ -91,6 +95,20 @@ def set_sink(sink: RenderSink | None) -> None:
 
 def get_sink() -> RenderSink | None:
     return _ACTIVE_SINK
+
+
+def set_task_sink(sink: RenderSink) -> Token:
+    """Route render calls made by the current async task to ``sink``.
+
+    Context variables follow asyncio task boundaries, which lets concurrent
+    thread turns share one TUI process without background events leaking into
+    whichever transcript happens to be visible.
+    """
+    return _TASK_SINK.set(sink)
+
+
+def reset_task_sink(token: Token) -> None:
+    _TASK_SINK.reset(token)
 
 
 class _NullStream:
@@ -203,7 +221,7 @@ _NULL_SINK = _NullSink()
 
 
 def _sink() -> RenderSink:
-    return _ACTIVE_SINK or _NULL_SINK
+    return _TASK_SINK.get() or _ACTIVE_SINK or _NULL_SINK
 
 
 # --- public facade ---------------------------------------------------------

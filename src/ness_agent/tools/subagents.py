@@ -46,7 +46,7 @@ Operating constraints:
 # ContextVars for subagent specific memory pockets to avoid collisions between parallel subagent runs
 _subagent_model: ContextVar[Any | None] = ContextVar("subagent_model", default=None)
 _parent_thread_id: ContextVar[str | None] = ContextVar("parent_thread_id", default=None)
-_active_subagent_runs = 0
+_active_subagent_runs_by_parent: dict[str, int] = {} # track subagents run by paren't thread id
 
 # Cross-call concurrency cap shared by every spawn_subagent invocation in this
 # process. A single spawn_subagent call already bounds in-call concurrency via an
@@ -141,9 +141,11 @@ def set_subagent_runtime(model: Any | None, parent_thread_id: str | None = None)
         _parent_thread_id.set(parent_thread_id)
 
 
-def subagent_runs_active() -> int:
-    """Number of subagent graphs currently executing (nested CLI events should be hidden)."""
-    return _active_subagent_runs
+def subagent_runs_active(parent_thread_id: str | None = None) -> int:
+    """Number of executing child graphs, optionally scoped to one parent."""
+    if parent_thread_id is not None:
+        return _active_subagent_runs_by_parent.get(parent_thread_id, 0)
+    return sum(_active_subagent_runs_by_parent.values())
 
 def _available_agent_names() -> frozenset[str]:
     agents_dir = _agents_dir()
@@ -391,8 +393,10 @@ async def _invoke_subagent(
     thread_id: str,
 ) -> str:
     """Main subagent invocation using the SDK graph builder."""
-    global _active_subagent_runs
-    _active_subagent_runs += 1
+    parent_thread_id = _parent_thread_id.get() or ""
+    _active_subagent_runs_by_parent[parent_thread_id] = (
+        _active_subagent_runs_by_parent.get(parent_thread_id, 0) + 1
+    )
     try:
         from ness_agent.graph.builder import build_graph
         from ness_agent.tools import ToolRegistry
@@ -457,7 +461,11 @@ async def _invoke_subagent(
             )
         return str(final or "Subagent completed with an empty final message")
     finally:
-        _active_subagent_runs -= 1
+        remaining = _active_subagent_runs_by_parent.get(parent_thread_id, 1) - 1
+        if remaining > 0:
+            _active_subagent_runs_by_parent[parent_thread_id] = remaining
+        else:
+            _active_subagent_runs_by_parent.pop(parent_thread_id, None)
 
 
 def _load_agent(name: str) -> dict[str, Any] | str:

@@ -100,6 +100,64 @@ def test_reflection_result_returns_bullets(tmp_path: Path):
     assert result.memory_updated is True
     assert result.bullets == ("Added rate limiter", "Wired auth")
     assert result.error == ""
+    assert result.message_index == 1
+
+
+def test_session_run_reflection_uses_unreflected_tail_and_updates_cursor(
+    tmp_path: Path,
+):
+    seen: dict[str, str] = {}
+    calls: list[None] = []
+
+    class ReflectionModel:
+        def with_structured_output(self, _schema):
+            return self
+
+        async def ainvoke(self, messages):
+            calls.append(None)
+            seen["prompt"] = str(messages[0].content)
+            return SimpleNamespace(
+                model_dump=lambda: {"new_bullet_points": ["Finished the parser"]},
+                new_bullet_points=["Finished the parser"],
+            )
+
+    class App:
+        def __init__(self):
+            self.updates: list[dict] = []
+            self.values = {
+                "messages": [
+                    HumanMessage(content="already reflected request"),
+                    AIMessage(content="already reflected answer"),
+                    HumanMessage(content="new parser request"),
+                    AIMessage(content="new parser answer"),
+                ],
+                "last_reflection_index": 2,
+                "todos": [],
+            }
+
+        async def aget_state(self, _config):
+            return SimpleNamespace(values=self.values)
+
+        async def aupdate_state(self, _config, updates):
+            self.updates.append(dict(updates))
+            self.values.update(updates)
+
+    agent = _agent(tmp_path, reflection_model=ReflectionModel())
+    session = agent.session(thread_id="manual-reflection", git_available=False)
+    fake_app = App()
+    session._app = fake_app
+
+    result = asyncio.run(session.run_reflection())
+
+    assert result.bullets == ("Finished the parser",)
+    assert result.message_index == 4
+    assert "new parser request" in seen["prompt"]
+    assert "already reflected request" not in seen["prompt"]
+    assert fake_app.updates == [{"last_reflection_index": 4}]
+
+    empty = asyncio.run(session.run_reflection())
+    assert empty.message_index is None
+    assert len(calls) == 1
 
 
 def test_agent_node_tool_loop_without_overlay(tmp_path: Path):
