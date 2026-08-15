@@ -504,6 +504,14 @@ options=NessAgentOptions(
 await session.finalize_reflection()
 ```
 
+An application can also trigger an incremental pass explicitly, even when both
+automatic reflection settings are disabled:
+
+```python
+result = await session.run_reflection()
+print(result.bullets)
+```
+
 Durable audit rows use ThreadStore `kind=reflection`. There is no live
 `SessionEvent` for reflection.
 

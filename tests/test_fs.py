@@ -110,6 +110,13 @@ class ReadFileTests(SessionContextTestMixin, unittest.TestCase):
         self.assertNotIn(" 401| line 401", result)
         self.assertIn("truncated", result)
 
+    def test_reads_file_outside_project(self) -> None:
+        with tempfile.TemporaryDirectory() as outside_dir:
+            target = Path(outside_dir) / "outside.txt"
+            target.write_text("outside project\n", encoding="utf-8")
+            result = read.invoke({"path": str(target)})
+        self.assertIn("outside project", result)
+
     def test_requested_limit_is_capped(self) -> None:
         target = self.root / "huge.txt"
         target.write_text("\n".join(f"line {idx}" for idx in range(1, 2501)), encoding="utf-8")

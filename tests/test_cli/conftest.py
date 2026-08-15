@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from ness_agent.types import SessionEvent
+from ness_agent.reflection import ReflectionResult
 
 from ness_cli.config import settings
 from ness_cli.tui.app import TuiApp
@@ -211,6 +212,12 @@ class FakeCoding:
         self.reset_ids: list[str] = []
         self.rolled_back_seq: int | None = None
         self.compact_requested = False
+        self.reflection_runs = 0
+        self.reflection_result = ReflectionResult(
+            memory_updated=True,
+            bullets=("Captured the latest work",),
+            message_index=2,
+        )
         self.saved = False
         self.reloaded = False
         self._events: list[SessionEvent] = []
@@ -281,6 +288,10 @@ class FakeCoding:
     async def finalize_reflection(self) -> None:
         return None
 
+    async def run_reflection(self) -> ReflectionResult:
+        self.reflection_runs += 1
+        return self.reflection_result
+
     async def refresh_context_snapshot(self) -> dict:
         return {}
 
@@ -292,6 +303,30 @@ class FakeCoding:
         self.resumed.append(thread_id)
         self.thread_id = thread_id
         return True
+
+    async def clone_for_thread(self, thread_id: str) -> "FakeCoding":
+        clone = self.new_for_thread(thread_id)
+        await clone.resume(thread_id)
+        return clone
+
+    def new_for_thread(self, thread_id: str) -> "FakeCoding":
+        clone = type(self)()
+        for name in (
+            "ness_dir",
+            "project_root",
+            "thread_store",
+            "cost_tracker",
+            "permission_store",
+            "memory_store",
+            "hook_runner",
+            "skill_loader",
+            "tool_registry",
+            "agent",
+        ):
+            setattr(clone, name, getattr(self, name))
+        clone.mode = self.mode
+        clone.thread_id = thread_id
+        return clone
 
     async def reset(self, thread_id: str) -> None:
         self.reset_ids.append(thread_id)

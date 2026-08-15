@@ -18,6 +18,7 @@ from ness_cli.tui.formatting import _format_duration, worked_fragments, working_
 from ness_cli.tui.utils import context_bar, display_cwd, model_footer_name, term_height, term_width
 from ness_cli.tui.widgets import TranscriptViewportControl
 from ness_cli.chat_model import active_model_name, active_reasoning_effort
+from ness_cli.provider.registry import active_provider
 
 
 class ChromeMixin:
@@ -284,18 +285,24 @@ class ChromeMixin:
         used = int(self.context_used or 0)
         total = int(self.context_total or 0)
         tracker = self.coding.cost_tracker
+        billing_label = active_provider().billing_label
         cache_key = (
             width,
             tracker.input_tokens,
             tracker.output_tokens,
             tracker.cost_usd,
+            billing_label,
             used,
             total,
         )
         if cache_key == self._stats_line_cache_key:
             return self._stats_line_cache
         bar = context_bar(used, total)
-        cost = f"${tracker.cost_usd:.4f}" if tracker.cost_usd > 0 else "$0.0000"
+        cost = (
+            "subscription"
+            if billing_label == "subscription"
+            else (f"${tracker.cost_usd:.4f}" if tracker.cost_usd > 0 else "$0.0000")
+        )
         left = f"↑ {tracker.input_tokens:,}  ↓ {tracker.output_tokens:,}  {cost}"
         right = f"context {used // 1000}k/{total // 1000}k used {bar}"
         gap = max(1, width - len(left) - len(right))

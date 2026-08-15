@@ -17,6 +17,7 @@ from ness_agent.context.budget import (
 )
 from ness_agent.graph.builder import build_graph
 from ness_agent.graph.helpers import _effective_conversation, _incremental_input_tokens
+from ness_agent.reflection import ReflectionResult
 from ness_agent.session_context import SessionContext, set_session_context, reset_session_context
 from ness_agent.tracing.semconv import (
     AGENT_MODE,
@@ -392,13 +393,11 @@ class Session:
         v, self._force_compact = self._force_compact, False
         return v
 
-    async def finalize_reflection(self) -> None:
-        """Finalizes the session reflection."""
-        if not self._cfg.options.session_end_reflection:
-            return
-        from ness_agent.reflection import finalize_session_reflection
+    async def run_reflection(self) -> ReflectionResult:
+        """Run reflection immediately over the unreflected conversation tail."""
+        from ness_agent.reflection import run_session_reflection
 
-        await finalize_session_reflection(
+        return await run_session_reflection(
             self._app,
             self.thread_id,
             self._cfg.reflection_model or self._cfg.model,
@@ -408,6 +407,12 @@ class Session:
             tracer=self._cfg.tracer,
             tracing=self._cfg.tracing,
         )
+
+    async def finalize_reflection(self) -> ReflectionResult | None:
+        """Run end-of-session reflection when it is enabled."""
+        if not self._cfg.options.session_end_reflection:
+            return
+        return await self.run_reflection()
 
     async def get_state(self) -> dict[str, Any]:
         """Return the current graph state values for this thread.

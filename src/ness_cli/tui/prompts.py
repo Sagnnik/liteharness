@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
@@ -229,6 +230,7 @@ class PromptMixin:
         self._prompt_title = "saved threads"
         self._prompt_hint = "↑/↓ select · Enter switch · Esc cancel"
         self._prompt_items = []
+        base_suffixes: dict[str, str] = {}
         current_index = 0
         for index, thread in enumerate(threads):
             thread_id = str(thread.get("thread_id") or "")
@@ -242,6 +244,14 @@ class PromptMixin:
             if updated_at:
                 label = f"{updated_at}  {label}"
             suffixes: list[str] = []
+            live_status = thread.get("live_status") or {}
+            status = str(live_status.get("status") or "")
+            if status == "waiting_input":
+                suffixes.append("? waiting for input")
+            elif status == "cancelling":
+                suffixes.append("⠋ cancelling")
+            elif status:
+                suffixes.append("⠋ working")
             if thread_id == current_thread_id:
                 suffixes.append("(current)")
                 current_index = index
@@ -253,15 +263,56 @@ class PromptMixin:
                 forks = int(thread.get("fork_count") or 0)
                 if forks:
                     suffixes.append(f"×{forks}")
+            live_count = 1 if status else 0
+            base_suffixes[thread_id] = " ".join(suffixes[live_count:])
             self._prompt_items.append(
                 MenuItem(thread_id, label[:100], suffix=" ".join(suffixes))
             )
         self._prompt_summary_lines = []
         self._prompt_detail_lines = []
         self._open_picker("threads", "", index=current_index)
-        result = await self._prompt_future
-        self._clear_prompt()
-        return str(result or "")
+        animate = any(thread.get("live_status") for thread in threads)
+
+        async def animate_spinner() -> None:
+            while self._prompt_kind == "threads":
+                await asyncio.sleep(0.08)
+                self._working_frame += 1
+                statuses = self.active_thread_statuses()
+                refreshed: list[MenuItem] = []
+                for item in self._prompt_items:
+                    status = str((statuses.get(item.key) or {}).get("status") or "")
+                    if status == "waiting_input":
+                        live = "? waiting for input"
+                    elif status == "cancelling":
+                        live = "⠋ cancelling"
+                    elif status:
+                        live = "⠋ working"
+                    else:
+                        live = ""
+                    suffix = " ".join(
+                        part for part in (live, base_suffixes.get(item.key, "")) if part
+                    )
+                    refreshed.append(
+                        MenuItem(
+                            item.key,
+                            item.label,
+                            description=item.description,
+                            suffix=suffix,
+                        )
+                    )
+                self._prompt_items = refreshed
+                self.invalidate()
+
+        animation_task = asyncio.create_task(animate_spinner()) if animate else None
+        try:
+            result = await self._prompt_future
+            return str(result or "")
+        finally:
+            if animation_task is not None:
+                animation_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await animation_task
+            self._clear_prompt()
 
     async def request_fork_picker(self, turns: list[dict]) -> str:
         self._prompt_future = asyncio.get_running_loop().create_future()

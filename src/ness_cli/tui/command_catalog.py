@@ -33,6 +33,7 @@ COMMAND_CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("save", "Archive the current thread", "Session", "/save"),
     CommandSpec("new", "Archive and start a fresh thread", "Session", "/new"),
     CommandSpec("compact", "Force compaction on the next turn", "Session", "/compact"),
+    CommandSpec("reflection", "Reflect on new conversation history now", "Session", "/reflection"),
     CommandSpec("export", "Export the full session to HTML", "Session", "/export <path.html>"),
     CommandSpec("rollback", "Roll the thread back to a prior user turn", "Session", "/rollback [<seq>]"),
     CommandSpec("init", "Initialize .ness/ (dirs, defaults, empty NESS.md)", "Context", "/init"),

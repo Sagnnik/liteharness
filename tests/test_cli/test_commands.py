@@ -34,12 +34,38 @@ def test_help_command_lists_supported_commands(make_app):
     assert "commands" in text
     assert "/config" in text
     assert "/status" in text
+    assert "/reflection" in text
     assert "/clear" in text
     assert "/menu" not in text
     assert "/cost" not in text
     assert "/cache" not in text
     assert "/skills" not in text
     assert "/image" not in text
+
+
+def test_reflection_command_runs_and_displays_new_bullets(make_app):
+    app = make_app()
+
+    asyncio.run(_dispatch_with_sink(app, "/reflection"))
+
+    assert app.coding.reflection_runs == 1
+    text = "\n".join(line.text for line in app._lines)
+    assert "Captured the latest work" in text
+
+
+def test_reflection_command_is_not_available_while_busy(make_app):
+    app = make_app()
+
+    render.set_sink(app)
+    try:
+        asyncio.run(dispatch(app, "/reflection", busy=True))
+    finally:
+        render.set_sink(None)
+
+    assert app.coding.reflection_runs == 0
+    assert "not available while a task is running" in "\n".join(
+        line.text for line in app._lines
+    )
 
 
 def test_skill_catalog_uses_compact_sources_and_wrapped_table(
