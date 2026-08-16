@@ -12,9 +12,12 @@
 Ness Agent is an experimental, hackable coding-agent harness for engineers who want to own the loop. It ships as a **Python SDK** you can embed in your own tools and **Ness**, an interactive CLI for day-to-day coding sessions.
 
 <p align="center">
-  <img src="assets/ness_agent_sc.png" alt="NessAgent terminal UI showing project context, tool execution, and Act mode" width="100%">
+  <video controls muted loop playsinline width="100%" aria-label="NessAgent terminal UI demo">
+    <source src="https://raw.githubusercontent.com/Sagnnik/ness-agent/main/assets/ness-demo6.mp4" type="video/mp4">
+    <a href="https://raw.githubusercontent.com/Sagnnik/ness-agent/main/assets/ness-demo6.mp4">Watch the NessAgent terminal UI demo.</a>
+  </video>
 </p>
-<p align="center"><em>NessAgent TUI in Act mode.</em></p>
+<p align="center"><em>NessAgent TUI in Act mode.</em> · <a href="https://raw.githubusercontent.com/Sagnnik/ness-agent/main/assets/ness-demo6.mp4">Open the demo video</a></p>
 
 > **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md).
 

@@ -1791,6 +1791,20 @@ input:focus-visible {
   max-width: 56rem;
 }
 
+.post-reading__cover {
+  width: 100%;
+  margin: 0 0 clamp(28px, 4vw, 40px);
+  border: 1px solid var(--ness-border-soft);
+  background: var(--ness-panel);
+  overflow: hidden;
+}
+
+.post-reading__cover img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .post-reading__header {
   margin-bottom: clamp(28px, 4vw, 40px);
 }

@@ -144,6 +144,16 @@ function BlogPost() {
         ) : null}
 
         <div className="post-reading__main">
+          {post.image ? (
+            <figure className="post-reading__cover">
+              <img
+                src={resolveBlogAsset(post.contentSlug, post.image)}
+                alt="Ness Agent harness architecture connecting runtime systems around the model"
+                loading="eager"
+                fetchPriority="high"
+              />
+            </figure>
+          ) : null}
           <header className="post-reading__header">
             <div className="post-reading__meta">
               <Link to="/blog" className="post-reading__back">
