@@ -14,6 +14,7 @@ Ness Agent is an experimental, hackable coding-agent harness for engineers who w
 <p align="center">
   <img src="assets/ness_agent_sc.png" alt="NessAgent terminal UI showing project context, tool execution, and Act mode" width="100%">
 </p>
+<p align="center"><a href="https://raw.githubusercontent.com/Sagnnik/ness-agent/main/assets/ness-demo6.mp4">Open the demo video</a></p>
 <p align="center"><em>NessAgent TUI in Act mode.</em></p>
 
 > **0.x experimental** — APIs may change until 1.0. See [CHANGELOG](https://github.com/Sagnnik/ness-agent/blob/main/CHANGELOG.md).

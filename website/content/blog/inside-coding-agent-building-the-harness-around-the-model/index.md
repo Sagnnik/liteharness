@@ -2,6 +2,7 @@
 title: "Inside Ness Agent: Building the Harness Around the Model"
 date: "2026-08-09"
 description: "Context Engineering, Prompt Caching, Tools, Memory, Compaction, Permissions and the runtime architecture behind Ness Agent."
+image: "assets/blog_cover_image.png"
 slug: inside-coding-agent-building-the-harness-around-the-model
 ---
 Most discussions about coding agents begin with the model. With every new release, the first thing you see is the **Artificial Analysis Intelligence Index**. What is its intelligence score? What about token efficiency or cost? How long can it sustain an agentic trajectory? Or, increasingly, which company did the latest model supposedly hack?

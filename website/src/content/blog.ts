@@ -2,6 +2,8 @@ export interface BlogPost {
   title: string
   date: string
   description: string
+  /** Optional social/share image. Keep empty until a cover is selected. */
+  image: string
   slug: string
   /** Folder name under content/blog/ — used for asset paths, not the URL slug. */
   contentSlug: string
@@ -49,7 +51,13 @@ function parseFrontmatter(source: string): {
       value = value.slice(1, -1)
     }
 
-    if (key === 'title' || key === 'date' || key === 'description' || key === 'slug') {
+    if (
+      key === 'title' ||
+      key === 'date' ||
+      key === 'description' ||
+      key === 'image' ||
+      key === 'slug'
+    ) {
       data[key] = value
     }
   }
@@ -66,6 +74,7 @@ export const blogPosts: BlogPost[] = Object.entries(entries)
       title: parsed.data.title ?? 'Untitled field note',
       date: parsed.data.date ?? '',
       description: parsed.data.description ?? '',
+      image: parsed.data.image ?? '',
       slug: parsed.data.slug ?? contentSlug,
       contentSlug,
       body: parsed.content,
