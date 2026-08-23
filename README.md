@@ -36,7 +36,6 @@ Ness Agent is an experimental, hackable coding-agent harness for engineers who w
 | **Ness Agent SDK** | LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, tracing |
 | **Ness CLI** | Terminal UI (`ness`), plan/act modes, git worktrees, global config, `.ness/` project layout |
 
-Both are included in the `ness-agent` PyPI package. OpenRouter-compatible chat models, native tool-calling, cache-safe summary compaction, and filesystem-driven extension points under `.ness/`.
 
 ## Installation
 
@@ -62,10 +61,15 @@ uv tool install --upgrade ness-agent
 # or: pipx install ness-agent
 ```
 
-Launch `ness` and run `/login` to use either a Codex subscription or an
-OpenRouter API key. Codex sign-in uses the installed `codex` CLI's managed
-browser/device flow and stores credentials in Ness's isolated global config
-directory; it never reads or changes `~/.codex`.
+Launch `ness` and run `/login` to sign in to Codex with ChatGPT or configure an
+OpenRouter API key. Codex authentication uses the installed `codex` CLI
+app-server's managed browser/device flow and stores credentials in Ness's
+isolated global config directory; it never reads or changes `~/.codex`.
+
+> [!NOTE]
+> Ness's Codex model transport is experimental. Authentication and credential
+> management are handled by Codex app-server, while Ness sends inference
+> requests directly to the ChatGPT Codex Responses endpoint used by Codex CLI.
 
 For environment-based OpenRouter setup:
 

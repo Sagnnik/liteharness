@@ -24,9 +24,9 @@ const NEWS = [
   },
   {
     slug: 'codex-provider-and-login',
-    title: 'Codex subscription, /login, and install scripts',
+    title: 'Codex ChatGPT sign-in, /login, and install scripts',
     description:
-      'Sign in with a Codex subscription or OpenRouter key, switch providers in-session, and install Ness from curl or PowerShell.',
+      'Sign in to Codex with ChatGPT or use an OpenRouter key, switch providers in-session, and install Ness from curl or PowerShell.',
     date: '2026-08-12',
   },
   {
@@ -179,7 +179,8 @@ function renderHtml(template, metadata) {
 }
 
 function urlFor(pathname) {
-  return new URL(pathname, SITE_URL).toString()
+  const normalizedPath = pathname === '/' ? '/' : `${pathname.replace(/\/+$/, '')}/`
+  return new URL(normalizedPath, SITE_URL).toString()
 }
 
 function makeMetadata({ pathname, title, description, type = 'website', date, image }) {

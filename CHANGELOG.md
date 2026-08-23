@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OpenCode Go as a built-in CLI model provider, with per-model Responses, Chat Completions, and Anthropic Messages routing, live model discovery, separate API-key storage, and rolling 5-hour/weekly/monthly subscription usage in `/status`.
+- Per-session effective SDK configuration: `NessAgent.session()` now accepts main and reflection model overrides, `Session.config` / `Session.cost_tracker` expose the effective session view, and `Session.configure_models()` can rebind one live session without changing its siblings.
+- `NessAgent.configure_default_models()` for updating the model defaults inherited by sessions created in the future.
+
+### Changed
+
+- A `NessAgent` now acts as a project-scoped owner of shared services and defaults while every `Session` receives isolated mutable runtime views for options, temporary permission rules, active MCP tools, and cost totals. Thread persistence, hooks, memory, tool definitions, persistent permission rules, tracing, and pricing remain shared.
+- CLI model/provider/reasoning changes now update the selected thread and future sessions only; other live thread runtimes retain the model configuration with which they were created.
+- Cost reporting is session-first: live usage accumulates in both the session tracker and the agent's current-process aggregate, while replayed durable usage restores only the session total.
+
+### Fixed
+
+- Concurrent `/new` and `/threads` runtimes no longer overwrite one another's effective models, temporary approvals, MCP activation, per-session callbacks, cost totals, or displayed model/provider metadata.
+- Persistent permission updates are serialized and written atomically while `session` approval rules remain local to the session that created them.
+- Resume restores historical thread cost without double-counting it as new agent spend, forks exclude inherited usage from child totals, and rollback preserves already-incurred session cost.
+- The experimental ChatGPT-authenticated Codex transport now uses one stable UUID per thread for `prompt_cache_key` and the Codex Responses transport's session-routing header without sending public-API-only cache controls; cache reads and writes are reported per call, append-only prefixes can be verified through privacy-safe debug fingerprints, and backend validation errors include their response detail and request ID.
+
 ## [0.2.2] - 2026-08-15 — Released
 
 ### Added
@@ -20,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The SDK `read` tool can now read absolute file paths outside the configured project root; relative paths still resolve from the project root, while write, edit, and delete paths remain project-bound.
 - The TUI footer now labels Codex plan-backed usage as `subscription` instead of displaying the misleading `$0.0000`, while retaining dollar totals for usage-based providers.
-- Codex subscription requests now retry transient SSE failures such as `server_is_overloaded`, service-unavailable, server, and rate-limit errors with bounded exponential backoff, jitter, and `Retry-After` support; non-transient stream errors still fail immediately.
+- ChatGPT-authenticated Codex transport requests now retry transient SSE failures such as `server_is_overloaded`, service-unavailable, server, and rate-limit errors with bounded exponential backoff, jitter, and `Retry-After` support; non-transient stream errors still fail immediately.
 
 ### Fixed
 
@@ -30,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Codex subscription provider with browser and device-code authentication via `/login`, using the installed `codex` CLI app-server and isolated Ness global credentials (never reads or writes `~/.codex`).
+- Experimental Codex integration with ChatGPT browser and device-code authentication via `/login`, using the installed `codex` CLI app-server for authentication and isolated Ness global credentials (never reads or writes `~/.codex`). Model inference uses Ness's separate ChatGPT-authenticated Codex Responses transport.
 - Pluggable model provider layer (`ness_cli/provider/`) with shared registry, profile selection, and separate Codex and OpenRouter adapters/chat models.
 - Install scripts at `https://nessagent.dev/install.sh` (macOS/Linux) and `install.ps1` (Windows).
 - Persistent session names through the SDK `Session.set_name()` / `ThreadStore.set_thread_name()` APIs and the interactive `/rename <name>` command.
@@ -41,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `/login` is the primary provider onboarding path: choose Codex subscription or OpenRouter API key, switch active providers mid-session, and reconnect or log out from a dedicated picker.
+- `/login` is the primary provider onboarding path: sign in to Codex with ChatGPT or configure an OpenRouter API key, switch active providers mid-session, and reconnect or log out from a dedicated picker.
 - `/status` labels subscription usage as `subscription` rather than estimating it as API spend.
 - TUI pickers now expand responsively to show up to 12 choices while retaining transcript space, with improved approval and question layouts.
 - **Breaking:** the SQLite `threads` table now requires a `name` column. Automatic database migrations are intentionally unsupported; back up or remove `.ness/threads/threads.db` before using this version. Removing it permanently discards saved threads unless they were backed up externally.

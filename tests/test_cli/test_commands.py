@@ -184,6 +184,7 @@ def test_status_command_shows_session_summary(make_app):
     text = "\n".join(line.text for line in app._lines)
     assert "session status" in text
     assert "cache read" in text
+    assert "cache write" in text
 
 
 def test_rename_command_sets_normalized_session_name(make_app):
@@ -237,7 +238,7 @@ def test_login_provider_picker_keeps_full_provider_name(make_app):
     app = make_app()
     provider = SimpleNamespace(
         id="codex",
-        display_name="Codex subscription",
+        display_name="Codex (ChatGPT)",
         login_description="ChatGPT subscription",
         is_authenticated=lambda: True,
     )
@@ -249,11 +250,11 @@ def test_login_provider_picker_keeps_full_provider_name(make_app):
     ):
         item = _provider_picker_items()[0]
 
-    assert item.label == "Codex subscription"
+    assert item.label == "Codex (ChatGPT)"
     assert item.suffix == ""
     assert item.description == "ChatGPT subscription · active · connected"
     row_text = "".join(text for _, text in app._menu_row_fragments(item, selected=True))
-    assert "Codex subscription" in row_text
+    assert "Codex (ChatGPT)" in row_text
     assert "Code…" not in row_text
 
 
@@ -261,7 +262,7 @@ def test_signed_out_codex_skips_connect_and_goes_to_methods(make_app):
     app = make_app()
     provider = SimpleNamespace(
         id="codex",
-        display_name="Codex subscription",
+        display_name="Codex (ChatGPT)",
         login_description="ChatGPT subscription",
         is_authenticated=lambda: False,
         login_methods=lambda: (
@@ -338,7 +339,7 @@ def test_connected_provider_only_offers_reconnect_and_logout(make_app):
     app = make_app()
     provider = SimpleNamespace(
         id="codex",
-        display_name="Codex subscription",
+        display_name="Codex (ChatGPT)",
         login_description="ChatGPT subscription",
         is_authenticated=lambda: True,
     )
@@ -360,7 +361,7 @@ def test_connected_provider_only_offers_reconnect_and_logout(make_app):
 def test_active_logout_prefers_previously_active_connected_provider(make_app):
     app = make_app()
     selected = SimpleNamespace(
-        display_name="Codex subscription",
+        display_name="Codex (ChatGPT)",
         logout=AsyncMock(return_value="signed out"),
     )
     previous = SimpleNamespace(
@@ -395,7 +396,7 @@ def test_active_logout_prefers_previously_active_connected_provider(make_app):
 def test_active_logout_without_fallback_preserves_thread_but_rebuilds(make_app):
     app = make_app()
     selected = SimpleNamespace(
-        display_name="Codex subscription",
+        display_name="Codex (ChatGPT)",
         logout=AsyncMock(return_value="signed out"),
     )
     app.rebuild_graph = Mock()
@@ -508,6 +509,7 @@ def test_config_session_toggles_update_active_runtime(make_app):
         ) = old
 
     assert options.enable_approval is False
+    assert app.coding.agent.config.options.enable_approval is False
     assert options.auto_save_threads is False
     assert options.session_end_reflection is True
     assert app.coding.thread_store.auto_save is False

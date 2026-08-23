@@ -68,9 +68,10 @@ Project `.env` files are not loaded or migrated for Ness application settings. E
 Use `/login` to authenticate, activate, reconnect, or log out of a model provider.
 Selecting a connected provider activates it and opens its Reconnect/Log out menu;
 selecting a disconnected provider starts authentication without an extra Connect step.
-OpenRouter keys are stored in `secrets.json`. Codex subscription credentials
-are managed by the system `codex` CLI under `<NESS_AGENT_CONFIG_DIR>/codex/`
-with file credential storage forced; Ness does not reuse `~/.codex`.
+OpenRouter and OpenCode Go keys are stored separately in `secrets.json`. ChatGPT credentials for Codex
+are managed by the system `codex` CLI app-server under
+`<NESS_AGENT_CONFIG_DIR>/codex/` with file credential storage forced; Ness
+does not reuse `~/.codex`.
 Codex device-code login additionally requires **Device code authorization for
 Codex** to be enabled in ChatGPT **Settings > Security**. Use browser login if
 that account setting is unavailable.
@@ -78,6 +79,12 @@ that account setting is unavailable.
 Provider-specific model and reasoning choices are nested under
 `provider_profiles` in `configs.json`, so switching providers restores each
 provider's last selection. Legacy top-level OpenRouter settings remain valid.
+
+In the concurrent TUI, saved configuration is the default for new thread
+runtimes. Changing the model, provider, or reasoning effort through `/config`
+also rebuilds the currently selected thread, but it does not mutate sibling
+threads that are already live. Selecting one of those threads later restores
+its pinned runtime configuration.
 
 ---
 
@@ -87,8 +94,8 @@ All except `NESS_DIR` are also editable via `/config` in the Ness TUI.
 
 | Variable | Description |
 |----------|-------------|
-| `MODEL_PROVIDER` | Active provider (`openrouter` by default, or `codex`) |
-| `MODEL_NAME` | Model passed to `ChatOpenRouter` (`deepseek/deepseek-v4-flash` by default) |
+| `MODEL_PROVIDER` | Active provider (`openrouter` by default, `codex`, or `opencode`) |
+| `MODEL_NAME` | Active provider model ID (`deepseek/deepseek-v4-flash` by default) |
 | `REFLECTION_MODEL_NAME` | Model for background session-memory reflection (defaults to `MODEL_NAME`) |
 | `ENABLE_APPROVAL` | Require approval for destructive tools |
 | `AUTO_SAVE_THREADS` | Write thread events to `.ness/threads/` |
@@ -105,6 +112,7 @@ All except `NESS_DIR` are also editable via `/config` in the Ness TUI.
 | `GOAL_MAX_ATTEMPTS` | Maximum worker/judge attempts for `/goal` (default `3`) |
 | `OPENAI_BASE_URL` | Optional custom OpenAI-compatible base URL |
 | `OPENAI_API_KEY` | Provider API key (also stored in `secrets.json` via `/config`) |
+| `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` | OpenCode Go subscription key (also stored separately in `secrets.json`) |
 | `FORMAT_ON_WRITE` | Auto-format supported file types after writes (default `true`) |
 | `NESS_DIR` | Project config directory (default `.ness`) |
 | `NESS_AGENT_CONFIG_DIR` | Override global config root |
@@ -123,9 +131,4 @@ advanced options; provider-only fields are hidden when they do not apply.
 
 The `/config` model picker reads the active provider's catalog. OpenRouter's
 global disk cache is reused for 24 hours with a packaged offline fallback;
-Codex models are supplied by `codex app-server` for the signed-in account.
-
-Codex access tokens are refreshed through `account/read` shortly before JWT
-expiry and once after an HTTP 401. Network, rate-limit, and server failures do
-not trigger credential refresh. The subscription Responses transport is kept
-inside `src/ness_cli/provider/codex/` because that endpoint is experimental.
+`codex app-server` handles ChatGPT authentication and credential management for the signed-in account. Ness performs model inference separately through its experimental ChatGPT-authenticated Codex Responses transport.
