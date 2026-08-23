@@ -15,7 +15,7 @@ const OVERVIEW = `# Ness Agent documentation
 
 Ness Agent is an experimental, hackable coding-agent harness for engineers who want to **own the loop**. One package contains the Python SDK for embedding the loop and **Ness**, the terminal operator surface for coding sessions.
 
-> **0.x experimental** — public APIs may change until 1.0. Pin versions in production and follow the changelog when upgrading. Current release: **0.2.2**.
+> **0.x experimental** — public APIs may change until 1.0. Pin versions in production and follow the changelog when upgrading. Current release: **0.2.3**.
 
 ## Two surfaces, one harness
 
@@ -34,15 +34,15 @@ pip install ness-agent                              # SDK in a project environme
 ness --version                                      # verify the install
 \`\`\`
 
-## What's new in 0.2.2
+## What's new in 0.2.3
 
-- **Concurrent threads** — switch between active turns in \`/threads\` without interrupting them; \`/new\` can start a fresh turn in the background.
-- **Session export** — \`/export <path.html>\` writes a self-contained HTML transcript with pre-compaction events and normalized JSONL download.
-- **On-demand reflection** — \`/reflection\` and SDK \`Session.run_reflection()\` update session memory outside automatic thresholds.
-- **Absolute reads** — the SDK \`read\` tool accepts absolute paths outside the project root; write/edit/delete paths stay project-bound.
-- **Codex resilience** — transient SSE failures retry with bounded backoff, jitter, and \`Retry-After\` support.
+- **Per-session isolation** — concurrent \`/threads\` and \`/new\` runtimes keep separate models, permissions, MCP activation, callbacks, and cost totals.
+- **OpenCode Go** — built-in provider with live model discovery, per-model routing, and rolling subscription usage in \`/status\`.
+- **Session-scoped models** — \`Session.configure_models()\` and \`NessAgent.configure_default_models()\` rebind one session or future defaults without affecting siblings.
+- **Session-first costs** — resume, fork, and rollback preserve or exclude historical spend without double-counting.
+- **Codex cache keys** — one stable UUID per thread for \`prompt_cache_key\`, with per-call cache diagnostics and clearer backend validation errors.
 
-Full notes: [release dispatch](/news/concurrent-threads-and-export) · [changelog](../CHANGELOG.md).
+Full notes: [release dispatch](/news/session-isolation-and-opencode-go) · [changelog](../CHANGELOG.md).
 
 The guides below keep the repository documentation close to the product source.`
 

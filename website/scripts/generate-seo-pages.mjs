@@ -16,6 +16,13 @@ const CONTENT_DIR = path.join(WEBSITE_DIR, 'content', 'blog')
 
 const NEWS = [
   {
+    slug: 'session-isolation-and-opencode-go',
+    title: 'Per-session isolation, OpenCode Go, and Codex cache fixes',
+    description:
+      'Isolate SDK and CLI runtime state per session for concurrent threads, add OpenCode Go as a built-in provider, and harden Codex per-thread prompt caching.',
+    date: '2026-08-23',
+  },
+  {
     slug: 'concurrent-threads-and-export',
     title: 'Concurrent threads, /export, and on-demand reflection',
     description:

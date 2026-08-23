@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-23 — Released
+
 ### Added
 
 - OpenCode Go as a built-in CLI model provider, with per-model Responses, Chat Completions, and Anthropic Messages routing, live model discovery, separate API-key storage, and rolling 5-hour/weekly/monthly subscription usage in `/status`.
@@ -106,7 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK: LangGraph agent loop, built-in tools, permissions, memory, skills, hooks, MCP, compaction, reflection, and tracing.
 - CLI: interactive TUI (`ness`), headless print mode (`-p`), plan/act modes, git worktrees, global config, and `.ness/` project layout.
 
-[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Sagnnik/ness-agent/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/Sagnnik/ness-agent/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Sagnnik/ness-agent/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Sagnnik/ness-agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Sagnnik/ness-agent/compare/v0.1.0...v0.2.0

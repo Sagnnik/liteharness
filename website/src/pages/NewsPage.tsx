@@ -22,6 +22,39 @@ type Release = {
 
 const RELEASES: readonly Release[] = [
   {
+    slug: 'session-isolation-and-opencode-go',
+    title: 'Per-session isolation, OpenCode Go, and Codex cache fixes',
+    date: '2026-08-23',
+    version: 'v0.2.3',
+    summary:
+      'Isolate SDK and CLI runtime state per session for concurrent threads, add OpenCode Go as a built-in provider, and harden Codex per-thread prompt caching.',
+    sectionLabel: '00.2.3 // ADDED',
+    intro:
+      '0.2.3 keeps concurrent /threads and /new runtimes from clobbering one another, adds OpenCode Go with live model discovery and subscription usage in /status, and tightens session-first cost accounting across resume, fork, and rollback.',
+    highlights: [
+      [
+        'Per-session runtime isolation',
+        'Each Session gets isolated options, temporary permissions, active MCP tools, callbacks, and cost totals while NessAgent keeps shared services such as thread persistence, hooks, memory, and tracing.',
+      ],
+      [
+        'OpenCode Go provider',
+        '/login can configure OpenCode Go with live model discovery, per-model Responses/Chat Completions/Anthropic Messages routing, separate API-key storage, and rolling subscription usage in /status.',
+      ],
+      [
+        'Session-scoped model config',
+        'NessAgent.session() accepts main and reflection overrides; Session.configure_models() rebinds one live session without affecting siblings; NessAgent.configure_default_models() updates defaults for future sessions.',
+      ],
+      [
+        'Session-first cost tracking',
+        'Resume restores historical thread cost without double-counting, forks exclude inherited usage from child totals, and rollback preserves already-incurred session spend.',
+      ],
+      [
+        'Codex cache diagnostics',
+        'The experimental ChatGPT-authenticated Codex transport now uses one stable UUID per thread for prompt_cache_key and session routing, reports cache reads and writes per call, and surfaces backend validation detail and request IDs.',
+      ],
+    ],
+  },
+  {
     slug: 'concurrent-threads-and-export',
     title: 'Concurrent threads, /export, and on-demand reflection',
     date: '2026-08-15',
