@@ -2,6 +2,9 @@ import { useEffect } from 'react'
 
 export const SITE_URL = 'https://nessagent.dev'
 export const SITE_NAME = 'Ness Agent'
+export const DEFAULT_OG_IMAGE = '/og-image.jpg'
+export const DEFAULT_OG_IMAGE_WIDTH = 1200
+export const DEFAULT_OG_IMAGE_HEIGHT = 630
 
 export interface SeoProps {
   title: string
@@ -60,7 +63,8 @@ export function Seo({
 }: SeoProps) {
   useEffect(() => {
     const url = absoluteUrl(path, true)
-    const imageUrl = image ? absoluteUrl(image) : ''
+    const imageUrl = absoluteUrl(image ?? DEFAULT_OG_IMAGE)
+    const usingDefaultImage = !image
 
     document.title = title
     upsertCanonical(url)
@@ -71,16 +75,20 @@ export function Seo({
     upsertMeta('property', 'og:title', title)
     upsertMeta('property', 'og:description', description)
     upsertMeta('property', 'og:url', url)
-    upsertMeta('name', 'twitter:card', imageUrl ? 'summary_large_image' : 'summary')
+    upsertMeta('name', 'twitter:card', 'summary_large_image')
     upsertMeta('name', 'twitter:title', title)
     upsertMeta('name', 'twitter:description', description)
+    upsertMeta('property', 'og:image', imageUrl)
+    upsertMeta('name', 'twitter:image', imageUrl)
 
-    if (imageUrl) {
-      upsertMeta('property', 'og:image', imageUrl)
-      upsertMeta('name', 'twitter:image', imageUrl)
+    if (usingDefaultImage) {
+      upsertMeta('property', 'og:image:width', String(DEFAULT_OG_IMAGE_WIDTH))
+      upsertMeta('property', 'og:image:height', String(DEFAULT_OG_IMAGE_HEIGHT))
+      upsertMeta('property', 'og:image:alt', `${SITE_NAME} — own the loop`)
     } else {
-      removeMeta('property', 'og:image')
-      removeMeta('name', 'twitter:image')
+      removeMeta('property', 'og:image:width')
+      removeMeta('property', 'og:image:height')
+      removeMeta('property', 'og:image:alt')
     }
 
     if (type === 'article' && publishedTime) {
