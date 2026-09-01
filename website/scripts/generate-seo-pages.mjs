@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url'
 
 const SITE_URL = 'https://nessagent.dev'
 const SITE_NAME = 'Ness Agent'
+const DEFAULT_OG_IMAGE = new URL('/og-image.jpg', SITE_URL).toString()
+const DEFAULT_OG_IMAGE_WIDTH = 1200
+const DEFAULT_OG_IMAGE_HEIGHT = 630
 const SITE_DESCRIPTION =
   'A hackable coding-agent harness for engineers who need the loop within reach.'
 const BLOG_DESCRIPTION =
@@ -129,7 +132,7 @@ function metadataTags(metadata) {
     `<meta property="og:title" content="${escapeHtml(metadata.title)}" />`,
     `<meta property="og:description" content="${escapeHtml(metadata.description)}" />`,
     `<meta property="og:url" content="${escapeHtml(metadata.url)}" />`,
-    `<meta name="twitter:card" content="${metadata.image ? 'summary_large_image' : 'summary'}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${escapeHtml(metadata.title)}" />`,
     `<meta name="twitter:description" content="${escapeHtml(metadata.description)}" />`,
   ]
@@ -137,6 +140,13 @@ function metadataTags(metadata) {
   if (metadata.image) {
     tags.push(`<meta property="og:image" content="${escapeHtml(metadata.image)}" />`)
     tags.push(`<meta name="twitter:image" content="${escapeHtml(metadata.image)}" />`)
+    if (metadata.image === DEFAULT_OG_IMAGE) {
+      tags.push(`<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_WIDTH}" />`)
+      tags.push(`<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_HEIGHT}" />`)
+      tags.push(
+        `<meta property="og:image:alt" content="${escapeHtml(`${SITE_NAME} — own the loop`)}" />`,
+      )
+    }
   }
 
   if (metadata.type === 'article' && metadata.publishedTime) {
@@ -190,7 +200,14 @@ function urlFor(pathname) {
   return new URL(normalizedPath, SITE_URL).toString()
 }
 
-function makeMetadata({ pathname, title, description, type = 'website', date, image }) {
+function makeMetadata({
+  pathname,
+  title,
+  description,
+  type = 'website',
+  date,
+  image = DEFAULT_OG_IMAGE,
+}) {
   return {
     title,
     description,
@@ -288,7 +305,7 @@ for (const post of blogPosts) {
       description: post.description,
       type: 'article',
       date: post.date,
-      image: await resolveImage(post.image),
+      image: (await resolveImage(post.image)) ?? DEFAULT_OG_IMAGE,
     }),
   )
 }
